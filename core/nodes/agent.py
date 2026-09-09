@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import AIMessage
 
-from core.state import AgentState, OpenToolIssue, RecoveryState
+from core.state import AgentState, OpenToolIssue, RecoveryState, transcript_message_delta
 from core.tool_args import canonicalize_tool_args
 from core.constants import TOOL_ISSUE_UI_NOTICE
 from core.message_utils import stringify_content
@@ -275,6 +275,7 @@ class AgentMixin:
 
         return {
             "messages": outbound_messages,
+            "transcript_messages": transcript_message_delta(outbound_messages),
             "turn_id": turn_id,
             "current_task": current_task,
             "turn_outcome": turn_outcome,

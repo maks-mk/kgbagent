@@ -141,10 +141,11 @@ async def repair_session_if_needed(
                 )
 
         async_update_state = getattr(agent_app, "aupdate_state", None)
+        update = {"messages": tool_messages, "transcript_messages": tool_messages}
         if callable(async_update_state):
-            await async_update_state(config, {"messages": tool_messages}, as_node="tools")
+            await async_update_state(config, update, as_node="tools")
         else:
-            agent_app.update_state(config, {"messages": tool_messages}, as_node="tools")
+            agent_app.update_state(config, update, as_node="tools")
 
         _notify("History repaired. The restored session is ready for a new request.")
     except Exception as exc:

@@ -161,6 +161,7 @@ class ToolExecutor:
                 tool_name=tool_name,
                 tool_args=tool_args,
                 tool_duration_seconds=tool_duration_seconds,
+                parsed_result=parsed_result,
             ),
             parsed_result=parsed_result,
             had_error=had_error,
@@ -364,8 +365,9 @@ class ToolExecutor:
         tool_name: str,
         tool_args: Dict[str, Any],
         tool_duration_seconds: float | None = None,
+        parsed_result: ToolExecutionResult | None = None,
     ) -> ToolMessage:
-        parsed_result = parse_tool_execution_result(content)
+        parsed = parsed_result or parse_tool_execution_result(content)
         additional_kwargs: Dict[str, Any] = {
             "tool_args": copy_jsonish(tool_args) if isinstance(tool_args, dict) else {}
         }
@@ -376,7 +378,7 @@ class ToolExecutor:
             tool_call_id=tool_call_id,
             name=tool_name,
             additional_kwargs=additional_kwargs,
-            status="error" if not parsed_result.ok else "success",
+            status="error" if not parsed.ok else "success",
         )
 
     def _log_interrupted_tool_result_if_needed(

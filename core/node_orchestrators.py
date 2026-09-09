@@ -15,6 +15,7 @@ from core.node_errors import EmptyLLMResponseError
 from core.self_correction_engine import normalize_tool_args
 from core.tool_args import canonicalize_tool_args, inspect_tool_args_payload
 from core.tool_results import parse_tool_execution_result
+from core.state import transcript_message_delta
 from core.turn_outcomes import (
     TURN_OUTCOME_CONTINUE_AGENT,
     TURN_OUTCOME_FINISH_TURN,
@@ -482,15 +483,17 @@ class AgentTurnOrchestrator:
                 has_open_tool_issue=bool(open_tool_issue),
                 handled=True,
             )
-            return {
-                "messages": [
-                    AIMessage(
-                        content=(
-                            "The model returned an empty response after repeated attempts. "
-                            "I did not take any additional actions; please retry the request or clarify the wording."
-                        )
+            empty_response_messages = [
+                AIMessage(
+                    content=(
+                        "The model returned an empty response after repeated attempts. "
+                        "I did not take any additional actions; please retry the request or clarify the wording."
                     )
-                ],
+                )
+            ]
+            return {
+                "messages": empty_response_messages,
+                "transcript_messages": transcript_message_delta(empty_response_messages),
                 "current_task": current_task,
                 "turn_id": current_turn_id,
                 "turn_outcome": TURN_OUTCOME_FINISH_TURN,
@@ -531,9 +534,9 @@ class RecoveryTurnOrchestrator:
         last_message = messages[-1] if messages else None
         step_count = int(state.get("steps", 0) or 0)
         recovery_state = owner._get_recovery_state(state, current_turn_id=current_turn_id)
+        # _hard_loop_ceiling() already returns 0 when self-correction is disabled,
+        # so a single value drives both the stagnation ceiling and the repair budget.
         self_correction_limit = owner._hard_loop_ceiling()
-        hard_loop_ceiling = self_correction_limit if self_correction_limit > 0 else 0
-        max_auto_repairs = self_correction_limit if self_correction_limit > 0 else 0
 
         result = owner.recovery_manager.plan_recovery(
             state=state,
@@ -546,8 +549,8 @@ class RecoveryTurnOrchestrator:
             last_message=last_message,
             step_count=step_count,
             max_loops=int(owner.config.max_loops or 0),
-            hard_loop_ceiling=hard_loop_ceiling,
-            max_auto_repairs=max_auto_repairs,
+            hard_loop_ceiling=self_correction_limit,
+            max_auto_repairs=self_correction_limit,
             successful_tool_stagnation_limit=owner._successful_tool_stagnation_limit(
                 str(getattr(last_message, "name", "") or "")
             ),
@@ -634,6 +637,7 @@ class RecoveryTurnOrchestrator:
             payload["steps"] = int(state.get("steps", 0) or 0) + 1
         if outbound_messages:
             payload["messages"] = outbound_messages
+            payload["transcript_messages"] = transcript_message_delta(outbound_messages)
         return payload
 
 
@@ -769,7 +773,6 @@ class ToolBatchCoordinator:
                     last_result = parsed.message
                 else:
                     last_error = parsed.message
-
             merged_issue = owner._merge_open_tool_issues(tool_issues, current_turn_id)
             owner._log_run_event(
                 state,
@@ -792,6 +795,7 @@ class ToolBatchCoordinator:
             )
             payload = {
                 "messages": final_messages,
+                "transcript_messages": transcript_message_delta(final_messages),
                 "turn_id": current_turn_id,
                 "turn_outcome": TURN_OUTCOME_RUN_TOOLS,
                 "pending_approval": None,

@@ -105,17 +105,14 @@ class UiHelperTests(unittest.TestCase):
                 "reserved_tokens": 3000,
                 "summary_tokens": 850,
                 "provider_input_tokens": 229094,
-                "progress": 0.4,
+                "progress": 0.2,
                 "will_summarize": False,
             }
         )
 
         self.assertTrue(ring.isVisible())
-        self.assertIn("4,400", ring.toolTip())
-        self.assertIn("6,400 tokens; compaction at ~10,800", ring.toolTip())
-        self.assertIn("3,000 reserved", ring.toolTip())
-        self.assertIn("850 estimated tokens from compressed memory", ring.toolTip())
-        self.assertIn("229,094 provider-reported tokens", ring.toolTip())
+        self.assertEqual(ring.toolTip(), "20% left until auto-summary.")
+        self.assertNotIn("tokens", ring.toolTip())
 
     def test_summary_progress_ring_falls_back_to_threshold_without_trigger(self):
         ring = SummaryProgressRing()
@@ -123,8 +120,26 @@ class UiHelperTests(unittest.TestCase):
 
         ring.set_summary_progress({"estimated_tokens": 6400, "threshold": 8000})
 
-        self.assertIn("compaction at ~8,000", ring.toolTip())
-        self.assertIn("1,600", ring.toolTip())
+        self.assertEqual(ring.toolTip(), "20% left until auto-summary.")
+
+    def test_summary_progress_ring_reports_imminent_auto_summary(self):
+        ring = SummaryProgressRing()
+        self.addCleanup(ring.deleteLater)
+
+        ring.set_summary_progress(
+            {"estimated_tokens": 8100, "threshold": 8000, "progress": 0.0, "will_summarize": True}
+        )
+
+        self.assertEqual(ring.toolTip(), "Auto-summary will run on the next step.")
+
+    def test_summary_progress_ring_marks_disabled_without_threshold(self):
+        ring = SummaryProgressRing()
+        self.addCleanup(ring.deleteLater)
+
+        ring.set_summary_progress({"estimated_tokens": 6400})
+
+        self.assertEqual(ring.toolTip(), "Auto-summary is disabled.")
+        self.assertFalse(ring.isVisible())
 
     def test_tool_group_animates_expand_and_collapse(self):
         group = ToolGroupWidget()

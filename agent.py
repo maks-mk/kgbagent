@@ -137,12 +137,15 @@ def create_agent_workflow(
     def route_after_tools(state: AgentState):
         if state.get("open_tool_issue"):
             return "recovery"
-        return "update_step"
+        # Mid-run compaction: re-check the context threshold after tool results
+        # land, before the model writes its next comment. The summarize node is
+        # a no-op below the SESSION_SIZE threshold.
+        return "summarize"
 
     def route_after_recovery(state: AgentState):
         normalized = normalize_turn_outcome(state.get("turn_outcome"))
         if normalized in (TURN_OUTCOME_RECOVER_AGENT, TURN_OUTCOME_CONTINUE_AGENT):
-            return "update_step"
+            return "summarize"
         return END
 
     if tools_enabled:
@@ -155,7 +158,7 @@ def create_agent_workflow(
             route_after_agent,
             agent_routes,
         )
-        workflow.add_conditional_edges("tools", route_after_tools, ["recovery", "update_step"])
+        workflow.add_conditional_edges("tools", route_after_tools, ["recovery", "summarize"])
     else:
         workflow.add_conditional_edges(
             "agent",
@@ -166,7 +169,7 @@ def create_agent_workflow(
     workflow.add_conditional_edges(
         "recovery",
         route_after_recovery,
-        ["update_step", END],
+        ["summarize", END],
     )
 
     return workflow

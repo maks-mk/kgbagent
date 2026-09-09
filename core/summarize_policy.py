@@ -234,6 +234,15 @@ def summary_progress_ratio(
     return max(0.0, min(1.0, used / span))
 
 
+def summary_remaining_ratio(estimated_tokens: int, *, threshold: int) -> float:
+    """Return the fraction of the configured summary threshold that remains."""
+    threshold = int(threshold or 0)
+    if threshold <= 0:
+        return 0.0
+    estimated = max(0, int(estimated_tokens or 0))
+    return max(0.0, min(1.0, 1.0 - (estimated / threshold)))
+
+
 def should_summarize(
     messages: List[BaseMessage],
     *,
@@ -241,6 +250,7 @@ def should_summarize(
     keep_last: int,
     has_summary: bool = False,
     reserved_tokens: int = 0,
+    allow_tool_round_boundaries: bool = False,
 ) -> bool:
     threshold = int(threshold or 0)
     if threshold <= 0:
@@ -255,6 +265,7 @@ def should_summarize(
         keep_last=keep_last,
         threshold=threshold,
         reserved_tokens=reserved_tokens,
+        allow_tool_round_boundaries=allow_tool_round_boundaries,
     )
     summarizable = messages[:boundary]
     if not summarizable:
@@ -273,17 +284,53 @@ def should_summarize(
     return True
 
 
+def _tool_round_boundaries(messages: List[BaseMessage], *, user_boundaries: set[int]) -> List[int]:
+    """Indexes that start a completed tool round: an AI message with tool_calls whose
+    results are already present. Everything before such an index is finished work, so it
+    can be compacted mid-run without orphaning a tool result (the AI/tool-call pair and its
+    ToolMessage stay intact on the retained side)."""
+    result: List[int] = []
+    for index, message in enumerate(messages):
+        if index in user_boundaries:
+            continue
+        if not isinstance(message, (AIMessage, AIMessageChunk)):
+            continue
+        tool_calls = list(getattr(message, "tool_calls", []) or [])
+        if not tool_calls:
+            continue
+        call_ids = {str(tc.get("id") or "").strip() for tc in tool_calls if str(tc.get("id") or "").strip()}
+        if not call_ids:
+            continue
+        # Every tool call must already have a matching ToolMessage before this round is safe to cut.
+        present_ids = {
+            str(getattr(m, "tool_call_id", "") or "").strip()
+            for m in messages[index + 1 :]
+            if getattr(m, "tool_call_id", None) is not None
+        }
+        if call_ids.issubset(present_ids):
+            result.append(index)
+    return result
+
+
 def choose_summary_boundary(
     messages: List[BaseMessage],
     *,
     keep_last: int,
     threshold: int = 0,
     reserved_tokens: int = 0,
+    allow_tool_round_boundaries: bool = False,
 ) -> int:
     """Pick the compaction cut: ``messages[:boundary]`` is summarized and removed.
 
     Only real user turns are valid cut points, so the remaining history always starts
     on a user message and never keeps a tool result whose tool call was removed.
+
+    When ``allow_tool_round_boundaries`` is set (mid-run compaction between tool
+    results and the next model comment), the start of a completed tool round — an
+    AI message with tool_calls whose results are already present — is also a valid
+    cut point before the active user turn: everything before it is finished, and
+    AI/tool-call pairs stay intact. The active user message remains as the anchor
+    for the final visible transcript.
 
     Preference order:
     1. the newest user turn that still keeps at least ``keep_last`` messages;
@@ -291,7 +338,20 @@ def choose_summary_boundary(
     3. ``0`` (no compaction) when no user turn can be cut — a growing context is safer
        than a history that violates the provider tool-call contract.
     """
-    boundaries = [index for index in range(1, len(messages)) if is_user_turn_message(messages[index])]
+    user_indexes = [index for index, message in enumerate(messages) if is_user_turn_message(message)]
+    boundaries = [index for index in user_indexes if index > 0]
+    if allow_tool_round_boundaries:
+        # The latest real user message belongs to the active turn. Removing it
+        # leaves the retained AI/tool messages without a transcript turn, so a
+        # final session refresh appears to erase the whole chat. Mid-run
+        # compaction may only cut before the active user message.
+        active_user_index = user_indexes[-1] if user_indexes else len(messages)
+        tool_boundaries = _tool_round_boundaries(messages, user_boundaries=set(boundaries))
+        # A user boundary at ``active_user_index`` removes only older turns and
+        # is therefore safe. Tool-round boundaries at or after that index belong
+        # to the active turn and would remove its user-message anchor.
+        tool_boundaries = [index for index in tool_boundaries if index < active_user_index]
+        boundaries = sorted(set(boundaries + tool_boundaries))
     if not boundaries:
         return 0
 

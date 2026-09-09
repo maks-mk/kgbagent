@@ -31,6 +31,10 @@ class RuntimePayloadTests(unittest.TestCase):
             payload["remaining_tokens"],
             max(0, payload["trigger_tokens"] - payload["estimated_tokens"]),
         )
+        self.assertAlmostEqual(
+            payload["progress"],
+            max(0.0, 1.0 - (payload["estimated_tokens"] / payload["threshold"])),
+        )
         self.assertGreaterEqual(payload["progress"], 0.0)
         self.assertLessEqual(payload["progress"], 1.0)
         self.assertFalse(payload["will_summarize"])
@@ -54,6 +58,10 @@ class RuntimePayloadTests(unittest.TestCase):
         self.assertEqual(
             payload["remaining_tokens"],
             max(0, payload["trigger_tokens"] - payload["estimated_tokens"]),
+        )
+        self.assertAlmostEqual(
+            payload["progress"],
+            max(0.0, 1.0 - (payload["estimated_tokens"] / payload["threshold"])),
         )
 
     def test_build_summary_progress_payload_reports_summary_and_provider_input_separately(self):
@@ -108,7 +116,7 @@ class RuntimePayloadTests(unittest.TestCase):
 
         self.assertEqual(payload["threshold"], 10)
         self.assertEqual(payload["remaining_tokens"], 0)
-        self.assertEqual(payload["progress"], 1.0)
+        self.assertEqual(payload["progress"], 0.0)
         self.assertTrue(payload["will_summarize"])
 
     def test_generate_chat_title_strips_common_prefixes_and_limits_length(self):
@@ -138,6 +146,23 @@ class RuntimePayloadTests(unittest.TestCase):
         self.assertEqual(payload["question"], "Continue?")
         self.assertEqual(payload["recommended_key"], "Retry")
         self.assertEqual([item["recommended"] for item in payload["options"]], [False, True])
+
+    def test_build_transcript_payload_prefers_full_transcript_after_compaction(self):
+        payload = build_transcript_payload(
+            {
+                "summary": "compressed",
+                "messages": [HumanMessage(content="latest request"), AIMessage(content="latest answer")],
+                "transcript_messages": [
+                    HumanMessage(content="old request"),
+                    AIMessage(content="old answer"),
+                    HumanMessage(content="latest request"),
+                    AIMessage(content="latest answer"),
+                ],
+            }
+        )
+
+        self.assertEqual([turn["user_text"] for turn in payload["turns"]], ["old request", "latest request"])
+        self.assertEqual(payload["summary_notice"], "Model context was compressed, but the full chat history is preserved below.")
 
     def test_build_transcript_payload_restores_turns_attachments_and_tool_args(self):
         payload = build_transcript_payload(

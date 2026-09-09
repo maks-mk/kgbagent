@@ -26,7 +26,7 @@ from core.multimodal import (
 )
 from core.run_logger import JsonlRunLogger
 from core.session_store import SessionSnapshot, SessionStore
-from core.summarize_policy import estimate_tokens, summary_progress_ratio, summary_trigger_tokens
+from core.summarize_policy import estimate_tokens, summary_remaining_ratio, summary_trigger_tokens
 from ui.runtime_payloads import (
     APPROVAL_MODE_ALWAYS,
     APPROVAL_MODE_PROMPT,
@@ -67,8 +67,10 @@ def build_initial_state(user_input: Any, session_id: str, safety_mode: str = "de
     user_text = request_payload["text"]
     attachments = request_payload["attachments"]
     current_task = request_task_text(request_payload)
+    user_message = HumanMessage(content=build_user_message_content(user_text, attachments))
     return {
-        "messages": [HumanMessage(content=build_user_message_content(user_text, attachments))],
+        "messages": [user_message],
+        "transcript_messages": [user_message],
         "steps": 0,
         "token_usage": {},
         "current_task": current_task,
@@ -391,11 +393,9 @@ class AgentRunWorker(QObject):
             "reserved_tokens": reserved,
             "summary_tokens": memory_tokens,
             "provider_input_tokens": max(0, int(self._active_provider_input_tokens or 0)),
-            "progress": summary_progress_ratio(
+            "progress": summary_remaining_ratio(
                 estimated,
                 threshold=threshold,
-                baseline_tokens=reserved + memory_tokens,
-                has_summary=has_summary,
             ),
             "message_count": max(0, int(self._active_summary_message_count or 0)),
             "has_summary": has_summary,

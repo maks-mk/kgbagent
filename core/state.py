@@ -1,7 +1,31 @@
 from typing import TypedDict, Annotated, List, NotRequired, Dict, Any
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, RemoveMessage
 from langgraph.graph.message import add_messages
 from core.turn_outcomes import TurnOutcome
+
+
+def append_transcript_messages(
+    left: List[BaseMessage] | None,
+    right: List[BaseMessage] | None,
+) -> List[BaseMessage]:
+    """Merge the durable UI transcript without applying context compaction.
+
+    ``messages`` is intentionally allowed to contain ``RemoveMessage`` updates for
+    the model context.  The transcript channel is different: removals are ignored
+    and message IDs are used only to make repeated checkpoint/UI updates idempotent.
+    This follows the same identity semantics as LangGraph's ``add_messages`` while
+    keeping the full user-visible history append-only.
+    """
+    current = [message for message in (left or []) if not isinstance(message, RemoveMessage)]
+    incoming = [message for message in (right or []) if not isinstance(message, RemoveMessage)]
+    if not incoming:
+        return list(current)
+    return add_messages(current, incoming)
+
+
+def transcript_message_delta(messages: List[BaseMessage] | None) -> List[BaseMessage]:
+    """Return only real messages suitable for the durable transcript channel."""
+    return [message for message in (messages or []) if not isinstance(message, RemoveMessage)]
 
 
 class OpenToolIssue(TypedDict, total=False):
@@ -69,18 +93,20 @@ class RecoveryPlanResult(TypedDict):
 
 
 class AgentState(TypedDict):
-    """
-    Simplified Agent State.
-    """
-    # Message history
+    """State split into model context and durable user-visible transcript."""
+
+    # Model-facing message history. Summarization may remove entries from here.
     messages: Annotated[List[BaseMessage], add_messages]
-    
+
+    # Full append-only history for UI/session restoration. Never compacted.
+    transcript_messages: NotRequired[Annotated[List[BaseMessage], append_transcript_messages]]
+
     # Compressed memory
     summary: NotRequired[str]
-    
+
     # Step counter
     steps: int
-    
+
     # Token usage tracking (Last step usage)
     token_usage: Dict[str, Any]
 

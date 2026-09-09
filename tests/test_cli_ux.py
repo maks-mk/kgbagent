@@ -3254,12 +3254,10 @@ class GuiUxTests(unittest.TestCase):
 
                 dock = self.window._model_settings_window
                 self.assertIsNotNone(dock)
-                # The dock must NOT stretch across the whole window: it stays
-                # bounded (~45% of the window, clamped to 660-900px) so the
-                # chat column remains visible and centered.
-                self.assertLess(dock.width(), width)
+                # The settings panel is a full-window dock: it stretches across
+                # the whole window so its content never overflows the right edge
+                # on narrow windows. It must never widen the window itself.
                 self.assertGreaterEqual(dock.width(), 660)
-                self.assertLessEqual(dock.width(), 900)
                 self.assertEqual(self.window.width(), width)
                 self.assertLessEqual(dock.x() + dock.width(), self.window.width())
 

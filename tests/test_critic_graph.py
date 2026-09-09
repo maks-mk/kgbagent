@@ -12,6 +12,7 @@ from core.summarize_policy import estimate_summary_tokens
 from core.tool_policy import ToolMetadata
 from tools.user_input_tool import request_user_input
 from ui.runtime import build_graph_config
+from ui.runtime_payloads import build_transcript_payload
 
 
 class FakeLLM:
@@ -170,6 +171,37 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(agent_llm.invocations), 1)
         self.assertIsNone(result["open_tool_issue"])
 
+    async def test_auto_summary_keeps_active_user_turn_for_final_transcript(self):
+        tool = FakeTool("read_file", "important result")
+        app, _agent_llm = self._build_app(
+            agent_responses=[
+                AIMessage(
+                    content="Проверяю файл",
+                    tool_calls=[{"id": "tc-transcript", "name": "read_file", "args": {}}],
+                ),
+                AIMessage(content="Файл проверен, результат готов."),
+            ],
+            tools=[tool],
+            summary_threshold=1,
+            summary_keep_last=1,
+        )
+
+        result = await app.ainvoke(
+            self._initial_state("Проверь файл"),
+            config={"configurable": {"thread_id": "summary-final-transcript"}, "recursion_limit": 32},
+        )
+
+        transcript = build_transcript_payload(result)
+        self.assertEqual(len(transcript["turns"]), 1)
+        self.assertEqual(transcript["turns"][0]["user_text"], "Проверь файл")
+        self.assertTrue(
+            any(
+                block.get("type") == "assistant"
+                and "результат готов" in block.get("markdown", "")
+                for block in transcript["turns"][0]["blocks"]
+            )
+        )
+
     async def test_auto_summary_is_included_in_final_model_payload_as_memory(self):
         summary_text = "- Completed earlier investigation: relevant file is core/context_builder.py."
         app, agent_llm = self._build_app(
@@ -196,6 +228,25 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["summary"], summary_text)
         self.assertEqual(len(agent_llm.invocations), 2)
+        self.assertEqual(
+            [message.content for message in result["transcript_messages"] if isinstance(message, HumanMessage)],
+            [
+                "old request " + "x" * 2000,
+                "old follow-up " + "x" * 2000,
+                "old decision " + "x" * 2000,
+                "latest request",
+            ],
+        )
+        transcript = build_transcript_payload(result)
+        self.assertEqual(
+            [turn["user_text"] for turn in transcript["turns"]],
+            [
+                "old request " + "x" * 2000,
+                "old follow-up " + "x" * 2000,
+                "old decision " + "x" * 2000,
+                "latest request",
+            ],
+        )
         final_payload = agent_llm.invocations[1]
         memory_text = "\n".join(
             str(message.content)

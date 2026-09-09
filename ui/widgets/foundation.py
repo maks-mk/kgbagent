@@ -184,20 +184,15 @@ class SummaryProgressRing(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._progress = 0.0
+        self._remaining = 1.0
         self._estimated_tokens = 0
         self._threshold = 0
-        self._trigger_tokens = 0
-        self._remaining_tokens = 0
-        self._reserved_tokens = 0
-        self._summary_tokens = 0
-        self._provider_input_tokens = 0
         self._will_summarize = False
         self.setObjectName("SummaryProgressRing")
         self.setFixedSize(18, 18)
         self.setCursor(Qt.CursorShape.WhatsThisCursor)
         self.setAccessibleName("Auto-summary progress")
-        self.setAccessibleDescription("Shows how close the current chat context is to automatic summarization")
+        self.setAccessibleDescription("Shows how much context is left before automatic summarization")
         self.set_summary_progress({})
 
     def sizeHint(self) -> QSize:  # type: ignore[override]
@@ -207,21 +202,17 @@ class SummaryProgressRing(QWidget):
         data = payload if isinstance(payload, dict) else {}
         threshold = max(0, int(data.get("threshold", 0) or 0))
         estimated = max(0, int(data.get("estimated_tokens", 0) or 0))
-        trigger = max(0, int(data.get("trigger_tokens", threshold) or 0))
-        remaining = max(0, int(data.get("remaining_tokens", max(0, trigger - estimated)) or 0))
-        reserved = max(0, int(data.get("reserved_tokens", 0) or 0))
-        summary_tokens = max(0, int(data.get("summary_tokens", 0) or 0))
-        provider_input_tokens = max(0, int(data.get("provider_input_tokens", 0) or 0))
-        progress = float(data.get("progress", (estimated / trigger) if trigger else 0.0) or 0.0)
+        progress = data.get("progress")
+        if isinstance(progress, (int, float)):
+            remaining = float(progress)
+        elif threshold > 0:
+            remaining = 1.0 - (estimated / threshold)
+        else:
+            remaining = 0.0
 
         self._threshold = threshold
-        self._trigger_tokens = trigger or threshold
         self._estimated_tokens = estimated
-        self._remaining_tokens = remaining
-        self._reserved_tokens = reserved
-        self._summary_tokens = summary_tokens
-        self._provider_input_tokens = provider_input_tokens
-        self._progress = max(0.0, min(1.0, progress))
+        self._remaining = max(0.0, min(1.0, remaining))
         self._will_summarize = bool(data.get("will_summarize"))
         self.setVisible(threshold > 0)
         self.setToolTip(self._build_tooltip())
@@ -230,35 +221,9 @@ class SummaryProgressRing(QWidget):
     def _build_tooltip(self) -> str:
         if self._threshold <= 0:
             return "Auto-summary is disabled."
-        reserve_line = (
-            f"\nIncludes ~{self._reserved_tokens:,} reserved tokens for prompts and tool schemas."
-            if self._reserved_tokens > 0
-            else ""
-        )
-        summary_line = (
-            f"\nIncludes ~{self._summary_tokens:,} estimated tokens from compressed memory."
-            if self._summary_tokens > 0
-            else ""
-        )
-        provider_line = (
-            f"\nLast model input: {self._provider_input_tokens:,} provider-reported tokens "
-            "(may include images and provider-specific overhead)."
-            if self._provider_input_tokens > 0
-            else ""
-        )
-        if self._will_summarize:
-            return (
-                "Auto-summary is ready for the next agent step.\n"
-                f"Context estimate: {self._estimated_tokens:,} tokens; compaction at ~{self._trigger_tokens:,}."
-                f"{reserve_line}{summary_line}{provider_line}"
-            )
-        return (
-            f"Auto-summary: ~{self._remaining_tokens:,} estimated tokens left.\n"
-            f"Context estimate: {self._estimated_tokens:,} tokens; compaction at ~{self._trigger_tokens:,}.\n"
-            "The ring tracks history that compaction can still remove, so reserved tokens and "
-            "compressed memory are excluded."
-            f"{reserve_line}{summary_line}{provider_line}"
-        )
+        if self._will_summarize or self._remaining <= 0.0:
+            return "Auto-summary will run on the next step."
+        return f"{int(round(self._remaining * 100))}% left until auto-summary."
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
         _ = event
@@ -280,16 +245,19 @@ class SummaryProgressRing(QWidget):
         painter.setPen(track)
         painter.drawArc(rect, 0, 360 * 16)
 
-        if self._progress <= 0:
+        if self._threshold <= 0:
             return
 
-        color = AMBER_WARNING if self._progress >= 0.85 else ACCENT_BLUE
+        # The filled arc shows used context, so the ring is never an empty gray circle
+        # while the threshold is configured; remaining share is exposed via the tooltip.
+        used = 1.0 - self._remaining
+        color = ACCENT_BLUE if used < 0.85 else AMBER_WARNING
         if self._will_summarize:
             color = SUCCESS_GREEN
         arc = QPen(QColor(color), pen_width)
         arc.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(arc)
-        painter.drawArc(rect, 90 * 16, -int(360 * 16 * self._progress))
+        painter.drawArc(rect, 90 * 16, -int(360 * 16 * used))
 
 
 def _collapsed_user_message_text(text: str) -> tuple[str, bool]:

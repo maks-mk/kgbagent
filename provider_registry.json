@@ -7,13 +7,15 @@
       "enabled": true,
       "priority": 100,
       "match": [
-        "api.openai.com"
+        "api.openai.com",
+		"api.ashna.ai"
       ],
       "match_type": "exact",
       "supports_reasoning": true,
       "model_match": {
         "prefix": [
           "gpt-5",
+		  "gpt-6",
           "o1",
           "o3",
           "o4"
@@ -538,9 +540,8 @@
         "agentrouter.org",
         "apimaster.ai",
         "true-sota.com",
-		"tokenbom.com",
-		"api.ashna.ai"
-      ],
+		"tokenbom.com"
+	  ],
       "match_type": "exact",
       "supports_reasoning": true,
       "validation": "map",

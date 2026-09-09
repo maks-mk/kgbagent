@@ -5,7 +5,7 @@ from typing import List
 
 from langchain_core.messages import RemoveMessage
 
-from core.state import AgentState, OpenToolIssue, RecoveryState
+from core.state import AgentState, OpenToolIssue, RecoveryState, transcript_message_delta
 from core.summarize_policy import (
     choose_summary_boundary,
     estimate_context_tokens,
@@ -23,6 +23,15 @@ logger = logging.getLogger("agent")
 
 class SummarizeMixin:
     """Summarize node: compacts message history when it grows beyond the token threshold."""
+
+    def _is_mid_run_compaction(self, state: AgentState) -> bool:
+        """True when the summarize node runs inside an active turn (after tools/recovery),
+        not on the turn entry edge. Mid-run compaction may cut at completed tool-round
+        boundaries in addition to user-turn boundaries."""
+        try:
+            return int(state.get("steps") or 0) > 0
+        except (TypeError, ValueError):
+            return False
 
     def _effective_reserved_tokens(self, summary: str) -> int:
         """Memory is part of every outbound prompt, so it counts against the context budget."""
@@ -98,6 +107,12 @@ class SummarizeMixin:
     async def summarize_node(self, state: AgentState):
         messages = state["messages"]
         summary = state.get("summary", "")
+        existing_transcript = state.get("transcript_messages")
+        transcript_bootstrap = (
+            {"transcript_messages": transcript_message_delta(messages)}
+            if not isinstance(existing_transcript, list) or not existing_transcript
+            else {}
+        )
         current_turn_id = self._current_turn_id(state, messages)
         current_task = self._resolve_current_task(state, messages)
         open_tool_issue = self._get_active_open_tool_issue(state, messages, current_turn_id=current_turn_id)
@@ -121,6 +136,7 @@ class SummarizeMixin:
             keep_last=self.config.summary_keep_last,
             has_summary=bool(summary),
             reserved_tokens=reserved_tokens,
+            allow_tool_round_boundaries=self._is_mid_run_compaction(state),
         ):
             self._log_node_end(
                 state,
@@ -129,7 +145,7 @@ class SummarizeMixin:
                 outcome="skipped",
                 reason="below_threshold",
             )
-            return {}
+            return transcript_bootstrap
 
         logger.debug(f"📊 Context size: ~{estimated_tokens} tokens. Summarizing...")
 
@@ -139,6 +155,7 @@ class SummarizeMixin:
             keep_last=self.config.summary_keep_last,
             threshold=self.config.summary_threshold,
             reserved_tokens=reserved_tokens,
+            allow_tool_round_boundaries=self._is_mid_run_compaction(state),
         )
 
         to_summarize = messages[:idx]
@@ -158,7 +175,7 @@ class SummarizeMixin:
                 outcome="skipped",
                 reason="no_summarizable_messages",
             )
-            return {}
+            return transcript_bootstrap
 
         history_text = self._format_history_for_summary(to_summarize)
         state_snapshot = self._build_summary_state_snapshot(
@@ -190,7 +207,7 @@ class SummarizeMixin:
                     reason="empty_summary",
                     estimated_tokens=estimated_tokens,
                 )
-                return {}
+                return transcript_bootstrap
 
             delete_msgs = [RemoveMessage(id=m.id) for m in to_summarize if m.id]
             updated_summary = await self._fit_memory_to_budget(state, updated_summary)
@@ -215,7 +232,11 @@ class SummarizeMixin:
                 memory_tokens=estimate_summary_tokens(updated_summary),
             )
 
-            return {"summary": updated_summary, "messages": delete_msgs}
+            return {
+                **transcript_bootstrap,
+                "summary": updated_summary,
+                "messages": delete_msgs,
+            }
         except Exception as e:
             err_str = str(e)
             if "content_filter" in err_str or "Moderation Block" in err_str:
@@ -232,7 +253,7 @@ class SummarizeMixin:
                 outcome="failed",
                 estimated_tokens=estimated_tokens,
             )
-            return {}
+            return transcript_bootstrap
 
     def _format_history_for_summary(self, messages: List) -> str:
         return format_history_for_summary(messages, is_internal_retry=self._is_internal_retry_message)

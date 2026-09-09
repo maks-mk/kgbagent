@@ -13,7 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import agent as agent_module
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 from pydantic import BaseModel, RootModel
@@ -33,7 +33,7 @@ from core.model_profiles import ModelProfileStore
 from core.nodes import AgentNodes
 from core.run_logger import JsonlRunLogger
 from core.session_store import SessionSnapshot, SessionStore
-from core.state import AgentState
+from core.state import AgentState, append_transcript_messages
 from core.summarize_policy import (
     choose_summary_boundary,
     estimate_summary_tokens,
@@ -1601,6 +1601,23 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.content[1]["type"], "image")
         self.assertEqual(message.content[1]["path"], "D:/demo/sample.png")
 
+    def test_transcript_reducer_ignores_compaction_removals_and_deduplicates_snapshots(self):
+        first_user = HumanMessage(content="Первый запрос", id="user-1")
+        first_answer = AIMessage(content="Первый ответ", id="ai-1")
+        repeated_answer = AIMessage(content="Исправленный ответ", id="ai-1")
+        result = append_transcript_messages(
+            [first_user, first_answer],
+            [
+                RemoveMessage(id="user-1"),
+                repeated_answer,
+                AIMessage(content="Новый ответ", id="ai-2"),
+            ],
+        )
+
+        self.assertEqual([message.id for message in result], ["user-1", "ai-1", "ai-2"])
+        self.assertEqual(result[1].content, "Исправленный ответ")
+        self.assertEqual(result[0].content, "Первый запрос")
+
     def test_build_initial_state_accepts_image_only_request(self):
         state = build_initial_state(
             {
@@ -1634,6 +1651,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["recovery_state"]["retry_count"], 0)
         self.assertEqual(state["recovery_state"]["retry_fingerprint_history"], [])
         self.assertEqual(state["recovery_state"]["last_reason"], "")
+        self.assertEqual(state["transcript_messages"], state["messages"])
 
     def test_build_transcript_payload_parses_json_string_tool_args(self):
         payload = build_transcript_payload(
@@ -2980,6 +2998,64 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         self.assertEqual(choose_summary_boundary(messages, keep_last=4), 0)
+
+    def test_choose_summary_boundary_mid_run_keeps_active_user_turn(self):
+        messages = [
+            HumanMessage(content="Проверь конфиг"),
+            AIMessage(content="Читаю файл", tool_calls=[{"id": "tc-1", "name": "read_file", "args": {}}]),
+            ToolMessage(tool_call_id="tc-1", name="read_file", content="ok"),
+            AIMessage(content="Правлю файл", tool_calls=[{"id": "tc-2", "name": "edit_file", "args": {}}]),
+            ToolMessage(tool_call_id="tc-2", name="edit_file", content="ok"),
+            AIMessage(content="Готово"),
+        ]
+
+        # The current user message anchors the visible transcript turn. The
+        # user boundary at index 0 cannot be selected, while tool boundaries
+        # inside this active turn must not remove its user-message anchor.
+        boundary = choose_summary_boundary(
+            messages,
+            keep_last=4,
+            allow_tool_round_boundaries=True,
+        )
+        self.assertEqual(boundary, 0)
+
+        # Without the flag, only user turns are valid cut points.
+        self.assertEqual(choose_summary_boundary(messages, keep_last=4), 0)
+
+    def test_choose_summary_boundary_mid_run_cuts_before_active_user_turn(self):
+        messages = [
+            HumanMessage(content="Старая задача"),
+            AIMessage(content="Старый ответ"),
+            HumanMessage(content="Проверь конфиг"),
+            AIMessage(content="Читаю файл", tool_calls=[{"id": "tc-1", "name": "read_file", "args": {}}]),
+            ToolMessage(tool_call_id="tc-1", name="read_file", content="ok"),
+        ]
+
+        boundary = choose_summary_boundary(
+            messages,
+            keep_last=1,
+            allow_tool_round_boundaries=True,
+        )
+        self.assertEqual(boundary, 2)
+        self.assertEqual(messages[boundary].content, "Проверь конфиг")
+
+    def test_choose_summary_boundary_mid_run_skips_unfinished_tool_round(self):
+        messages = [
+            HumanMessage(content="Проверь конфиг"),
+            AIMessage(content="Читаю файл", tool_calls=[{"id": "tc-1", "name": "read_file", "args": {}}]),
+            ToolMessage(tool_call_id="tc-1", name="read_file", content="ok"),
+            # Round tc-2 started but its ToolMessage is missing -> must not be a cut point.
+            AIMessage(content="Правлю файл", tool_calls=[{"id": "tc-2", "name": "edit_file", "args": {}}]),
+        ]
+
+        boundary = choose_summary_boundary(
+            messages,
+            keep_last=4,
+            allow_tool_round_boundaries=True,
+        )
+        # There is no older user turn to remove, and the active user message
+        # must remain as the anchor for the final visible transcript.
+        self.assertEqual(boundary, 0)
 
     def test_choose_summary_boundary_keeps_at_least_keep_last_messages(self):
         messages = [

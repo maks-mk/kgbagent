@@ -23,7 +23,7 @@ from core.summarize_policy import (
     estimate_context_tokens,
     estimate_summary_tokens,
     should_summarize,
-    summary_progress_ratio,
+    summary_remaining_ratio,
     summary_trigger_tokens,
 )
 from core.text_utils import build_mcp_tool_ui_labels, build_tool_ui_labels, format_tool_output, prepare_markdown_for_render
@@ -267,11 +267,9 @@ def build_summary_progress_payload(config: AgentConfig, state_values: dict[str, 
     estimated_tokens = estimate_context_tokens(messages, reserved_tokens=effective_reserved_tokens)
     has_summary = bool(summary_text)
     trigger_tokens = summary_trigger_tokens(threshold, has_summary=has_summary)
-    progress = summary_progress_ratio(
+    progress = summary_remaining_ratio(
         estimated_tokens,
         threshold=threshold,
-        baseline_tokens=effective_reserved_tokens,
-        has_summary=has_summary,
     )
     keep_last = _safe_int(getattr(config, "summary_keep_last", 0), 0)
     will_summarize = should_summarize(
@@ -483,10 +481,18 @@ def build_transcript_payload(
     values = state_values or {}
     summary_text = str(values.get("summary") or "").strip()
     normalized_last_run_stats = str(last_run_stats or "").strip()
+    # ``messages`` is the compact model context and may contain only the tail
+    # after auto-summarization. Prefer the durable transcript when it is present;
+    # retain the old fallback for checkpoints created before this channel existed.
+    transcript_messages = values.get("transcript_messages")
+    has_transcript_user_turn = isinstance(transcript_messages, list) and any(
+        isinstance(message, HumanMessage) for message in transcript_messages
+    )
+    source_messages = transcript_messages if has_transcript_user_turn else values.get("messages", [])
     turns: list[dict[str, Any]] = []
     pending_tool_calls: dict[str, dict[str, Any]] = {}
     current_turn: dict[str, Any] | None = None
-    for message in values.get("messages", []) or []:
+    for message in source_messages or []:
         if isinstance(message, HumanMessage):
             text, attachments = extract_user_turn_data(message.content)
             text = text.strip()
@@ -605,9 +611,13 @@ def build_transcript_payload(
 
     return {
         "summary_notice": (
-            "Early messages were compressed automatically; the restored chat may be incomplete."
-            if summary_text
-            else ""
+            "Model context was compressed, but the full chat history is preserved below."
+            if summary_text and has_transcript_user_turn
+            else (
+                "Early messages were compressed automatically; the restored chat may be incomplete."
+                if summary_text
+                else ""
+            )
         ),
         "turns": turns,
     }
