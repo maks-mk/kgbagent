@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import shutil
 import unittest
 from pathlib import Path
@@ -2763,7 +2764,35 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertIn("Foreground service/server commands are not supported", result)
         self.assertIn("run_background_process", result)
 
-    def test_cli_exec_converts_python_heredoc_to_powershell_on_windows(self):
+    def test_cli_exec_decodes_utf8_and_legacy_windows_output(self):
+        cases = (
+            ("utf-8", "Привет мир"),
+            ("cp1251", "Привет мир"),
+        )
+        for encoding, expected in cases:
+            with self.subTest(encoding=encoding):
+                with mock.patch.object(local_shell.os, "name", "nt"), mock.patch.object(
+                    local_shell.locale, "getpreferredencoding", return_value="cp1251"
+                ):
+                    decoder = local_shell._CliOutputDecoder()
+                    encoded = expected.encode(encoding)
+                    split = max(1, len(encoded) // 2)
+                    actual = decoder.decode(encoded[:split]) + decoder.decode(encoded[split:], final=True)
+                self.assertEqual(actual, expected)
+
+    def test_cli_exec_sets_utf8_environment_for_windows_commands(self):
+        with mock.patch.object(local_shell.os, "name", "nt"):
+            env = local_shell._prepare_shell_env("python -c \"print('Привет')\"")
+        self.assertEqual(env["PYTHONIOENCODING"], "utf-8")
+        self.assertEqual(env["PYTHONUTF8"], "1")
+
+    def test_cli_exec_wraps_windows_powershell_with_utf8_settings(self):
+        with mock.patch.object(local_shell.os, "name", "nt"):
+            wrapped = local_shell._windows_powershell_command("Write-Output 'Привет'")
+        self.assertIn("$OutputEncoding", wrapped)
+        self.assertIn("[Console]::OutputEncoding", wrapped)
+        self.assertIn("Write-Output 'Привет'", wrapped)
+
         process = self._FakeProcess(
             stdout_chunks=[b"ok\n"],
             stderr_chunks=[],
@@ -2786,8 +2815,26 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertIn("ok", result)
         self.assertTrue(captured_argv)
         self.assertEqual(captured_argv[0][1:3], ("-NoProfile", "-Command"))
-        self.assertIn("@'", captured_argv[0][3])
-        self.assertIn("'@ | python -", captured_argv[0][3])
+        powershell_command = captured_argv[0][3]
+        self.assertIn("FromBase64String", powershell_command)
+        self.assertIn("| python -", powershell_command)
+
+    def test_cli_exec_normalizes_common_python_heredoc_variants_on_windows(self):
+        cases = (
+            ("python - <<PY\nprint('$x')\nPY", "python -"),
+            ("python3 - <<\"PY\"\r\nprint('ok')\r\nPY\r\n", "python3 -"),
+            ("py -u - <<'PY'\nprint('ok')\nPY", "py -u -"),
+            ("python - <<PY\n    print('ok')\n    PY", "python -"),
+        )
+        with mock.patch.object(local_shell.os, "name", "nt"):
+            for command, expected_suffix in cases:
+                with self.subTest(command=command):
+                    normalized = local_shell._normalize_windows_python_heredoc(command)
+                    self.assertIn("FromBase64String", normalized)
+                    self.assertTrue(normalized.endswith(f"| {expected_suffix}"))
+                    encoded = normalized.split("FromBase64String('")[1].split("')", 1)[0]
+                    decoded = base64.b64decode(encoded).decode("utf-8")
+                    self.assertEqual(decoded.strip(), "print('$x')" if "'$x'" in command else "print('ok')")
 
     def test_cli_exec_unwraps_nested_powershell_wrapper_on_windows(self):
         process = self._FakeProcess(
@@ -2812,7 +2859,9 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertIn("ok", result)
         self.assertTrue(captured_argv)
         self.assertEqual(captured_argv[0][1:3], ("-NoProfile", "-Command"))
-        self.assertEqual(captured_argv[0][3], "try { $r = 1; Write-Output $r } catch { Write-Output $_ }")
+        self.assertIn("try { $r = 1; Write-Output $r } catch { Write-Output $_ }", captured_argv[0][3])
+        self.assertIn("[Console]::OutputEncoding", captured_argv[0][3])
+
 
     def test_cli_exec_rewrites_posix_null_device_on_windows(self):
         process = self._FakeProcess(

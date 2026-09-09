@@ -1,8 +1,7 @@
 import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
-import base64
-import locale
+import codecs
 import os
 import re
 import shutil
@@ -40,11 +39,7 @@ _WINDOWS_COMMAND_HINTS = {
 }
 
 _WINDOWS_PYTHON_HEREDOC_RE = re.compile(
-    r"^(?P<prefix>[\s\S]*?)(?P<exe>python(?:3(?:\.\d+)?)?|py(?:\.exe)?)"
-    r"(?P<flags>(?:[ \t]+-[^<\r\n]+)*)[ \t]+-[ \t]*<<[ \t]*"
-    r"(?P<quote>['\"]?)(?P<tag>[A-Za-z_][A-Za-z0-9_]*)(?P=quote)[ \t]*\r?\n"
-    r"(?P<body>[\s\S]*?)\r?\n(?P<closing>[ \t]*)(?P=tag)[ \t]*(?:\r?\n|$)"
-    r"(?P<suffix>[\s\S]*)$",
+    r"^\s*(?P<exe>python(?:3(?:\.\d+)?)?)\s*-\s*<<\s*['\"]?(?P<tag>[A-Za-z_][A-Za-z0-9_]*)['\"]?\s*\r?\n(?P<body>[\s\S]*?)\r?\n(?P=tag)\s*$",
     re.IGNORECASE,
 )
 _WINDOWS_POWERSHELL_WRAPPER_RE = re.compile(
@@ -159,26 +154,15 @@ def _normalize_windows_python_heredoc(command: str) -> str:
     if not match:
         return command
 
-    prefix = match.group("prefix")
-    suffix = match.group("suffix")
     exe = match.group("exe")
-    flags = match.group("flags")
-    body = match.group("body").replace("\r\n", "\n").replace("\r", "\n")
-    closing = match.group("closing")
-    if closing:
-        # Bash commonly permits an indented terminator in generated snippets;
-        # preserve Python's relative indentation by removing the same margin.
-        lines = body.split("\n")
-        nonempty = [line for line in lines if line.strip()]
-        if nonempty:
-            margin = min(len(line) - len(line.lstrip(" \t")) for line in nonempty)
-            body = "\n".join(line[margin:] if line.strip() else line for line in lines)
+    body = match.group("body").replace("\r\n", "\n")
+    # PowerShell single-quoted here-string terminator must be at line start.
+    # Indent-breaking sequences are extremely unlikely for generated scripts; if present,
+    # fallback to original command so the model sees a direct error and can correct manually.
+    if "\n'@\n" in f"\n{body}\n":
+        return command
 
-    # Base64 prevents PowerShell from interpreting Python quotes, $, backticks,
-    # braces, or here-string-looking text before it reaches Python.
-    payload = base64.b64encode(body.encode("utf-8")).decode("ascii")
-    converted = f"[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{payload}')) | {exe}{flags} -"
-    return f"{prefix}{converted}{suffix}"
+    return f"@'\n{body}\n'@ | {exe} -"
 
 
 def _strip_nested_windows_powershell_wrapper(command: str) -> str:
@@ -228,11 +212,6 @@ def _prepare_shell_env(command: str) -> dict[str, str]:
     # Best-effort non-interactive mode for CLI tools that support CI semantics.
     env.setdefault("CI", "1")
 
-    if os.name == "nt":
-        # Keep Python child processes on the same UTF-8 protocol as the shell.
-        env.setdefault("PYTHONIOENCODING", "utf-8")
-        env.setdefault("PYTHONUTF8", "1")
-
     if _NPM_LIKE_COMMAND_RE.search(command or ""):
         # Prevent npm/npx confirmation prompts such as "Ok to proceed? (y)".
         env.setdefault("npm_config_yes", "true")
@@ -273,75 +252,6 @@ def classify_cli_command(command: str) -> dict[str, Any]:
 
 def _powershell_executable() -> str:
     return shutil.which("pwsh") or shutil.which("powershell") or "powershell.exe"
-
-
-def _windows_powershell_command(command: str) -> str:
-    """Run PowerShell with UTF-8 input/output for reliable pipe transport."""
-    return (
-        "$utf8 = [System.Text.UTF8Encoding]::new($false); "
-        "$OutputEncoding = $utf8; "
-        "if ($null -ne $PSStyle) { $PSStyle.OutputRendering = 'PlainText' }; "
-        "[Console]::InputEncoding = $utf8; "
-        "[Console]::OutputEncoding = $utf8; "
-        f"& {{ {command} }}"
-    )
-
-
-def _windows_output_encodings() -> tuple[str, ...]:
-    """Return legacy Windows encodings used by commands that ignore UTF-8 settings."""
-    if os.name != "nt":
-        return ("utf-8",)
-    candidates = ["utf-8"]
-    try:
-        # Python UTF-8 mode makes getpreferredencoding(False) return utf-8;
-        # getencoding() still exposes the Windows ANSI code page.
-        candidates.append(locale.getencoding())
-    except (AttributeError, LookupError):
-        pass
-    try:
-        candidates.append(locale.getpreferredencoding(False))
-    except Exception:
-        pass
-    candidates.extend(("cp866", "cp1251"))
-    return tuple(dict.fromkeys(name.lower() for name in candidates if name))
-
-
-class _CliOutputDecoder:
-    """Decode UTF-8 streams incrementally, with a Windows legacy-codepage fallback."""
-
-    def __init__(self) -> None:
-        self._encodings = _windows_output_encodings()
-        self._encoding = self._encodings[0]
-        self._pending = bytearray()
-
-    def decode(self, chunk: bytes, *, final: bool = False) -> str:
-        if not chunk and not final:
-            return ""
-        self._pending.extend(chunk)
-        raw = bytes(self._pending)
-        try:
-            text = raw.decode(self._encoding, errors="strict")
-        except UnicodeDecodeError as exc:
-            # Keep an incomplete UTF-8 character for the next pipe chunk.
-            if self._encoding == "utf-8" and not final and exc.end == len(raw):
-                return ""
-            prefix = raw[:exc.start].decode(self._encoding, errors="strict")
-            suffix = raw[exc.start:]
-            self._encoding = next(
-                (encoding for encoding in self._encodings[1:] if _can_decode(suffix, encoding)),
-                "utf-8",
-            )
-            text = prefix + suffix.decode(self._encoding, errors="replace")
-        self._pending.clear()
-        return text
-
-
-def _can_decode(data: bytes, encoding: str) -> bool:
-    try:
-        data.decode(encoding, errors="strict")
-    except (LookupError, UnicodeDecodeError):
-        return False
-    return True
 
 
 def _windows_subprocess_kwargs() -> dict[str, Any]:
@@ -493,8 +403,7 @@ async def cli_exec(
                 _powershell_executable(),
                 "-NoProfile",
                 "-Command",
-                _windows_powershell_command(normalized_command),
-
+                normalized_command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.DEVNULL,
@@ -527,9 +436,9 @@ async def cli_exec(
             if reader is None:
                 await chunk_queue.put((stream_name, None))
                 return
-            # Decode UTF-8 incrementally; on Windows, fall back to the
-            # system code page for older commands that ignore UTF-8 settings.
-            decoder = _CliOutputDecoder()
+            # Incremental decoder: multi-byte UTF-8 characters split across chunk
+            # boundaries are reassembled instead of being replaced with U+FFFD.
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
             try:
                 while True:
                     chunk = await reader.read(8192)
@@ -540,7 +449,6 @@ async def cli_exec(
                         continue
                     await chunk_queue.put((stream_name, text))
                 tail = decoder.decode(b"", final=True)
-
                 if tail:
                     await chunk_queue.put((stream_name, tail))
             finally:
