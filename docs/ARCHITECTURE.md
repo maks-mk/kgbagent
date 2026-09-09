@@ -68,3 +68,5 @@ main.py
 - `.agent_state/session.json` — активная сессия
 - `.agent_state/session_index.json` — индекс всех сессий
 - `logs/runs/` — JSONL-логи каждого запуска
+
+В состоянии графа хранятся два списка сообщений: `messages` (контекст LLM, сжимается автосуммаризацией) и `transcript_messages` (полная append-only история переписки для UI). Compaction удаляет сообщения только из `messages`; новые assistant/tool/error-сообщения пишутся в оба списка с дедупликацией по ID. Legacy-сессии без `transcript_messages` получают bootstrap из текущих `messages` при первом сжатии.
