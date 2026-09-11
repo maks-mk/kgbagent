@@ -5285,7 +5285,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(worker._is_busy)
 
-    async def test_run_graph_payload_success_refreshes_transcript_payload(self):
+    async def test_run_graph_payload_success_refreshes_metadata_without_reloading_transcript(self):
         worker = gui_runtime.AgentRunWorker()
         worker.agent_app = type(
             "DummyApp",
@@ -5322,7 +5322,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             await worker._run_graph_payload({"messages": []})
 
         worker.store.save_active_session.assert_called_once_with(worker.current_session, touch=True, set_active=True)
-        emit_session_mock.assert_awaited_once_with(include_transcript=True)
+        emit_session_mock.assert_awaited_once_with(include_transcript=False)
         self.assertFalse(worker._is_busy)
 
     def test_stop_background_process_denies_external_pid_by_default(self):

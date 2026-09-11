@@ -39,7 +39,6 @@ class SidebarController:
             return
         self.window.composer.set_history_session(session_id)
         self.window.current_turn = None
-        self.window.transcript.clear_transcript()
         self.window._clear_draft_image_attachments()
         self.window._clear_composer_notice()
         self.window._set_session_cache_hit_tokens(0)

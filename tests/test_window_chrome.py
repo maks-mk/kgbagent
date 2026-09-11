@@ -52,3 +52,38 @@ class DialogChromeTests(unittest.TestCase):
         install_dialog_chrome(self.app)
         self.assertIs(previous, self.app._dialog_chrome_filter)
         self.assertTrue(self.app.testAttribute(Qt.ApplicationAttribute.AA_DontUseNativeDialogs))
+
+
+class MainWindowTitleBarTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_window_controls_and_title(self):
+        from PySide6.QtWidgets import QLabel
+        from PySide6.QtTest import QTest
+        from ui.widgets.window_chrome import MainWindowTitleBar
+
+        window = QMainWindow()
+        window.setWindowFlag(Qt.WindowType.FramelessWindowHint)
+        bar = MainWindowTitleBar(window)
+        window.setMenuWidget(bar)
+        window.show()
+        try:
+            window.setWindowTitle("Updated title")
+            self.assertEqual(bar.findChild(QLabel, "DialogWindowTitle").text(), "Updated title")
+            bar.maximize_button.click()
+            self.assertTrue(window.isMaximized())
+            self.assertEqual(bar.maximize_button.accessibleName(), "Restore window")
+            bar.maximize_button.click()
+            self.assertFalse(window.isMaximized())
+            QTest.mouseDClick(bar, Qt.MouseButton.LeftButton)
+            self.assertTrue(window.isMaximized())
+            bar.minimize_button.click()
+            self.assertTrue(window.isMinimized())
+            window.showNormal()
+            bar.findChild(QToolButton, "WindowCloseButton").click()
+            self.assertFalse(window.isVisible())
+        finally:
+            window.close()
+            window.deleteLater()

@@ -305,6 +305,8 @@ class ConversationTurnWidget(QWidget):
 
 
 class ChatTranscriptWidget(QWidget):
+    HISTORY_BATCH_SIZE = 10
+
     def __init__(self) -> None:
         super().__init__()
         self._auto_follow_enabled = True
@@ -313,6 +315,17 @@ class ChatTranscriptWidget(QWidget):
         self._programmatic_scroll = False
         self._range_follow_ticket = 0
         self._range_follow_force = False
+        self._scroll_timer = QTimer(self)
+        self._scroll_timer.setSingleShot(True)
+        self._scroll_timer.timeout.connect(self._flush_pending_scroll)
+        self._older_turns: list[dict[str, Any]] = []
+        self._history_button = None
+        self._loading_history = False
+        self._history_anchor = None
+        self._restoring_history_anchor = False
+        self._history_anchor_timer = QTimer(self)
+        self._history_anchor_timer.setSingleShot(True)
+        self._history_anchor_timer.timeout.connect(self._restore_history_anchor)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
@@ -355,15 +368,22 @@ class ChatTranscriptWidget(QWidget):
         self.jump_to_latest_button.clicked.connect(self.scroll_to_bottom)
 
     def clear_transcript(self) -> None:
+        self._scroll_timer.stop()
+        self._history_anchor_timer.stop()
+        self._older_turns = []
+        self._history_button = None
+        self._loading_history = False
+        self._history_anchor = None
         while self.layout.count() > 1:
             item = self.layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.hide()
                 widget.deleteLater()
         self._auto_follow_enabled = True
         self._pending_scroll = False
         self._pending_force_scroll = False
-        self._range_follow_ticket = 0
+        self._range_follow_ticket += 1
         self._range_follow_force = False
         self.jump_to_latest_button.setVisible(False)
 
@@ -379,6 +399,7 @@ class ChatTranscriptWidget(QWidget):
         return None
 
     def start_turn(self, user_text: str, attachments: list[dict[str, Any]] | None = None) -> ConversationTurnWidget:
+        self._history_anchor = None
         turn = ConversationTurnWidget(user_text, attachments=attachments, parent=self.column)
         self.layout.insertWidget(self.layout.count() - 1, turn)
         self.notify_content_changed(force=True)
@@ -392,22 +413,94 @@ class ChatTranscriptWidget(QWidget):
         try:
             self.clear_transcript()
             payload = payload or {}
-            for turn_data in payload.get("turns", []) or []:
-                user_text = str(turn_data.get("user_text", "") or "")
-                attachments = list(turn_data.get("attachments", []) or [])
-                turn = ConversationTurnWidget(user_text, attachments=attachments, parent=self.column)
-                turn.setUpdatesEnabled(False)
-                turn.setVisible(False)
-                turn.restore_blocks(list(turn_data.get("blocks", []) or []))
-                self.layout.insertWidget(self.layout.count() - 1, turn)
-                turn.setUpdatesEnabled(True)
-                turn.setVisible(True)
+            turns = list(payload.get("turns", []) or [])
+            self._older_turns = turns[:-self.HISTORY_BATCH_SIZE]
+            if self._older_turns:
+                self._history_button = QPushButton(self.column)
+                self._history_button.setObjectName("TranscriptJumpButton")
+                self._history_button.clicked.connect(self.load_older_turns)
+                self.layout.insertWidget(0, self._history_button)
+                self._update_history_button()
+            for turn_data in turns[-self.HISTORY_BATCH_SIZE:]:
+                self._insert_restored_turn(turn_data, self.layout.count() - 1)
         finally:
             self.column.setUpdatesEnabled(True)
             self.container.setUpdatesEnabled(True)
             self.scroll.setUpdatesEnabled(True)
             self.setUpdatesEnabled(True)
         self.notify_content_changed(force=True)
+
+    def _insert_restored_turn(self, data: dict[str, Any], index: int) -> None:
+        turn = ConversationTurnWidget(
+            str(data.get("user_text", "") or ""),
+            attachments=list(data.get("attachments", []) or []), parent=self.column,
+        )
+        turn.hide()
+        turn.restore_blocks(list(data.get("blocks", []) or []))
+        self.layout.insertWidget(index, turn)
+        turn.show()
+
+    def _update_history_button(self) -> None:
+        if self._history_button is not None:
+            self._history_button.setText(
+                "Loading earlier messages…" if self._loading_history
+                else f"Load earlier messages ({len(self._older_turns)})"
+            )
+            self._history_button.setEnabled(not self._loading_history)
+            self._history_button.setVisible(bool(self._older_turns))
+
+    def load_older_turns(self) -> None:
+        if self._loading_history or not self._older_turns:
+            return
+        # Anchor an existing widget rather than a scroll-range estimate: wrapped
+        # Markdown has variable heights and the history button may disappear.
+        anchor = self.layout.itemAt(1).widget()
+        self._history_anchor = (
+            anchor, anchor.mapTo(self.scroll.viewport(), anchor.rect().topLeft()).y()
+        )
+        self._scroll_timer.stop()
+        self._pending_scroll = False
+        self._range_follow_ticket += 1
+        self._range_follow_force = False
+        self._pending_force_scroll = False
+        self._auto_follow_enabled = False
+        self._loading_history = True
+        self._update_history_button()
+        # Paint the busy label before synchronous widget construction blocks
+        # painting. Do not pump unrelated input/timer events here.
+        self._history_button.repaint()
+        self.setUpdatesEnabled(False)
+        self._programmatic_scroll = True
+        try:
+            batch = self._older_turns[-self.HISTORY_BATCH_SIZE:]
+            del self._older_turns[-self.HISTORY_BATCH_SIZE:]
+            for index, data in enumerate(batch, 1):
+                self._insert_restored_turn(data, index)
+            self._update_history_button()
+            self.layout.activate()
+            self.container.layout().activate()
+            self._restore_history_anchor()
+        finally:
+            self._programmatic_scroll = False
+            self._loading_history = False
+            self._update_history_button()
+            self.setUpdatesEnabled(True)
+        self._update_jump_button()
+
+    def _restore_history_anchor(self) -> None:
+        if self._history_anchor is None or self._restoring_history_anchor:
+            return
+        self._restoring_history_anchor = True
+        anchor, viewport_y = self._history_anchor
+        was_programmatic = self._programmatic_scroll
+        self._programmatic_scroll = True
+        try:
+            delta = anchor.mapTo(self.scroll.viewport(), anchor.rect().topLeft()).y() - viewport_y
+            scrollbar = self.scroll.verticalScrollBar()
+            scrollbar.setValue(scrollbar.value() + delta)
+        finally:
+            self._programmatic_scroll = was_programmatic
+            self._restoring_history_anchor = False
 
     @property
     def auto_follow_enabled(self) -> bool:
@@ -420,16 +513,26 @@ class ChatTranscriptWidget(QWidget):
     def _handle_scrollbar_value_changed(self, _value: int) -> None:
         if self._programmatic_scroll:
             return
+        # QScrollBar also emits valueChanged when layout changes clamp its
+        # range. That is not a user scroll and must not release the anchor.
+        if self._history_anchor is not None and self._history_anchor_timer.isActive():
+            return
+        self._history_anchor = None
         self._auto_follow_enabled = self.is_near_bottom()
         if not self._auto_follow_enabled:
             self._range_follow_force = False
         self._update_jump_button()
 
     def _handle_scrollbar_range_changed(self, _minimum: int, _maximum: int) -> None:
+        if self._history_anchor is not None:
+            self._history_anchor_timer.start(0)
+            self._update_jump_button()
+            return
         if not self._range_follow_ticket:
             self._update_jump_button()
             return
-        self._follow_to_bottom(self._range_follow_ticket)
+        ticket = self._range_follow_ticket
+        QTimer.singleShot(0, self, lambda: self._follow_to_bottom(ticket))
 
     def notify_content_changed(self, *, force: bool = False) -> None:
         self.queue_scroll_to_bottom(force=force)
@@ -440,13 +543,13 @@ class ChatTranscriptWidget(QWidget):
         if self._pending_scroll:
             return
         self._pending_scroll = True
-        QTimer.singleShot(0, self._flush_pending_scroll)
+        self._scroll_timer.start(0)
 
     def _flush_pending_scroll(self) -> None:
         self._pending_scroll = False
         force = self._pending_force_scroll
         self._pending_force_scroll = False
-        if not force and not self._auto_follow_enabled:
+        if self._history_anchor is not None or (not force and not self._auto_follow_enabled):
             self._range_follow_ticket += 1
             self._range_follow_force = False
             return
@@ -469,11 +572,11 @@ class ChatTranscriptWidget(QWidget):
         ticket = self._range_follow_ticket
         follow_delays = (0, 20, 80)
         for delay in follow_delays:
-            QTimer.singleShot(delay, lambda current=ticket: self._follow_to_bottom(current))
-        QTimer.singleShot(max(follow_delays) + 12, lambda current=ticket: self._finish_follow_up(current))
+            QTimer.singleShot(delay, self, lambda current=ticket: self._follow_to_bottom(current))
+        QTimer.singleShot(max(follow_delays) + 12, self, lambda current=ticket: self._finish_follow_up(current))
 
     def _follow_to_bottom(self, ticket: int) -> None:
-        if ticket != self._range_follow_ticket:
+        if ticket != self._range_follow_ticket or self._history_anchor is not None:
             return
         if not self._range_follow_force and not self._auto_follow_enabled:
             return
@@ -487,6 +590,8 @@ class ChatTranscriptWidget(QWidget):
         self._range_follow_force = False
 
     def scroll_to_bottom(self) -> None:
+        self._scroll_timer.stop()
+        self._history_anchor = None
         self._pending_scroll = False
         self._pending_force_scroll = False
         self._scrollbar_to_bottom()

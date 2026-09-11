@@ -822,7 +822,9 @@ class AgentRunWorker(QObject):
                     if self.current_session is not None:
                         self.current_session.last_run_stats = str(result.stats or "")
                     self.store.save_active_session(self.current_session, touch=True, set_active=True)
-                    await self._emit_session_payload(include_transcript=True)
+                    # Stream events already rendered this run. Reloading the persisted
+                    # transcript here rebuilds widgets and resets the reading position.
+                    await self._emit_session_payload(include_transcript=False)
                     self._active_run_elapsed_seconds = 0.0
                     self._active_request_has_images = False
                     self._set_busy(False)
