@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Any
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QSize, QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen, QStandardItem
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen, QStandardItem
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -25,9 +25,11 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QSplitter,
     QStyle,
     QStyleOptionButton,
+    QStyleOptionSlider,
     QTabWidget,
     QToolButton,
     QVBoxLayout,
@@ -233,6 +235,70 @@ class ResponsiveProfileList(QListWidget):
         self._fit_items_to_viewport()
 
 
+class _SliderScaleWidget(QWidget):
+    """Scale labels aligned with a QSlider's handle positions.
+
+    QSlider draws its built-in ticks across the full groove width, but the
+    handle travels a reduced span (groove width minus handle width). This
+    widget mirrors the style's handle-position formula so every label sits
+    exactly under the handle position for its value.
+    """
+
+    def __init__(self, slider: QSlider, labels: tuple[str, ...], values: tuple[int, ...], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._slider = slider
+        self._labels = tuple(labels)
+        self._values = tuple(values)
+        self.setMinimumHeight(18)
+
+    def _handle_center_x(self, value: int) -> float:
+        """X coordinate of the slider handle center for the given value."""
+        slider = self._slider
+        opt = QStyleOptionSlider()
+        slider.initStyleOption(opt)
+        groove = slider.style().subControlRect(QStyle.ComplexControl.CC_Slider, opt, QStyle.SubControl.SC_SliderGroove, slider)
+        handle = slider.style().subControlRect(QStyle.ComplexControl.CC_Slider, opt, QStyle.SubControl.SC_SliderHandle, slider)
+        # Map the scale value into slider units (the slider works in steps).
+        slider_min, slider_max = slider.minimum(), slider.maximum()
+        value_min, value_max = min(self._values), max(self._values)
+        fraction = (value - value_min) / (value_max - value_min) if value_max > value_min else 0.0
+        slider_value = slider_min + fraction * (slider_max - slider_min)
+        span = groove.width() - handle.width()
+        return groove.left() + handle.width() / 2 + span * (slider_value - slider_min) / (slider_max - slider_min)
+
+    def _slider_left_offset(self) -> int:
+        """X offset of the slider's groove start relative to this widget."""
+        slider = self._slider
+        opt = QStyleOptionSlider()
+        slider.initStyleOption(opt)
+        groove = slider.style().subControlRect(QStyle.ComplexControl.CC_Slider, opt, QStyle.SubControl.SC_SliderGroove, slider)
+        return groove.left()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setPen(QColor(TEXT_MUTED))
+        font = self._slider.font()
+        metrics = QFontMetrics(font)
+        slider_offset = self._slider_left_offset()
+        for label, value in zip(self._labels, self._values):
+            x = slider_offset + self._handle_center_x(value)
+            text_width = metrics.horizontalAdvance(label)
+            # First label anchors left-aligned at its tick, last label
+            # right-aligned, middle labels centered — keeps the scale inside
+            # the widget bounds while pointing at the handle positions.
+            if value == min(self._values):
+                draw_x = x
+            elif value == max(self._values):
+                draw_x = x - text_width
+            else:
+                draw_x = x - text_width / 2
+            painter.drawText(int(draw_x), int(self.height() * 0.75), label)
+        painter.end()
+
+    def sizeHint(self) -> QSize:
+        return QSize(self._slider.sizeHint().width(), 18)
+
+
 class ModelSettingsDialog(QDialog):
     profiles_saved = Signal(object)
     # Emitted when the panel is shown/hidden so the main window can block its
@@ -350,6 +416,7 @@ class ModelSettingsDialog(QDialog):
         models_page_layout.setSpacing(0)
         self.test_page = QWidget()
         self.test_page.setAccessibleName("Test settings")
+        self._build_test_page()
         self.tabs.addTab(self.models_page, _fa_icon("fa5s.cubes", color=TEXT_MUTED, size=14), "Models")
         self.tabs.addTab(self.test_page, _fa_icon("fa5s.flask", color=TEXT_MUTED, size=14), "Test")
         root.addWidget(self.tabs, 1)
@@ -690,6 +757,104 @@ class ModelSettingsDialog(QDialog):
 
     def result_payload(self) -> dict[str, Any]:
         return dict(self._result_payload)
+
+    # --- Test tab: SESSION_SIZE slider ---
+
+    SESSION_SIZE_MIN = 10_000
+    SESSION_SIZE_MAX = 256_000
+    # 2000 divides the 10k..256k span exactly, so every scale label (64k,
+    # 128k, 192k, 256k) lands on a reachable slider position.
+    SESSION_SIZE_STEP = 2_000
+
+    def _build_test_page(self) -> None:
+        layout = QVBoxLayout(self.test_page)
+        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setSpacing(10)
+
+        title = QLabel("Session memory")
+        title.setObjectName("ModelSettingsSectionTitle")
+        layout.addWidget(title)
+
+        description = QLabel(
+            "SESSION_SIZE — estimated input context tokens before the agent summarizes "
+            "older history. Higher values keep more live context; lower values compress sooner."
+        )
+        description.setObjectName("ModelSettingsMeta")
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        value_row = QHBoxLayout()
+        value_row.setSpacing(8)
+        self.session_size_value_label = QLabel()
+        self.session_size_value_label.setObjectName("ModelSettingsMeta")
+        value_row.addStretch(1)
+        value_row.addWidget(self.session_size_value_label)
+        layout.addLayout(value_row)
+
+        self.session_size_slider = QSlider(Qt.Orientation.Horizontal)
+        self.session_size_slider.setAccessibleName("Session size")
+        self.session_size_slider.setAccessibleDescription(
+            "Adjust SESSION_SIZE from 10k to 256k estimated context tokens"
+        )
+        self.session_size_slider.setRange(
+            self.SESSION_SIZE_MIN // self.SESSION_SIZE_STEP,
+            self.SESSION_SIZE_MAX // self.SESSION_SIZE_STEP,
+        )
+        self.session_size_slider.setSingleStep(1)
+        self.session_size_slider.setPageStep(1)
+        self.session_size_slider.valueChanged.connect(self._on_session_size_changed)
+        layout.addWidget(self.session_size_slider)
+
+        # Custom scale: QSlider's built-in ticks are drawn across the full
+        # groove width while the handle travels a reduced span (groove minus
+        # handle width), so built-in ticks and evenly-spread labels never line
+        # up with the handle. This scale widget positions each label using the
+        # same handle-position formula the style uses.
+        self.session_size_scale = _SliderScaleWidget(
+            self.session_size_slider,
+            labels=("10k", "64k", "128k", "192k", "256k"),
+            values=(10_000, 64_000, 128_000, 192_000, 256_000),
+        )
+        layout.addWidget(self.session_size_scale)
+
+        layout.addStretch(1)
+
+        self._session_size = self._initial_session_size()
+        self._sync_session_size_slider()
+
+    def _initial_session_size(self) -> int:
+        """Resolve SESSION_SIZE: config.json first, then .env, then the model default."""
+        raw = self._result_payload.get("session_size") if isinstance(self._result_payload, dict) else None
+        if raw is not None:
+            try:
+                return self._clamp_session_size(int(float(raw)))
+            except (TypeError, ValueError):
+                pass
+        from core.config import AgentConfig
+
+        try:
+            # AgentConfig resolves config.json first, then .env (see
+            # settings_customise_sources), which is exactly the startup order.
+            resolved = AgentConfig()
+            return self._clamp_session_size(int(resolved.summary_threshold))
+        except Exception:
+            return self._clamp_session_size(int(AgentConfig.model_fields["summary_threshold"].default or 0))
+
+    def _clamp_session_size(self, value: int) -> int:
+        step = self.SESSION_SIZE_STEP
+        clamped = max(self.SESSION_SIZE_MIN, min(self.SESSION_SIZE_MAX, value))
+        return (clamped // step) * step
+
+    def _sync_session_size_slider(self) -> None:
+        self.session_size_slider.setValue(self._session_size // self.SESSION_SIZE_STEP)
+        self._update_session_size_label()
+
+    def _update_session_size_label(self) -> None:
+        self.session_size_value_label.setText(f"{self._session_size // 1000}k tokens")
+
+    def _on_session_size_changed(self, slider_value: int) -> None:
+        self._session_size = slider_value * self.SESSION_SIZE_STEP
+        self._update_session_size_label()
 
     def refresh_active_selection(self, payload: dict[str, Any]) -> None:
         """Select the currently active profile when the panel is (re)shown."""
@@ -1928,7 +2093,13 @@ class ModelSettingsDialog(QDialog):
         enabled_ids = [item["id"] for item in profiles if bool(item.get("enabled", True))]
         if active not in enabled_ids:
             active = enabled_ids[0] if enabled_ids else ""
-        return {"active_profile": active or None, "profiles": profiles}
+        payload = {"active_profile": active or None, "profiles": profiles}
+        # Carry the Test-tab SESSION_SIZE override through normalization so it
+        # is persisted alongside the profiles in .agent_state/config.json.
+        session_size = getattr(self, "_session_size", None)
+        if session_size is not None:
+            payload["session_size"] = int(session_size)
+        return payload
 
     def _persist_profiles(self, message: str) -> bool:
         validated = self._validated_payload()

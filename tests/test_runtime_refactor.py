@@ -1253,6 +1253,9 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                 OPENAI_MODEL="openai/gpt-oss-120b",
                 OPENAI_BASE_URL="https://openrouter.ai/api/v1",
                 MODEL_REASONING_EFFORT="xhigh",
+                # Hermetic: a local .env with LLM_API_MODE=responses must not
+                # leak into this test of the default (chat) API mode.
+                _env_file=None,
             )
         )
 
@@ -1588,6 +1591,9 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                     OPENAI_MODEL="gpt-5-mini",
                     OPENAI_BASE_URL="https://api.openai.com/v1",
                     MODEL_REASONING_EFFORT="none",
+                    # Hermetic: a local .env with LLM_API_MODE=responses would
+                    # add a `reasoning` kwarg and break the chat-mode expectation.
+                    _env_file=None,
                 )
             )
 

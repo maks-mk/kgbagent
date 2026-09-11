@@ -303,6 +303,13 @@ class RuntimeSessionCoordinator:
         overrides = self.config_overrides_for_profile(active_profile)
         if getattr(self.worker, "profile_store", None) is not None:
             overrides["model_profile_config_path"] = self.worker.profile_store.path
+        # Apply the UI-saved SESSION_SIZE override from config.json.
+        session_size = model_profiles.get("session_size") if isinstance(model_profiles, dict) else None
+        if session_size is not None:
+            try:
+                overrides["summary_threshold"] = int(float(session_size))
+            except (TypeError, ValueError):
+                pass
         base_values.update(overrides)
         return base.__class__(**base_values)
 

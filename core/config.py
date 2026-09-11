@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional, Union
 
 from pydantic import Field, PrivateAttr, SecretStr, model_validator, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, JsonConfigSettingsSource, PydanticBaseSettingsSource, SettingsConfigDict
 
 from core.constants import BASE_DIR
 
@@ -88,6 +88,28 @@ class AgentConfig(BaseSettings):
         populate_by_name=True,
         case_sensitive=False,
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # Priority: explicit init kwargs and real env vars first, then
+        # .agent_state/config.json (UI-saved overrides such as SESSION_SIZE),
+        # then the .env file. The JSON file wins over .env but never over
+        # process environment variables. profile_store takes care to preserve
+        # the session_size key when it rewrites config.json.
+        return (
+            init_settings,
+            env_settings,
+            JsonConfigSettingsSource(settings_cls, json_file=BASE_DIR / ".agent_state" / "config.json"),
+            dotenv_settings,
+            file_secret_settings,
+        )
 
     # Paths
     prompt_path: Path = Field(default_factory=lambda: _existing_path_or_default("prompt.txt"), alias="PROMPT_PATH")

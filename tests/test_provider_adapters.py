@@ -517,7 +517,10 @@ class LlmApiModeTests(unittest.TestCase):
             # Remove LLM_API_MODE if explicitly None to test default
             if api_mode is None:
                 os.environ.pop("LLM_API_MODE", None)
-            return AgentConfig()
+            # _env_file=None keeps the test hermetic: without it the local
+            # developer .env (e.g. LLM_API_MODE=responses) leaks in and
+            # breaks the "default is chat" expectation.
+            return AgentConfig(_env_file=None)
 
     def test_default_is_chat(self):
         cfg = self._make_config(None)

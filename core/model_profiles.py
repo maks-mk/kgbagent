@@ -210,10 +210,18 @@ def normalize_profiles_payload(payload: Any) -> dict[str, Any]:
     if active_profile not in enabled_ids:
         active_profile = enabled_ids[0] if enabled_ids else ""
 
-    return {
+    normalized: dict[str, Any] = {
         "active_profile": active_profile or None,
         "profiles": profiles,
     }
+
+    # Preserve non-profile UI settings stored in config.json (e.g. SESSION_SIZE
+    # managed by the Settings dialog) so profile rewrites never drop them.
+    raw_session_size = raw_payload.get("session_size")
+    if raw_session_size is not None:
+        normalized["session_size"] = raw_session_size
+
+    return normalized
 
 
 def bootstrap_profiles_from_env(env: Mapping[str, str] | None = None) -> dict[str, Any]:
@@ -360,12 +368,15 @@ def merge_profiles_with_env(existing_payload: Any, env_payload: Any) -> dict[str
     if not active_profile:
         active_profile = _clean_text(env_normalized.get("active_profile"))
 
-    return normalize_profiles_payload(
-        {
-            "active_profile": active_profile or None,
-            "profiles": merged_profiles,
-        }
-    )
+    merged_payload: dict[str, Any] = {
+        "active_profile": active_profile or None,
+        "profiles": merged_profiles,
+    }
+    # Keep the UI-saved SESSION_SIZE override when merging env bootstrap
+    # data back into the stored payload.
+    if "session_size" in current:
+        merged_payload["session_size"] = current["session_size"]
+    return normalize_profiles_payload(merged_payload)
 
 
 class ModelProfileStore:
