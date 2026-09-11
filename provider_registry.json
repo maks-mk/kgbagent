@@ -8,6 +8,7 @@
       "priority": 100,
       "match": [
         "api.openai.com",
+		"agentrouter.org",
 		"api.ashna.ai"
       ],
       "match_type": "exact",
@@ -538,7 +539,6 @@
       "enabled": true,
       "priority": 60,
       "match": [
-        "agentrouter.org",
         "apimaster.ai",
         "true-sota.com",
 		"tokenbom.com"

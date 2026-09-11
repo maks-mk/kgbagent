@@ -25,7 +25,7 @@ from langchain_core.outputs import ChatResult
 
 from core.config import AgentConfig
 from core.http_headers import load_openai_headers
-from core.providers.base import normalized_reasoning_effort
+from core.providers.base import normalized_reasoning_effort, normalized_model_name
 from core.provider_registry import (
     ProviderRegistry,
     build_reasoning_kwargs,
@@ -564,6 +564,19 @@ def _build_reasoning_debug_chat_openai(base_cls: type) -> type:
 # ---------------------------------------------------------------------------
 
 
+# Models that reject the ``temperature`` parameter: reasoning-only models with
+# fixed sampling. Sending it causes a 400 from the API.
+_FIXED_SAMPLING_OPENAI_MODELS = frozenset({"gpt-6-astra"})
+
+
+def _openai_uses_fixed_sampling(model_name: str | None) -> bool:
+    """Match OpenAI-compatible models that reject custom sampling controls."""
+    normalized = normalized_model_name(model_name).rsplit("/", 1)[-1]
+    if len(normalized) > 4 and normalized[-4] == "-" and normalized[-3:].isdigit():
+        normalized = normalized[:-4]
+    return normalized in _FIXED_SAMPLING_OPENAI_MODELS
+
+
 def create_openai_chat_model(config: AgentConfig, *, api_key_override: str | None = None) -> BaseChatModel:
     """Build an OpenAI-compatible chat model with reasoning-debug instrumentation."""
     # Lazy import to avoid loading both providers on startup.
@@ -579,7 +592,6 @@ def create_openai_chat_model(config: AgentConfig, *, api_key_override: str | Non
         api_key = str(api_key_override or "")
     openai_kwargs: dict[str, Any] = {
         "model": config.openai_model,
-        "temperature": config.temperature,
         "api_key": api_key,
         "base_url": config.openai_base_url,
         "default_headers": load_openai_headers(),
@@ -588,6 +600,9 @@ def create_openai_chat_model(config: AgentConfig, *, api_key_override: str | Non
         "max_retries": 0,
         "stream_usage": True,
     }
+    # gpt-6-astra and other fixed-sampling models reject ``temperature``.
+    if not _openai_uses_fixed_sampling(config.openai_model):
+        openai_kwargs["temperature"] = config.temperature
 
     # Explicit API mode selection: "responses" forces /v1/responses, "chat" forces
     # /v1/chat/completions. When omitted, LangChain auto-detects based on payload.

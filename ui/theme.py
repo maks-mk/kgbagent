@@ -1499,8 +1499,12 @@ def build_stylesheet() -> str:
     /* ---- Composer pill ---- */
     QFrame#ComposerPill {{
         background: {_COMPOSER_BG};
-        border: none;
+        border: 1px solid {_COMPOSER_BORDER};
         border-radius: 18px;
+    }}
+
+    QFrame#ComposerPill:hover {{
+        border: 1px solid {blend_hex(_COMPOSER_BORDER, "#FFFFFF", 0.18)};
     }}
 
     QPushButton#UserChoiceOptionButton,
@@ -1544,6 +1548,11 @@ def build_stylesheet() -> str:
         border-radius: 10px;
         padding: 4px 2px 2px 2px;
         font-size: 10.5pt;
+    }}
+
+    QPlainTextEdit#ComposerEdit:focus {{
+        background: transparent;
+        border: none;
     }}
 
     QPlainTextEdit#ComposerEdit QScrollBar:vertical {{

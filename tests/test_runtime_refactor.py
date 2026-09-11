@@ -1002,6 +1002,47 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("top_p", captured)
         self.assertNotIn("top_k", captured)
 
+    def test_create_llm_for_gpt_6_astra_does_not_send_temperature(self):
+        captured = {}
+
+        class FakeChatOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with mock.patch.dict(sys.modules, {"langchain_openai": mock.Mock(ChatOpenAI=FakeChatOpenAI)}):
+            create_llm(
+                self._make_config(
+                    PROVIDER="openai",
+                    OPENAI_API_KEY="sk-test",
+                    OPENAI_MODEL="gpt-6-astra",
+                    OPENAI_BASE_URL="https://api.openai.com/v1",
+                    TEMPERATURE=0.4,
+                )
+            )
+
+        self.assertNotIn("temperature", captured)
+        self.assertEqual(captured["model"], "gpt-6-astra")
+
+    def test_create_llm_for_regular_openai_model_still_sends_temperature(self):
+        captured = {}
+
+        class FakeChatOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with mock.patch.dict(sys.modules, {"langchain_openai": mock.Mock(ChatOpenAI=FakeChatOpenAI)}):
+            create_llm(
+                self._make_config(
+                    PROVIDER="openai",
+                    OPENAI_API_KEY="sk-test",
+                    OPENAI_MODEL="gpt-4o",
+                    OPENAI_BASE_URL="https://api.openai.com/v1",
+                    TEMPERATURE=0.4,
+                )
+            )
+
+        self.assertEqual(captured["temperature"], 0.4)
+
     async def test_register_llm_cleanup_callback_closes_async_client(self):
         registry = ToolRegistry(self._make_config())
         fake_client = mock.AsyncMock()
