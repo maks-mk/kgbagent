@@ -122,12 +122,36 @@ def build_stylesheet() -> str:
         background: {SURFACE_BG};
     }}
 
+    QDialog[applicationDialog="true"] {{
+        background: {SURFACE_CARD};
+        border: 1px solid {BORDER};
+    }}
+
+    QDialog[applicationDialog="true"] QLabel,
+    QWidget#DialogTitleBar {{
+        background: transparent;
+        border: none;
+    }}
+
+    QLabel#DialogWindowTitle {{
+        color: {TEXT_PRIMARY};
+        font-weight: 600;
+    }}
+
     QFrame#SidebarCard,
     QFrame#StatusCard,
     QFrame#NoticeCard {{
         background: {SURFACE_CARD};
         border: none;
         border-radius: {SOFT_RADIUS_MD}px;
+    }}
+
+    QFrame#SidebarCard {{
+        border: 1px solid {BORDER};
+    }}
+
+    QWidget#SessionSidebar {{
+        background: transparent;
     }}
 
     QFrame#TranscriptMetaChip {{
@@ -865,6 +889,8 @@ def build_stylesheet() -> str:
     }}
 
     QLabel#SidebarSectionTitle {{
+        background: transparent;
+        border: none;
         color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.22)};
         font-weight: 600;
         font-size: 11pt;

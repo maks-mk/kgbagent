@@ -18,6 +18,7 @@ from core.text_utils import format_compact_tokens, prepare_markdown_for_render
 from ui.main_window_state import ComposerStateController, RunStatusController, StreamEventRouter
 from ui.runtime import AgentRuntimeController
 from ui.theme import ACCENT_BLUE, build_stylesheet
+from ui.widgets.window_chrome import install_dialog_chrome
 from ui.widgets import ModelSettingsDialog, _fa_icon
 from ui.window_components.inspector_controller import InspectorController
 from ui.window_components.menu_builder import MenuBuilder
@@ -161,6 +162,7 @@ class MainWindow(QMainWindow):
         root.addWidget(self.workspace, 1)
 
         self.setCentralWidget(central)
+        install_dialog_chrome(QApplication.instance())
         self.setStyleSheet(build_stylesheet())
         self.inspector_container.hide()
         self.inspector_collapsed = True

@@ -421,6 +421,7 @@ class SessionSidebarWidget(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        self.setObjectName("SessionSidebar")
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(6)
