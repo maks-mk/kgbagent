@@ -3243,7 +3243,7 @@ class GuiUxTests(unittest.TestCase):
         self.assertIn(SURFACE_CARD, stylesheet)
         self.assertIn(TEXT_MUTED, stylesheet)
 
-    def test_settings_dock_does_not_expand_window_past_requested_width(self):
+    def test_settings_window_stays_within_screen_and_does_not_resize_main_window(self):
         for width in (900, 1024, 1280, 1366, 1920):
             with self.subTest(width=width):
                 self.window.resize(width, 700)
@@ -3252,17 +3252,57 @@ class GuiUxTests(unittest.TestCase):
                 self.window._open_settings_dialog()
                 self._process_events()
 
-                dock = self.window._model_settings_window
-                self.assertIsNotNone(dock)
-                # The settings panel is a full-window dock: it stretches across
-                # the whole window so its content never overflows the right edge
-                # on narrow windows. It must never widen the window itself.
-                self.assertGreaterEqual(dock.width(), 660)
+                dialog = self.window._model_settings_window
+                self.assertIsNotNone(dialog)
+                # The Settings panel is a frameless top-level window: it must
+                # never widen the main window and must stay inside the screen.
                 self.assertEqual(self.window.width(), width)
-                self.assertLessEqual(dock.x() + dock.width(), self.window.width())
+                available = dialog.screen().availableGeometry()
+                self.assertLessEqual(dialog.x(), available.right())
+                self.assertLessEqual(dialog.y(), available.bottom())
+                self.assertGreaterEqual(dialog.x() + dialog.width(), available.left())
+                self.assertGreaterEqual(dialog.y() + dialog.height(), available.top())
+                self.assertLessEqual(dialog.width(), available.width())
+                self.assertLessEqual(dialog.height(), available.height())
 
                 self.window._open_settings_dialog()
                 self._process_events()
+
+    def test_settings_window_is_frameless_and_centered_on_screen(self):
+        self.window.show()
+        self._process_events()
+        self.window._open_settings_dialog()
+        self._process_events()
+
+        dialog = self.window._model_settings_window
+        self.assertIsNotNone(dialog)
+        self.assertTrue(dialog.windowFlags() & Qt.WindowType.FramelessWindowHint)
+
+        available = dialog.screen().availableGeometry()
+        dialog_center = dialog.frameGeometry().center()
+        # Allow a small tolerance for window-manager frame adjustments.
+        self.assertLessEqual(abs(dialog_center.x() - available.center().x()), 4)
+        self.assertLessEqual(abs(dialog_center.y() - available.center().y()), 4)
+
+    def test_settings_window_blocks_main_window_input(self):
+        self.window.show()
+        self._process_events()
+        self.window._set_input_enabled(True)
+        self._process_events()
+        self.assertTrue(self.window.composer.isEnabled())
+        self.assertTrue(self.window.sidebar.isEnabled())
+
+        self.window._open_settings_dialog()
+        self._process_events()
+        # The panel is a separate top-level window that may overlap the sidebar,
+        # so the main window input must be disabled while it is open.
+        self.assertFalse(self.window.composer.isEnabled())
+        self.assertFalse(self.window.sidebar.isEnabled())
+
+        self.window._model_settings_window.hide()
+        self._process_events()
+        self.assertTrue(self.window.composer.isEnabled())
+        self.assertTrue(self.window.sidebar.isEnabled())
 
     def test_inspector_toggle_collapses_and_restores_right_panel(self):
         self.window.show()
@@ -3836,26 +3876,24 @@ class GuiUxTests(unittest.TestCase):
         self.window.settings_action.trigger()
         self._process_events()
 
-        dock = self.window._model_settings_window
-        dialog = dock.widget()
+        dialog = self.window._model_settings_window
         profile_count = dialog.profile_list.count()
-        self.assertFalse(dock.isHidden())
+        self.assertFalse(dialog.isHidden())
         self.assertGreater(profile_count, 0)
 
         dialog.close_button.click()
         self._process_events()
-        self.assertTrue(dock.isHidden())
-        self.assertIs(dock.widget(), dialog)
+        self.assertTrue(dialog.isHidden())
 
         self.window.settings_action.trigger()
         self._process_events()
-        self.assertFalse(dock.isHidden())
-        self.assertIs(dock.widget(), dialog)
+        self.assertFalse(dialog.isHidden())
+        self.assertIs(self.window._model_settings_window, dialog)
         self.assertEqual(dialog.profile_list.count(), profile_count)
 
         self.window.settings_action.trigger()
         self._process_events()
-        self.assertTrue(dock.isHidden())
+        self.assertTrue(dialog.isHidden())
 
     def test_model_settings_dialog_does_not_wipe_profile_on_initial_selection(self):
         payload = {
@@ -3947,15 +3985,14 @@ class GuiUxTests(unittest.TestCase):
         self.window.settings_action.trigger()
         self._process_events()
 
-        dock = self.window._model_settings_window
-        dialog = dock.widget()
+        dialog = self.window._model_settings_window
         self.assertEqual(dialog._current_row(), 0)
         self.assertIn("gpt-4o", dialog.form_hint.text())
 
         # Switch the active model while the panel is hidden.
         dialog.close_button.click()
         self._process_events()
-        self.assertTrue(dock.isHidden())
+        self.assertTrue(dialog.isHidden())
 
         switched = normalize_profiles_payload(self.window.model_profiles_payload)
         switched["active_profile"] = "gemini-1-5-flash"
@@ -3965,7 +4002,7 @@ class GuiUxTests(unittest.TestCase):
         self.window.settings_action.trigger()
         self._process_events()
 
-        self.assertFalse(dock.isHidden())
+        self.assertFalse(dialog.isHidden())
         self.assertEqual(dialog._current_row(), 1)
         self.assertIn("gemini-1-5-flash", dialog.form_hint.text())
 
@@ -4014,13 +4051,12 @@ class GuiUxTests(unittest.TestCase):
         self.window.settings_action.trigger()
         self._process_events()
 
-        dock = self.window._model_settings_window
-        dialog = dock.widget()
+        dialog = self.window._model_settings_window
         self.assertEqual(self._active_badge_row(dialog), 0)
 
         dialog.close_button.click()
         self._process_events()
-        self.assertTrue(dock.isHidden())
+        self.assertTrue(dialog.isHidden())
 
         switched = normalize_profiles_payload(self.window.model_profiles_payload)
         switched["active_profile"] = "gemini-1-5-flash"
@@ -4030,7 +4066,7 @@ class GuiUxTests(unittest.TestCase):
         self.window.settings_action.trigger()
         self._process_events()
 
-        self.assertFalse(dock.isHidden())
+        self.assertFalse(dialog.isHidden())
         self.assertEqual(dialog._current_row(), 1)
         self.assertEqual(self._active_badge_row(dialog), 1)
 
@@ -4468,7 +4504,7 @@ class GuiUxTests(unittest.TestCase):
         self.addCleanup(dialog.close)
         self._process_events()
 
-        self.assertGreaterEqual(dialog.profile_list.minimumWidth(), 240)
+        self.assertGreaterEqual(dialog.profile_list.minimumWidth(), 300)
 
         first_item_widget = dialog.profile_list.itemWidget(dialog.profile_list.item(0))
         self.assertIsNotNone(first_item_widget)
@@ -4588,8 +4624,8 @@ class GuiUxTests(unittest.TestCase):
         self.assertIs(dialog.tabs.widget(1), dialog.test_page)
         self.assertIsNone(dialog.test_page.layout())
         self.assertLessEqual(dialog.width(), QApplication.primaryScreen().availableGeometry().width())
-        self.assertEqual(dialog.body_splitter.widget(0).minimumWidth(), 280)
-        self.assertEqual(dialog.body_splitter.widget(1).minimumWidth(), 405)
+        self.assertEqual(dialog.body_splitter.widget(0).minimumWidth(), 340)
+        self.assertEqual(dialog.body_splitter.widget(1).minimumWidth(), 440)
         self.assertEqual(dialog.body_splitter.widget(0).sizePolicy().horizontalStretch(), 3)
         self.assertEqual(dialog.body_splitter.widget(1).sizePolicy().horizontalStretch(), 4)
         self.assertIsNotNone(dialog.save_button)

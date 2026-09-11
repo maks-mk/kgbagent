@@ -267,6 +267,22 @@ def build_stylesheet() -> str:
         padding-left: 1px;
     }}
 
+    QPushButton#SettingsCloseButton {{
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: {SOFT_RADIUS_MD + 2}px;
+        padding: 0px;
+    }}
+
+    QPushButton#SettingsCloseButton:hover {{
+        background: {blend_hex(ERROR_RED, SURFACE_ALT, 0.72)};
+        border: 1px solid {blend_hex(ERROR_RED, "#FFFFFF", 0.18)};
+    }}
+
+    QPushButton#SettingsCloseButton:pressed {{
+        background: {blend_hex(ERROR_RED, SURFACE_ALT, 0.55)};
+    }}
+
     QLabel#ModelSettingsSubtitle {{
         color: {model_dialog_muted};
         font-size: 9pt;

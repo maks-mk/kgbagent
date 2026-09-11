@@ -46,7 +46,8 @@
       "enabled": true,
       "priority": 99,
       "match": [
-        "api.deepseek.com"
+        "api.deepseek.com",
+		"tokenharbor.ai"
       ],
       "match_type": "exact",
       "supports_reasoning": true,

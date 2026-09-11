@@ -5,7 +5,7 @@ import json
 from enum import Enum
 from typing import Any
 
-from PySide6.QtCore import QPoint, QPointF, QSize, QThread, QTimer, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QSize, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QStandardItem
 from PySide6.QtWidgets import (
     QApplication,
@@ -61,6 +61,7 @@ from ui.theme import TEXT_MUTED, TEXT_PRIMARY
 from .foundation import (
     CollapsibleSection,
     CopySafePlainTextEdit,
+    ElidedLabel,
     _fa_icon,
     _make_mono_font,
     _sync_plain_text_height,
@@ -234,23 +235,41 @@ class ResponsiveProfileList(QListWidget):
 
 class ModelSettingsDialog(QDialog):
     profiles_saved = Signal(object)
+    # Emitted when the panel is shown/hidden so the main window can block its
+    # own input while the panel is open.
+    visibility_changed = Signal(bool)
+
+    # Upper bound for the window size. The actual size scales with the screen
+    # (see WIDTH_RATIO/HEIGHT_RATIO) and is clamped to the available area so the
+    # panel never overflows low-resolution displays (e.g. 1366x768).
+    PREFERRED_SIZE = QSize(1080, 720)
+    MINIMUM_SIZE = QSize(720, 480)
+    # Fraction of the available screen area the window aims to occupy. This
+    # keeps the panel proportional across resolutions instead of a fixed size.
+    WIDTH_RATIO = 0.78
+    HEIGHT_RATIO = 0.86
+    # Gap kept to the screen edges when clamping the window to the screen.
+    SCREEN_MARGIN = 24
+    # Height of the top strip that drags the frameless window.
+    TITLE_BAR_HEIGHT = 52
 
     def __init__(self, payload: dict[str, Any], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("ModelSettingsDialog")
         self.setWindowTitle("Settings")
-        self.setModal(False)
-        self.setWindowModality(Qt.NonModal)
-        self.setAttribute(Qt.WA_DeleteOnClose, True)
-        available_geometry = QApplication.primaryScreen().availableGeometry()
-        self.resize(
-            min(824, available_geometry.width()),
-            min(680, available_geometry.height()),
-        )
-        self.setMinimumSize(
-            min(660, available_geometry.width()),
-            min(450, available_geometry.height()),
-        )
+        # Application-modal: while the panel is open the main window (composer,
+        # sidebar, transcript) must not accept input. The panel may overlap the
+        # chat sidebar, which is expected.
+        self.setModal(True)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        # Keep the instance alive across close/reopen so the panel can be
+        # re-shown with its state instead of being rebuilt every time.
+        self.setAttribute(Qt.WA_DeleteOnClose, False)
+        # Frameless top-level window: the panel is shown centered on screen
+        # instead of being docked to the main window.
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
+        self._drag_offset: QPoint | None = None
+        self._apply_screen_geometry()
 
         normalized = normalize_profiles_payload(payload or {})
         self._profiles: list[dict[str, Any]] = [dict(item) for item in normalized.get("profiles", [])]
@@ -287,6 +306,9 @@ class ModelSettingsDialog(QDialog):
 
         hero_card = QFrame()
         hero_card.setObjectName("ModelSettingsHeroCard")
+        # The hero card doubles as the frameless window's title bar: dragging it
+        # moves the whole panel.
+        self._title_bar = hero_card
         hero_layout = QHBoxLayout(hero_card)
         hero_layout.setContentsMargins(10, 8, 10, 8)
         hero_layout.setSpacing(10)
@@ -305,6 +327,16 @@ class ModelSettingsDialog(QDialog):
         self.active_profile_label.setWordWrap(True)
         hero_copy.addWidget(self.active_profile_label)
         hero_layout.addLayout(hero_copy, 1)
+
+        self.close_button = QPushButton()
+        self.close_button.setObjectName("SettingsCloseButton")
+        self.close_button.setIcon(_fa_icon("fa5s.times", color=TEXT_MUTED, size=12))
+        self.close_button.setFixedSize(28, 28)
+        self.close_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_button.setToolTip("Close")
+        self.close_button.setAccessibleName("Close settings")
+        self.close_button.clicked.connect(self.reject)
+        hero_layout.addWidget(self.close_button, 0, Qt.AlignTop | Qt.AlignRight)
 
         root.addWidget(hero_card)
 
@@ -354,7 +386,7 @@ class ModelSettingsDialog(QDialog):
         self.profile_list = ResponsiveProfileList()
         self.profile_list.setObjectName("ModelProfileList")
         self.profile_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.profile_list.setMinimumWidth(240)
+        self.profile_list.setMinimumWidth(300)
         self.profile_list.setAccessibleName("Profile list")
         self.profile_list.setAccessibleDescription("Select a model profile to edit")
         self.profile_list.currentRowChanged.connect(self._on_selection_changed)
@@ -606,27 +638,24 @@ class ModelSettingsDialog(QDialog):
         editor_scroll.setWidget(editor_content)
         right.addWidget(editor_scroll, 1)
 
-        left_container.setMinimumWidth(280)
-        right_container.setMinimumWidth(405)
+        left_container.setMinimumWidth(340)
+        right_container.setMinimumWidth(440)
         left_container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         right_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.body_splitter.addWidget(left_container)
         self.body_splitter.addWidget(right_container)
         self.body_splitter.setStretchFactor(0, 3)
         self.body_splitter.setStretchFactor(1, 4)
-        self.body_splitter.setSizes([320, 480])
+        self.body_splitter.setSizes([420, 620])
         models_page_layout.addWidget(self.body_splitter, 1)
 
-        actions = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Close)
+        actions = QDialogButtonBox(QDialogButtonBox.Save)
         actions.setObjectName("ModelSettingsActions")
         self.save_button = actions.button(QDialogButtonBox.StandardButton.Save)
         if self.save_button is not None:
             self.save_button.setObjectName("PrimaryButton")
             self.save_button.setIcon(_fa_icon("fa5s.save", color="#FFFFFF", size=11))
             self.save_button.setMinimumHeight(24)
-        self.close_button = actions.button(QDialogButtonBox.StandardButton.Close)
-        if self.close_button is not None:
-            self.close_button.setMinimumHeight(24)
         root.addWidget(actions)
 
         self.add_button.clicked.connect(self._add_profile)
@@ -635,8 +664,6 @@ class ModelSettingsDialog(QDialog):
         self.search_edit.textChanged.connect(self._apply_profile_filter)
         if self.save_button is not None:
             self.save_button.clicked.connect(self._save_and_accept)
-        if self.close_button is not None:
-            self.close_button.clicked.connect(self.reject)
 
         self.name_edit.textEdited.connect(self._on_name_edited)
         self.provider_combo.currentTextChanged.connect(self._on_provider_changed)
@@ -672,6 +699,102 @@ class ModelSettingsDialog(QDialog):
         # Rebuild the list so the static "Active" badge follows the active profile
         # instead of staying pinned to the row that was active when first built.
         self._refresh_profile_list()
+
+    def _target_screen(self):
+        """Screen the panel should open on: the parent's screen, else primary."""
+        screen = None
+        parent = self.parentWidget()
+        if parent is not None:
+            window_handle = parent.windowHandle()
+            if window_handle is not None:
+                screen = window_handle.screen()
+            if screen is None:
+                screen = parent.screen()
+        if screen is None:
+            screen = self.screen()
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        return screen
+
+    def _apply_screen_geometry(self) -> None:
+        """Scale the window to the screen, clamp it and center it.
+
+        The size is a fraction of the available screen area (WIDTH_RATIO /
+        HEIGHT_RATIO), capped by PREFERRED_SIZE and floored by MINIMUM_SIZE.
+        On low-resolution displays (e.g. 1366x768) the result is clamped to the
+        available area minus a small margin, so the panel stays fully on-screen
+        while still growing proportionally on larger displays.
+        """
+        screen = self._target_screen()
+        if screen is None:
+            self.resize(self.PREFERRED_SIZE)
+            self.setMinimumSize(self.MINIMUM_SIZE)
+            return
+        available = screen.availableGeometry()
+        max_width = max(320, available.width() - self.SCREEN_MARGIN * 2)
+        max_height = max(240, available.height() - self.SCREEN_MARGIN * 2)
+        width = int(available.width() * self.WIDTH_RATIO)
+        height = int(available.height() * self.HEIGHT_RATIO)
+        # Grow to the preferred size, but never below the minimum and never
+        # past the available area (the clamp wins on very small displays).
+        width = max(self.MINIMUM_SIZE.width(), min(width, self.PREFERRED_SIZE.width()))
+        height = max(self.MINIMUM_SIZE.height(), min(height, self.PREFERRED_SIZE.height()))
+        width = min(width, max_width)
+        height = min(height, max_height)
+        # The minimum must never exceed the clamped size, otherwise the window
+        # would be forced past the screen edge on very small displays.
+        self.setMinimumSize(min(self.MINIMUM_SIZE.width(), width), min(self.MINIMUM_SIZE.height(), height))
+        self.resize(width, height)
+
+    def _center_on_screen(self) -> None:
+        screen = self._target_screen()
+        if screen is None:
+            return
+        available = screen.availableGeometry()
+        frame = QRect(self.pos(), self.size())
+        frame.moveCenter(available.center())
+        self.move(frame.topLeft())
+
+    def _is_drag_zone(self, position: QPoint) -> bool:
+        title_bar = getattr(self, "_title_bar", None)
+        if title_bar is None:
+            return False
+        local = title_bar.mapFrom(self, position)
+        return title_bar.rect().contains(local)
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton and self._is_drag_zone(event.position().toPoint()):
+            window_handle = self.windowHandle()
+            if window_handle is not None and window_handle.startSystemMove():
+                event.accept()
+                return
+            self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
+        if self._drag_offset is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
+        self._drag_offset = None
+        super().mouseReleaseEvent(event)
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        # Re-clamp to the current screen on every show: the panel may be moved
+        # between displays or the resolution may change while it is hidden.
+        self._apply_screen_geometry()
+        super().showEvent(event)
+        self._center_on_screen()
+        self.visibility_changed.emit(True)
+
+    def hideEvent(self, event) -> None:  # type: ignore[override]
+        super().hideEvent(event)
+        self.visibility_changed.emit(False)
 
     def closeEvent(self, event) -> None:
         self._fetch_debounce.stop()
@@ -1356,14 +1479,20 @@ class ModelSettingsDialog(QDialog):
 
         profile_id = str(profile.get("id") or "").strip() or "(unnamed)"
         is_active = bool(profile_id and profile_id != "(unnamed)" and profile_id == self._active_profile)
-        title_label = QLabel(profile_id)
+        # ElidedLabel keeps long profile names on one line and shows an ellipsis
+        # instead of being clipped by the provider/Active badges next to it.
+        # The full name stays available via the tooltip.
+        title_label = ElidedLabel(elide_mode=Qt.ElideRight)
         title_label.setObjectName("ModelProfileItemTitle")
         title_label.setEnabled(is_enabled)
         title_label.setMargin(0)
         title_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         title_label.setMinimumWidth(0)
         title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        first_row.addWidget(title_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
+        title_label.set_full_text(profile_id)
+        # No alignment flags: they would stop the layout from stretching the
+        # label, leaving no room to elide against the badges.
+        first_row.addWidget(title_label, 1)
 
         provider = str(profile.get("provider") or "").strip()
         if provider:

@@ -7,7 +7,7 @@ from typing import Final
 
 from PySide6.QtCore import QEvent, QMessageLogContext, Qt, QtMsgType, QSize, QTimer, qInstallMessageHandler
 from PySide6.QtGui import QAction, QCloseEvent, QIcon
-from PySide6.QtWidgets import QApplication, QDockWidget, QFileDialog, QMainWindow, QMenuBar, QMessageBox, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMenuBar, QMessageBox, QSizePolicy, QVBoxLayout, QWidget
 
 from core.constants import AGENT_VERSION
 from core.input_sanitizer import build_user_input_notice, sanitize_user_text
@@ -82,6 +82,8 @@ class MainWindow(QMainWindow):
         self.current_snapshot: dict | None = None
         self.active_session_id = ""
         self._model_settings_window = None
+        self._settings_open = False
+        self._input_enabled = False
         self.awaiting_approval = False
         self.awaiting_user_choice = False
         self.is_busy = False
@@ -574,9 +576,17 @@ class MainWindow(QMainWindow):
         self._update_centering()
 
     def _set_input_enabled(self, enabled: bool) -> None:
+        # Remember the baseline so the input state can be recomputed when the
+        # Settings panel opens or closes without the caller passing it again.
+        self._input_enabled = bool(enabled)
         has_pending_interrupt = self.awaiting_approval or self.awaiting_user_choice
+        # While the Settings panel is open the main window must not accept
+        # input: the composer and the sidebar are disabled even though the
+        # panel is a separate top-level window that may overlap them.
+        settings_open = self._settings_open
         can_edit = (
             enabled
+            and not settings_open
             and not self.awaiting_approval
             and not self.is_busy
             and (not self.awaiting_user_choice or self._custom_choice_armed)
@@ -587,7 +597,7 @@ class MainWindow(QMainWindow):
             and self._composer_has_request_content()
             and not self._request_blocked_by_image_capability()
         )
-        attach_enabled = enabled and not has_pending_interrupt and not self.is_busy
+        attach_enabled = enabled and not settings_open and not has_pending_interrupt and not self.is_busy
         self.composer.setEnabled(can_edit)
         self.send_button.setEnabled(can_send)
         self._update_send_button_visual(can_send)
@@ -600,8 +610,8 @@ class MainWindow(QMainWindow):
         can_open_model_settings = enabled and not has_pending_interrupt and not self.is_busy
         self.open_settings_inline_button.setEnabled(can_open_model_settings)
         self.settings_button.setEnabled(can_open_model_settings or model_settings_open)
-        self.info_button.setEnabled(enabled)
-        self.sidebar.setEnabled(enabled and not has_pending_interrupt and not self.is_busy)
+        self.info_button.setEnabled(enabled and not settings_open)
+        self.sidebar.setEnabled(enabled and not settings_open and not has_pending_interrupt and not self.is_busy)
         self.approval_card.set_actions_enabled(self.awaiting_approval and not self.is_busy)
         self.user_choice_card.set_actions_enabled(
             enabled and self.awaiting_user_choice and not self.awaiting_approval and not self.is_busy
@@ -821,20 +831,11 @@ class MainWindow(QMainWindow):
 
     def _open_settings_dialog(self) -> None:
         if self._model_settings_window is not None:
-            if isinstance(self._model_settings_window, QDockWidget):
-                dock = self._model_settings_window
-                if self.is_busy or self.awaiting_approval or self.awaiting_user_choice:
-                    if not dock.isHidden():
-                        dock.hide()
-                    return
-                dock.setVisible(dock.isHidden())
-                if not dock.isHidden():
-                    dock.raise_()
-                    dialog = dock.widget()
-                    if dialog is not None and hasattr(dialog, "refresh_active_selection"):
-                        dialog.refresh_active_selection(self.model_profiles_payload)
-                return
             if self.is_busy or self.awaiting_approval or self.awaiting_user_choice:
+                self._model_settings_window.hide()
+                return
+            # Toggle: a second trigger hides the already-open panel.
+            if not self._model_settings_window.isHidden():
                 self._model_settings_window.hide()
                 return
             self._model_settings_window.show()
@@ -849,41 +850,27 @@ class MainWindow(QMainWindow):
         dialog_class = self._resolve_model_settings_dialog_class()
         dialog = dialog_class(self.model_profiles_payload, self)
         dialog.profiles_saved.connect(self._save_model_profiles_from_dialog)
+        visibility_changed = getattr(dialog, "visibility_changed", None)
+        if visibility_changed is not None:
+            visibility_changed.connect(self._handle_settings_visibility_changed)
+        self._model_settings_window = dialog
+        dialog.destroyed.connect(self._handle_settings_dialog_destroyed)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
-        if not isinstance(dialog, QWidget):
-            self._model_settings_window = dialog
-            dialog.destroyed.connect(lambda *_args: setattr(self, "_model_settings_window", None))
-            dialog.show()
-            dialog.raise_()
-            dialog.activateWindow()
-            return
+    def _handle_settings_dialog_destroyed(self, *_args) -> None:
+        self._model_settings_window = None
+        if self._settings_open:
+            self._settings_open = False
+            self._set_input_enabled(getattr(self, "_input_enabled", True))
 
-        dock = QDockWidget("Model Profiles", self)
-        dock.setObjectName("ModelSettingsDock")
-        dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
-        dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable)
-        dock.setTitleBarWidget(QWidget(dock))
-        dock.setFloating(False)
-        dock.setMinimumWidth(660)
-        dock.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
-        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
-        dialog.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        dock.setWidget(dialog)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
-        self._model_settings_window = dock
-        self._size_settings_dock()
-
-        if close_button := getattr(dialog, "close_button", None):
-            try:
-                close_button.clicked.disconnect(dialog.reject)
-            except (RuntimeError, TypeError):
-                pass
-            close_button.clicked.connect(dock.close)
-        dock.destroyed.connect(lambda *_args: setattr(self, "_model_settings_window", None))
-        dock.visibilityChanged.connect(self._on_settings_dock_visibility_changed)
-        dock.show()
-        dock.raise_()
-        self._size_settings_dock()
+    def _handle_settings_visibility_changed(self, visible: bool) -> None:
+        """Block/unblock main-window input while the Settings panel is open."""
+        self._settings_open = bool(visible)
+        self._set_input_enabled(getattr(self, "_input_enabled", True))
+        if not visible:
+            self._update_centering()
 
     def _save_model_profiles_from_dialog(self, payload: dict | None) -> None:
         normalized = normalize_profiles_payload(payload or {})
@@ -1166,30 +1153,6 @@ class MainWindow(QMainWindow):
     def _open_new_project(self) -> None:
         self._sidebar_controller.open_new_project()
 
-    def _on_settings_dock_visibility_changed(self, visible: bool) -> None:
-        if visible:
-            self._size_settings_dock()
-        # Recompute centering on the next event-loop pass: at this moment the
-        # dock layout is not settled yet and reading geometry now would keep
-        # the chat column glued to the right edge after the dock closes.
-        QTimer.singleShot(0, self._update_centering)
-
-    def _size_settings_dock(self) -> None:
-        """Stretch the Settings dock across the whole window.
-
-        The panel is meant to be used full-window: the chat is not needed while
-        it is open, so its size does not matter. Giving the dock the full width
-        also guarantees its content (which needs ~717 px) never overflows the
-        right edge of the screen on narrow windows.
-        """
-        dock = self._model_settings_window
-        if not isinstance(dock, QDockWidget) or not dock.isVisible():
-            return
-        window_width = self.width()
-        if window_width <= 0:
-            return
-        self.resizeDocks([dock], [window_width], Qt.Orientation.Horizontal)
-
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
         self._update_centering()
@@ -1197,7 +1160,6 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         self._update_centering()
-        self._size_settings_dock()
         # The resize handler above still sees pre-layout geometry; recompute
         # centering once layouts have settled so the chat column stays centered.
         QTimer.singleShot(0, self._update_centering)

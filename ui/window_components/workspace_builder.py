@@ -87,24 +87,21 @@ class WorkspaceBuilder:
         The transcript/composer column is centered inside the splitter's center
         panel, so the open Projects sidebar shifts it off the window center.
         Compensate with asymmetric shell margins so the column stays visually
-        centered on the window regardless of the sidebar state. Right-side
-        panels (inspector / model settings) must NOT trigger this compensation:
-        with any of them open the chat simply centers inside the center panel.
+        centered on the window regardless of the sidebar state. The right-side
+        inspector must NOT trigger this compensation: with it open the chat
+        simply centers inside the center panel.
         """
         window = self.window
         center_panel = window.transcript.parentWidget()
         if center_panel is None or not center_panel.isVisible():
             return
         # Activate layouts first so the geometry reads below reflect the latest
-        # splitter sizes instead of the pre-layout values. The main window
-        # layout matters too: a full-width Settings dock pushes the central
-        # widget off-window, and closing the dock restores it only through the
-        # main window layout (the inner splitter geometry does not change).
+        # splitter sizes instead of the pre-layout values.
         if window.layout() is not None:
             window.layout().activate()
         if center_panel.layout() is not None:
             center_panel.layout().activate()
-        right_panel_open = window.inspector_container.isVisible() or self._settings_dock_visible()
+        right_panel_open = window.inspector_container.isVisible()
         if right_panel_open:
             left = right = 0
         else:
@@ -126,10 +123,6 @@ class WorkspaceBuilder:
         # event-loop pass, so the column never appears off-center.
         shell.activate()
         center_panel.layout().activate()
-
-    def _settings_dock_visible(self) -> bool:
-        dock = getattr(self.window, "_model_settings_window", None)
-        return dock is not None and dock.isVisible()
 
     def build(self) -> WorkspaceBuildResult:
         workspace = QWidget()
