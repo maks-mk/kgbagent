@@ -133,6 +133,24 @@ def build_stylesheet() -> str:
         border: none;
     }}
 
+    QWidget#MainWindowTitleBar {{
+        background: {SURFACE_BG};
+    }}
+
+    QWidget#MainWindowTitleBar QToolButton {{
+        background: transparent;
+        border: none;
+        border-radius: 0;
+    }}
+
+    QWidget#MainWindowTitleBar QToolButton:hover {{
+        background: {SURFACE_ALT};
+    }}
+
+    QWidget#MainWindowTitleBar QToolButton#WindowCloseButton:hover {{
+        background: {ERROR_RED};
+    }}
+
     QLabel#DialogWindowTitle {{
         color: {TEXT_PRIMARY};
         font-weight: 600;

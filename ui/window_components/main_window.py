@@ -18,7 +18,7 @@ from core.text_utils import format_compact_tokens, prepare_markdown_for_render
 from ui.main_window_state import ComposerStateController, RunStatusController, StreamEventRouter
 from ui.runtime import AgentRuntimeController
 from ui.theme import ACCENT_BLUE, build_stylesheet
-from ui.widgets.window_chrome import install_dialog_chrome
+from ui.widgets.window_chrome import build_main_window_header, install_dialog_chrome
 from ui.widgets import ModelSettingsDialog, _fa_icon
 from ui.window_components.inspector_controller import InspectorController
 from ui.window_components.menu_builder import MenuBuilder
@@ -139,6 +139,7 @@ class MainWindow(QMainWindow):
         self._status_controller.update_realtime_elapsed()
 
     def _build_ui(self) -> None:
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
         self.setWindowTitle(f"KGB|Agent {AGENT_VERSION}")
         self.resize(1300, 670)
         self.setMinimumSize(900, 600)
@@ -150,6 +151,7 @@ class MainWindow(QMainWindow):
         status_refs = self._status_bar_manager.build()
         self.runtime_meta_label = status_refs.runtime_meta_label
         self.setStatusBar(status_refs.status_bar)
+        status_refs.status_bar.setSizeGripEnabled(True)
 
         central = QWidget()
         central.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
@@ -184,7 +186,7 @@ class MainWindow(QMainWindow):
         self.new_session_button = refs.new_session_button
         self.settings_button = refs.settings_button
         self.info_button = refs.info_button
-        self.setMenuWidget(refs.menu_widget)
+        self.setMenuWidget(build_main_window_header(self, refs.menu_widget))
         self._set_status_visual("Initializing runtime…", busy=True)
 
     def _build_workspace(self) -> QWidget:
