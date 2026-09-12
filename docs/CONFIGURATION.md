@@ -1,6 +1,8 @@
 # Конфигурация
 
-Все настройки читаются из `.env` через `core/config.py`. Скопируй `env_example.txt` в `.env` и заполни нужные поля.
+Настройки загружаются через `core/config.py`. Скопируй `env_example.txt` в `.env` и заполни нужные поля. Приоритет источников: явные аргументы `AgentConfig` → переменные окружения процесса → `.agent_state/config.json` рядом с приложением → `.env` → file secrets → значения по умолчанию. Активный профиль модели дополнительно задаёт provider/model/API-настройки runtime.
+
+GUI сохраняет общий порог Session size в `.agent_state/config.json` (ключ `session_size`, считывается без учёта регистра). Он имеет приоритет над `SESSION_SIZE` из `.env`, но не над переменной окружения процесса. Слайдер задаёт 10 000–256 000 токенов с шагом 2 000; значение `0` для отключения суммаризации доступно через конфигурацию, а не слайдер. Файл GUI-overrides читается по фиксированному пути; `MODEL_PROFILE_CONFIG_PATH` задаёт путь хранилища профилей, а не переносит этот источник настроек.
 
 ---
 
@@ -20,13 +22,15 @@
 | `ANTHROPIC_MAX_TOKENS` | `8192` | Максимум выходных токенов Anthropic |
 | `ANTHROPIC_THINKING_BUDGET` | `4096` | Fixed-budget thinking для Claude Haiku/Sonnet/Opus 4.5; для Opus 4.5 может использоваться вместе с effort `low`, `medium` или `high` |
 | `ANTHROPIC_REASONING` | — | Управление Anthropic reasoning: `off`/`none`, `adaptive` или effort. Для Opus 4.5 доступны `low`, `medium`, `high`; для Claude 4.6+ и 5 набор зависит от модели, включая `max`, а `xhigh` — только для поддерживаемых моделей 4.7+/5. Для effort runtime передаёт adaptive `thinking` и `output_config.effort`. При включённом thinking sampling-параметр `temperature` не передаётся. |
-| `LLM_API_MODE` | `chat` | Режим API для OpenAI-провайдера: `chat` (`/v1/chat/completions`, работает со всеми OpenAI-compatible) или `responses` (`/v1/responses`, для gpt-5/o-series reasoning). Если не указан, LangChain автоопределяет по модели и payload |
+| `LLM_API_MODE` | `chat` | Режим API для OpenAI-провайдера: `chat` (по умолчанию) или `responses`. `responses` явно задаёт `use_responses_api=True`; в режиме `chat` адаптер не передаёт этот флаг, поэтому SDK может выбрать endpoint по модели и payload |
 | `ENABLE_MODEL_REASONING` | `true` | Включает provider-side reasoning/thinking для поддерживаемых моделей |
 | `MODEL_REASONING_EFFORT` | `medium` | Усилие reasoning для OpenAI/OpenAI-compatible моделей (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) |
 | `GEMINI_THINKING_BUDGET` | `4096` | Thinking budget для `gemini-2.5*` / `gemini-3*`; старые Gemini-модели получают запрос без этого параметра |
 | `PROVIDER_REGISTRY_PATH` | `provider_registry.json` | Реестр OpenAI-compatible агрегаторов и их reasoning-параметров |
 | `ACTIVE_MODEL_PROFILE_ID` | — | ID активного профиля модели (для ротации ключей) |
 | `SHOW_MODEL_THOUGHTS` | `false` | Legacy-флаг отображения reasoning (runtime выставляет false) |
+
+Для модели `gpt-6-astra` OpenAI-адаптер не отправляет `temperature`, поскольку она использует фиксированный sampling.
 
 ### Добавление OpenAI-compatible агрегаторов
 
@@ -60,6 +64,10 @@
 | `ENABLE_APPROVALS` | Approval-паузы перед рискованными действиями |
 | `ALLOW_EXTERNAL_PROCESS_CONTROL` | Разрешить управление внешними процессами |
 | `TAVILY_API_KEY` | Ключ Tavily для web search и извлечения содержимого |
+
+### Сжатие вывода инструментов
+
+`ENABLE_HEADROOM_COMPRESSION` (по умолчанию `false`) включает семантическое сжатие большого вывода shell, web, listing и MCP через Headroom. Файловые read/write/edit результаты не подвергаются семантическому сжатию. При недоступности компрессора или непригодном результате используется детерминированное сокращение; итоговый бюджет задаёт `MAX_TOOL_OUTPUT`. Подробности pipeline — в [MCP.md](./MCP.md#сжатие-вывода).
 
 ### Tavily search tools
 
@@ -95,13 +103,13 @@
 | `SUMMARY_RESERVED_TOKENS` | Запас на системные инструкции, tool schemas и provider overhead |
 | `SUMMARY_KEEP_LAST` | Сколько последних сообщений не трогать при суммаризации |
 | `SUMMARY_MAX_TOKENS` | Лимит токенов сжатой памяти; `0` — четверть от `SESSION_SIZE` |
-| `HISTORY_BATCH_SIZE` | Сколько сообщений (turns) GUI подгружает за один раз при прокрутке длинной истории; по умолчанию 10, диапазон 1–200 |
+| `HISTORY_BATCH_SIZE` | Количество ходов диалога (turns), отображаемых изначально и добавляемых кнопкой ранней истории; по умолчанию 10, диапазон 1–200. Это пакетное создание UI-виджетов, не постраничное чтение SQLite |
 | `MAX_RETRIES` | Число попыток при ошибке LLM |
 | `RETRY_DELAY` | Базовая задержка между попытками (секунды); также используется как base delay для stream-repair backoff |
 
 ### Как работает порог
 
-Оценка контекста считается как токены истории сообщений (tiktoken `cl100k_base`, при недоступности — эвристика ~3 символа/токен) плюс `SUMMARY_RESERVED_TOKENS` и токены сжатой памяти. Когда оценка превышает `SESSION_SIZE`, выполняется автосуммаризация. Внутренний soft-margin (до +35% при уже существующей памяти) может дополнительно задержать сжатие, если сохранять слишком мало сообщений — но пользовательский индикатор прогресса всегда считается от базового `SESSION_SIZE`. Полная история переписки при этом сохраняется и после сжатия.
+Оценка контекста считается как токены истории сообщений (tiktoken `cl100k_base`, при недоступности — эвристика ~3 символа/токен) плюс `SUMMARY_RESERVED_TOKENS` и токены сжатой памяти. Порог `SESSION_SIZE` проверяется в начале запроса и после tools/recovery перед следующим LLM-вызовом; превышение порога рассматривается политикой автосуммаризации. Внутренний soft-margin (до +35% при уже существующей памяти) может дополнительно задержать сжатие, если сохранять слишком мало сообщений — но пользовательский индикатор прогресса всегда считается от базового `SESSION_SIZE`. Полная история переписки при этом сохраняется и после сжатия.
 
 ---
 

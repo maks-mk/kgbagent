@@ -11,9 +11,9 @@ START
         → tools
      → tools         # исполнить tool calls (read-only — параллельно, остальные — последовательно)
         → recovery   # если tool вернул ошибку
-        → update_step
+        → summarize → update_step
      → recovery      # если агент вернул protocol error или loop
-        → update_step
+        → summarize → update_step
         → END
      → END
 ```
@@ -22,7 +22,7 @@ START
 - Recovery использует stateful error tracking: `attempts_by_strategy`, `progress_markers`, `llm_replan_attempted_for` — адаптивные повторы с учётом уникальных fingerprints ошибок.
 - При смене проблемы (новый fingerprint) retry-бюджет сбрасывается; для одной и той же проблемы разрешены несколько `llm_replan` попыток в рамках `SELF_CORRECTION_RETRY_LIMIT`.
 - Stream-interruption recovery: при обрыве потока провайдера история автоматически чинится, ошибка классифицируется (`rate_limit` / `timeout` / `server_error` / `network`), и запуск продолжается после backoff с джиттером. Для обычных ошибок используется экспоненциальная задержка (`RETRY_DELAY * 2^attempt + random jitter`), для rate-limit — `RETRY_DELAY * 1.5`. Лимит попыток авто-продолжения — `min(MAX_RETRIES, 2)` (не отдельная env-переменная).
-- После `tools` успешный результат возвращается в `update_step`, затем агент получает следующий ход. После `recovery` исходы `recover_agent` и `continue_agent` также ведут через `update_step`; остальные исходы завершают выполнение.
+- После `tools` без открытой ошибки выполнение возвращается в `summarize`, затем в `update_step` и `agent`. После `recovery` исходы `recover_agent` и `continue_agent` проходят тем же путём; остальные исходы завершают выполнение. Таким образом, порог контекста проверяется и внутри одного запроса, после результатов инструментов, а не только в начале хода. Ниже порога узел суммаризации не изменяет историю.
 - `agent.py` сначала загружает `ToolRegistry` и MCP, создаёт checkpoint runtime и run logger, затем создаёт provider adapter через `core/providers/factory.py`. Инструменты привязываются к LLM только после нормализации схем; при ошибке binding tool calling отключается для текущего runtime.
 - `ToolRegistry` объединяет встроенные tools и MCP tools, применяет фиче-флаги, сохранённые overrides из `mcp.json` и metadata риска. `read_only` tools могут выполняться mixed-mode batch параллельно, остальные tools идут последовательно.
 - Для OpenAI-compatible профилей reasoning kwargs выбираются через `provider_registry.json` по hostname `base_url` и, при необходимости, по имени модели. Нативные адаптеры Gemini и Anthropic используют собственные provider-specific настройки.
@@ -70,3 +70,6 @@ main.py
 - `logs/runs/` — JSONL-логи каждого запуска
 
 В состоянии графа хранятся два списка сообщений: `messages` (контекст LLM, сжимается автосуммаризацией) и `transcript_messages` (полная append-only история переписки для UI). Compaction удаляет сообщения только из `messages`; новые assistant/tool/error-сообщения пишутся в оба списка с дедупликацией по ID. Legacy-сессии без `transcript_messages` получают bootstrap из текущих `messages` при первом сжатии.
+
+
+При открытии сессии runtime формирует transcript payload из сохранённой истории. `ChatTranscriptWidget` группирует его в turns и создаёт виджеты последних `HISTORY_BATCH_SIZE` ходов, оставляя ранние данные для кнопки подгрузки. Это оптимизация рендеринга, не pagination SQLite. `SidebarController` откладывает замену старого transcript до получения истории выбранной сессии.

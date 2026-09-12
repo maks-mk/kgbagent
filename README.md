@@ -12,10 +12,6 @@
 Запуск из исходников: `python main.py`  
 Сборка в portable `.exe` для Windows: `build.bat`
 
-<div align="center">
-  <img src="./img/agent.webp" alt="KGB|Agent" width="800">
-</div>
-
 ---
 
 ## Цель проекта
@@ -40,7 +36,8 @@
 
 - Графовый runtime на `LangGraph` с bounded recovery и self-correction
 - Mixed-mode parallel tool batch: read-only инструменты запускаются параллельно через `asyncio.gather`, остальные — последовательно; результаты собираются в исходном порядке
-- GUI: история чатов, streaming transcript, tool cards, approvals, user-choice карточки, вложения
+- GUI: безрамочные окна, проекты и чаты в левой панели, пакетное отображение длинной истории, streaming transcript, tool cards, approvals, user-choice карточки, вложения
+- Настройка порога контекста Session size в GUI; проверка автосуммаризации также после выполнения инструментов
 - Fuzzy replay suppression: повторный префейс модели после tool-вызова подавляется даже при минимальных расхождениях текста (опечатки, пунктуация)
 - Live CLI output streaming: вывод shell-команд отображается в карточке инструмента в реальном времени, а не только после завершения
 - Exit-code-neutral команды: `grep`, `rg`, `vulture`, `pytest`, `diff` и др. с ненулевым exit code не помечаются как ошибка — вывод возвращается с префиксом `Exit Code: N`
@@ -65,7 +62,7 @@ venv\Scripts\pip.exe install -r requirements.txt
 Copy-Item env_example.txt .env
 # Открой .env и укажи API-ключ выбранного LLM-провайдера
 # Для Tavily-поиска также укажи TAVILY_API_KEY
-python main.py
+venv\Scripts\python.exe main.py
 ```
 
 Для Claude 4.6+ используйте adaptive thinking с effort (`ANTHROPIC_REASONING=low|medium|high|max`, а `xhigh` только для поддерживаемых моделей 4.7+/5). Для Claude 4.5 используется `ANTHROPIC_THINKING_BUDGET`; Opus 4.5 дополнительно поддерживает effort `low|medium|high`. При включённом thinking `temperature` не отправляется согласно ограничениям Anthropic. Полный список параметров находится в [документации конфигурации](./docs/CONFIGURATION.md).
@@ -78,7 +75,7 @@ python main.py
 .\build.bat
 ```
 
-Использует `PyInstaller` в режиме `--onefile --windowed`. Результат — один `.exe` без зависимостей.
+Использует локальный `venv` и `PyInstaller` в режиме `--onefile --windowed`; результат — `dist/kgb.exe`. Python на целевой машине не требуется, но конфигурация и данные остаются внешними: рядом с `.exe` разместите `prompt.txt`, свою `.env`, а при использовании — `mcp.json`, `provider_registry.json` и `headers.json`. Каталог должен быть доступен для записи состояния и логов. Для локальных MCP-серверов отдельно нужны их runtime и пакеты (например, Node.js/npx или uv/uvx); они не включаются в `.exe`.
 
 ---
 
@@ -93,9 +90,9 @@ START
         → tools
      → tools         # исполнить tool calls (read-only — параллельно, остальные — последовательно)
         → recovery   # если tool вернул ошибку
-        → update_step
+        → summarize → update_step
      → recovery      # если агент вернул protocol error или loop
-        → update_step
+        → summarize → update_step
         → END
      → END
 ```

@@ -2,7 +2,7 @@
 
 `provider_registry.json` описывает, какие reasoning/thinking параметры нужно передавать OpenAI-compatible агрегаторам. Это нужно потому, что единого стандарта нет: один провайдер принимает `reasoning.effort`, другой `extra_body.reasoning.effort`, третий `reasoning_effort`, а некоторые возвращают `400`, если отправить неизвестное поле.
 
-Текущий registry использует `schema_version: 1` и `data_version: 5`. В нём есть отдельные записи для NVIDIA NIM GPT-OSS, NVIDIA NIM DeepSeek V4, NVIDIA NIM thinking-моделей и Hugging Face/Qwen endpoint `hf_qwen38`; matching выполняется по hostname `OPENAI_BASE_URL`, а для reasoning-профилей дополнительно учитывается имя модели.
+Текущий registry использует `schema_version: 1` и `data_version: 6`. В нём есть отдельные записи для NVIDIA NIM GPT-OSS, NVIDIA NIM DeepSeek V4, NVIDIA NIM thinking-моделей и Hugging Face/Qwen endpoint `hf_qwen38`; matching выполняется по hostname `OPENAI_BASE_URL`, а для reasoning-профилей дополнительно учитывается имя модели.
 
 Registry применяется только к профилям с `provider: openai`. Gemini настраивается отдельно через Google SDK-поля `thinking_budget`, `thinking_level` и `include_thoughts`.
 
@@ -30,7 +30,7 @@ Runtime загружает registry в `create_llm()` перед создани�
 ```json
 {
   "schema_version": 1,
-  "data_version": 5,
+  "data_version": 6,
   "providers": []
 }
 ```
@@ -147,7 +147,7 @@ Registry матчится по hostname из `OPENAI_BASE_URL`.
 
 Для бинарного provider-specific режима используются `enabled_value` и `disabled_value`; они передаются в payload как typed-значения без строкового effort. В UI такой entry отображается как `On`/`Off`.
 
-Особый случай: `MODEL_REASONING_EFFORT=none` по-прежнему не добавляет reasoning payload при включённом режиме. Явное `reasoning.enabled: false` отправляет `disabled_value`, только если provider entry его объявляет.
+Особый случай: `MODEL_REASONING_EFFORT=none` отправляет `none_value`, если provider entry его объявляет (например, GPT-5.6 и NVIDIA DeepSeek V4 явно передают `none` для Non-think режима); если `none_value` отсутствует, reasoning payload не добавляется. Явное `reasoning.enabled: false` отправляет `disabled_value`, только если provider entry его объявляет.
 
 В UI профилей OpenAI-compatible пункт `Default` не является отдельным уровнем и не добавляется в меню. Пользователь выбирает только значения из `allowed_values`; профиль без сохранённого reasoning-выбора сохраняет глобальную runtime-настройку. Старые профили с `reasoning.enabled: false` продолжают отключать reasoning.
 
@@ -176,7 +176,7 @@ Registry матчится по hostname из `OPENAI_BASE_URL`.
 ```json
 {
   "model_match": {
-    "prefix": ["gpt-5", "o1", "o3", "o4"]
+    "prefix": ["gpt-5", "gpt-6", "o1", "o3", "o4"]
   }
 }
 ```
@@ -216,28 +216,29 @@ Registry матчится по hostname из `OPENAI_BASE_URL`.
 
 ### OpenAI
 
+Official OpenAI API (`api.openai.com`, а также зеркала вроде `api.ashna.ai`) разбит на несколько записей с `model_match` и убывающими приоритетами:
+
 ```json
 {
-  "id": "openai",
+  "id": "openai_gpt6",
   "enabled": true,
-  "priority": 100,
-  "match": ["api.openai.com"],
+  "priority": 103,
+  "match": ["api.openai.com", "api.ashna.ai"],
   "match_type": "exact",
   "supports_reasoning": true,
   "model_match": {
-    "prefix": ["gpt-5", "o1", "o3", "o4"]
+    "prefix": ["gpt-6"]
   },
-  "validation": "map",
+  "validation": "strict",
   "reasoning": {
     "path": "reasoning.effort",
-    "allowed_values": ["minimal", "low", "medium", "high", "xhigh"],
-    "value_map": {},
-    "extra_fields": {
-      "reasoning.summary": "auto"
-    }
-  }
+    "allowed_values": ["low", "medium", "high", "xhigh", "max"]
+  },
+  "notes": "OpenAI Responses API. GPT-6 supports reasoning.effort=low|medium|high|xhigh|max."
 }
 ```
+
+Порядок выбора для `api.openai.com`: `openai_gpt6` (103, prefix `gpt-6`) → `openai_gpt56` (102, prefix `gpt-5.6`, strict, с `none_value` и `reasoning.summary: auto`) → `openai_gpt5_legacy` (100, prefix `gpt-5`, map) → `openai_o_series` (90, prefix `o1`/`o3`/`o4`). Модели вне этих семейств не получают reasoning-поля.
 
 ### OpenRouter
 

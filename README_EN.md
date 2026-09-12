@@ -12,10 +12,6 @@ It works with files, shell commands, process management, MCP servers, and web se
 Run from source: `python main.py`.  
 Build a portable Windows `.exe`: `build.bat`.
 
-<div align="center">
-  <img src="./img/agent.webp" alt="KGB|Agent" width="800">
-</div>
-
 ---
 
 ## Project Goal
@@ -40,7 +36,8 @@ The project does not try to compete with AI IDEs by feature count and does not t
 
 - Graph runtime on `LangGraph` with bounded recovery and self-correction
 - Mixed-mode parallel tool batch: read-only tools run in parallel via `asyncio.gather`, the rest run sequentially; results are reassembled in original order
-- GUI: chat history, streaming transcript, tool cards, approvals, user-choice cards, attachments
+- GUI: frameless windows, projects and chats in the sidebar, batched rendering of long history, streaming transcript, tool cards, approvals, user-choice cards, attachments
+- GUI Session size setting; automatic context compaction is also checked after tool execution
 - Fuzzy replay suppression: the model's repeated preface after a tool call is suppressed even with minor text drift (typos, punctuation)
 - Live CLI output streaming: shell command output is shown in the tool card in real time, not only after completion
 - Exit-code-neutral commands: `grep`, `rg`, `vulture`, `pytest`, `diff`, etc. with a non-zero exit code are not marked as errors — the output is returned with an `Exit Code: N` prefix
@@ -65,7 +62,7 @@ venv\Scripts\pip.exe install -r requirements.txt
 Copy-Item env_example.txt .env
 # Open .env and add the selected LLM provider key
 # Add TAVILY_API_KEY as well when Tavily search/fetch is needed
-python main.py
+venv\Scripts\python.exe main.py
 ```
 
 ---
@@ -76,7 +73,7 @@ python main.py
 .\build.bat
 ```
 
-Uses `PyInstaller` in `--onefile --windowed` mode. The result is a single `.exe` without external runtime dependencies.
+Uses the local `venv` and `PyInstaller` in `--onefile --windowed` mode, producing `dist/kgb.exe`. Python is not required on the target machine, but configuration remains external: place `prompt.txt`, your `.env`, and, when used, `mcp.json`, `provider_registry.json` and `headers.json` next to the executable. The directory must be writable for state and logs. Local MCP servers still require their own runtimes and packages (such as Node.js/npx or uv/uvx); these are not bundled.
 
 ---
 
@@ -91,9 +88,9 @@ START
         -> tools
      -> tools         # execute tool calls (read-only in parallel, the rest sequentially)
         -> recovery   # if a tool returned an error
-        -> update_step
+        -> summarize -> update_step
      -> recovery      # if the agent returned a protocol error or loop
-        -> update_step
+        -> summarize -> update_step
         -> END
      -> END
 ```

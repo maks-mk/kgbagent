@@ -2,7 +2,7 @@
 
 Несколько профилей моделей хранятся через `core/model_profiles.py` и переключаются в GUI.
 
-Каждый профиль содержит: провайдера, имя модели, API key, опциональный `base_url` для OpenAI-compatible бэкендов, флаг image input, статус enabled/disabled.
+Каждый профиль содержит: провайдера, имя модели, API key, опциональный `base_url` для OpenAI-compatible и Anthropic-compatible бэкендов, флаг image input, статус enabled/disabled.
 
 - Активный профиль выбирается в GUI; `.env` используется только для bootstrap начального набора
 - Legacy-ключи `MODEL`, `API_KEY`, `BASE_URL` поддерживаются для import/совместимости

@@ -7,8 +7,9 @@
 - `main.py` - GUI entrypoint: создает `QApplication` и открывает главное окно.
 - `agent.py` - программная сборка LangGraph-агента: компиляция графа, routing, tool binding и checkpointing. UI запускает этот runtime через `ui/runtime.py`; provider-адаптеры вынесены в `core/providers/`.
 - `prompt.txt` - общий системный промпт агента.
-- `prompt_dev.txt` - дополнительный dev/devops-промпт.
-- `mcp.json` - конфигурация MCP-серверов.
+- `prompt_dev.txt` - альтернативный dev/devops-промпт; для использования задайте `PROMPT_PATH=prompt_dev.txt` (автоматически к `prompt.txt` не добавляется).
+- `mcp.json` - конфигурация MCP-серверов и overrides встроенных инструментов.
+- `headers.json` - необязательные HTTP-заголовки OpenAI-compatible/Anthropic запросов.
 - `requirements.txt` - Python-зависимости.
 - `env_example.txt` - пример переменных окружения.
 - `provider_registry.json` - registry OpenAI-compatible провайдеров и их reasoning kwargs.
@@ -27,6 +28,8 @@
 - `MODEL_PROFILES.md` - управление профилями моделей, автозагрузка, ротация API-ключей.
 - `MCP.md` - конфигурация MCP-серверов, policy, пример.
 - `provider_registry_guide.md` - подробная инструкция по `provider_registry.json`.
+- `mcp_servers_installation_guide.md` - установка и подключение внешних MCP-серверов в Windows.
+- `UI_TOOL_DISPLAY_NAMES.md` - названия и статусы встроенных и MCP-инструментов в UI.
 
 ## Runtime-данные
 
@@ -59,7 +62,9 @@
 - `reasoning_debug.py` - отдельное debug-логирование reasoning/thinking и status-сигналов.
 - `run_logger.py` - JSONL-логирование отдельных запусков агента.
 - `logging_config.py` - настройка логирования приложения.
-- `http_headers.py` - загрузчик `load_openai_headers()` для кастомных HTTP-заголовков OpenAI-совместимых запросов (`headers.json`).
+- `http_headers.py` - загрузчик `load_provider_headers()` для OpenAI-compatible и Anthropic запросов (`headers.json`); `load_openai_headers()` — совместимый alias.
+- `anthropic_capabilities.py` - возможности семейств Claude и ограничения thinking/effort.
+- `reasoning_controls.py` - общая логика управления reasoning.
 
 ### `core/providers/`
 
@@ -90,6 +95,7 @@ Provider-адаптеры, вынесенные из `agent.py`. Изолиру�
 - `tool_args.py` - канонизация аргументов tool calls.
 - `tool_issues.py` - описание tool/protocol проблем.
 - `tool_results.py` - структуры результатов tools.
+- `tool_output_compressor.py` - Headroom compression и детерминированное сокращение tool output.
 - `runtime_prompt_policy.py` - runtime-контракт и динамические инструкции для system prompt.
 
 ### Утилиты и валидация
@@ -165,13 +171,14 @@ GUI на PySide6 и слой выполнения агента в отдельн
 - `foundation.py` - базовые виджеты, markdown/code/diff helpers.
 - `messages.py` - user/assistant/notice/status/approval/user-choice виджеты.
 - `composer.py` - поле ввода, history, mentions, image attachments.
-- `transcript.py` - отображение диалога и группировка turn-ов.
+- `transcript.py` - отображение диалога, пакетное создание turn-виджетов и сохранение позиции при добавлении ранней истории.
+- `window_chrome.py` - заголовок главного окна и оформление безрамочных диалогов.
 - `tool_group.py` - группировка tool cards одного хода.
 - `tools.py` - карточки tools и CLI output widget.
 - `attachments.py` - image attachment chips.
 - `dialogs.py` - настройки моделей, API key rotation, model fetch worker.
 - `panels.py` - overview/tools/inspector panels.
-- `sidebar.py` - список сессий, модель и delegate.
+- `sidebar.py` - группировка чатов по проектам, Show more/Show less, модель, delegate и пустое состояние Projects.
 
 ## Директория `tests/`
 
@@ -184,6 +191,10 @@ GUI на PySide6 и слой выполнения агента в отдельн
 - `test_model_profiles.py`, `test_model_fetcher.py` - профили и загрузка моделей.
 - `test_cli_ux.py`, `test_main_window_facade.py`, `test_ui_helpers.py` - UI и UX.
 - `test_refactor_services.py`, `test_self_correction_engine.py`, `test_critic_graph.py`, `test_mixed_parallel_tools.py`, `test_input_sanitizer.py`, `test_logging_config.py`, `test_session_utils.py` - сервисы ядра и вспомогательная логика.
+
+- `test_transcript_history.py` - пакетное отображение истории и стабильность viewport.
+- `test_window_chrome.py` - безрамочные окна и их заголовки.
+- `test_provider_adapters.py`, `test_http_headers.py` - provider-адаптеры и HTTP-заголовки.
 
 ## Основной поток выполнения
 
