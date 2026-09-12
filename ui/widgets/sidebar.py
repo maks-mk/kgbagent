@@ -6,6 +6,7 @@ from typing import Any
 from PySide6.QtCore import QAbstractListModel, QModelIndex, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListView,
@@ -463,7 +464,17 @@ class SessionSidebarWidget(QWidget):
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.empty_label.setWordWrap(True)
         self.empty_label.setVisible(False)
-        root.addWidget(self.empty_label)
+
+        self.empty_state_card = QFrame()
+        self.empty_state_card.setObjectName("SidebarEmptyStateCard")
+        empty_layout = QVBoxLayout(self.empty_state_card)
+        empty_layout.setContentsMargins(12, 12, 12, 12)
+        empty_layout.setSpacing(0)
+        empty_layout.addStretch(1)
+        empty_layout.addWidget(self.empty_label, 0, Qt.AlignHCenter)
+        empty_layout.addStretch(1)
+        self.empty_state_card.setVisible(False)
+        root.addWidget(self.empty_state_card, 1)
 
     def set_sessions(self, sessions: list[dict[str, str]], active_session_id: str) -> None:
         self.model.set_sessions(sessions, active_session_id)
@@ -489,12 +500,12 @@ class SessionSidebarWidget(QWidget):
 
     def _refresh_empty_state(self) -> None:
         if self.model.session_row_count() > 0:
-            self.empty_label.setVisible(False)
+            self.empty_state_card.setVisible(False)
             self.list_view.setVisible(True)
             return
         self.list_view.setVisible(False)
         self.empty_label.setText("No chats yet" if not self.model.has_source_sessions() else "No chats available")
-        self.empty_label.setVisible(True)
+        self.empty_state_card.setVisible(True)
 
     def _emit_clicked_session(self, index: QModelIndex) -> None:
         if str(index.data(SessionListModel.KindRole) or "session") == "more":

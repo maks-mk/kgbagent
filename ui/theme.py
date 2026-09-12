@@ -949,7 +949,13 @@ def build_stylesheet() -> str:
     QLabel#SidebarEmptyState {{
         color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.28)};
         font-size: 9.2pt;
-        padding: 18px 10px;
+        background: transparent;
+        border: none;
+    }}
+
+    QFrame#SidebarEmptyStateCard {{
+        background: transparent;
+        border: none;
     }}
 
     QLabel#TranscriptRole {{
