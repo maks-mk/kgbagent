@@ -185,6 +185,12 @@ class AgentConfig(BaseSettings):
     allow_external_process_control: bool = Field(default=False, alias="ALLOW_EXTERNAL_PROCESS_CONTROL")
 
     # Tools Limits
+    max_parallel_tool_calls: int = Field(
+        default=4,
+        ge=1,
+        alias="MAX_PARALLEL_TOOL_CALLS",
+        description="Maximum in-flight tool calls per batch; 1 disables parallel execution",
+    )
     max_tool_output_length: int = Field(default=4000, alias="MAX_TOOL_OUTPUT")
     max_raw_tool_output_length: int = Field(
         default=100000,

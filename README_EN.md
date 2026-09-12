@@ -35,7 +35,7 @@ The project does not try to compete with AI IDEs by feature count and does not t
 ## Features
 
 - Graph runtime on `LangGraph` with bounded recovery and self-correction
-- Mixed-mode parallel tool batch: read-only tools run in parallel via `asyncio.gather`, the rest run sequentially; results are reassembled in original order
+- Mixed-mode parallel tool batch: registered read-only tools (including MCP) and `cli_exec` use a bounded pool (`MAX_PARALLEL_TOOL_CALLS=4`); other calls act as sequential barriers, and results retain their original order
 - GUI: frameless windows, projects and chats in the sidebar, batched rendering of long history, streaming transcript, tool cards, approvals, user-choice cards, attachments
 - GUI Session size setting; automatic context compaction is also checked after tool execution
 - Fuzzy replay suppression: the model's repeated preface after a tool call is suppressed even with minor text drift (typos, punctuation)

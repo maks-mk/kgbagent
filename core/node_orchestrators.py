@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, RemoveMessage, SystemMessage, ToolMessage
 from langgraph.config import get_stream_writer
-from langgraph.errors import GraphInterrupt
+from langgraph.errors import GraphBubbleUp
 
 from core.errors import ErrorType, format_error
 from core.message_utils import compact_text
@@ -690,7 +690,11 @@ class ToolBatchCoordinator:
         tool_calls = list(last_msg.tool_calls)
 
         parallel_calls, sequential_calls = owner._partition_tool_calls(tool_calls)
-        parallel_mode = self._parallel_mode_label(parallel_calls, sequential_calls)
+        max_parallel_calls = owner.config.max_parallel_tool_calls
+        parallel_mode = (
+            "sequential" if max_parallel_calls == 1
+            else self._parallel_mode_label(parallel_calls, sequential_calls)
+        )
         self._emit_live_tool_batch_started(tool_calls)
         owner._log_run_event(
             state,
@@ -701,15 +705,13 @@ class ToolBatchCoordinator:
             parallel_mode=parallel_mode,
             parallel_count=len(parallel_calls),
             sequential_count=len(sequential_calls),
+            max_parallel_tool_calls=max_parallel_calls,
         )
         try:
             # Results are collected positionally, then re-assembled in the
             # original tool_calls order so that the LLM receives ToolMessages
             # in the same sequence it emitted tool_calls.
-            results: list[tuple[ToolMessage, bool, dict[str, Any] | None]] = [None] * len(tool_calls)  # type: ignore[list-item]
-            index_by_identity: dict[int, int] = {
-                id(tc): i for i, tc in enumerate(tool_calls)
-            }
+            results: dict[int, tuple[ToolMessage, bool, dict[str, Any] | None]] = {}
 
             async def process_tool_call(
                 tool_call: dict[str, Any],
@@ -725,7 +727,7 @@ class ToolBatchCoordinator:
                         current_turn_id,
                         active_tool_names,
                     )
-                except (asyncio.CancelledError, GraphInterrupt):
+                except (asyncio.CancelledError, GraphBubbleUp):
                     raise
                 except Exception as exc:
                     if not convert_exceptions:
@@ -739,31 +741,54 @@ class ToolBatchCoordinator:
                 self._emit_live_tool_result(result[0])
                 return result
 
-            async def run_parallel_group(group: list[dict[str, Any]]) -> None:
-                if not group:
-                    return
-                processed = await asyncio.gather(
-                    *(process_tool_call(tool_call, convert_exceptions=True) for tool_call in group),
-                )
-                for tool_call, processed_item in zip(group, processed):
-                    results[index_by_identity[id(tool_call)]] = processed_item
+            async def run_parallel_group(group: list[tuple[int, dict[str, Any]]]) -> None:
+                # Only create tasks for available slots, not one task per queued
+                # call. Refill as soon as any tool finishes (no chunking barrier).
+                remaining = iter(group)
+                pending: dict[asyncio.Task, int] = {}
 
-            pending_parallel: list[dict[str, Any]] = []
-            for tool_call in tool_calls:
+                def fill_slots() -> None:
+                    while len(pending) < max_parallel_calls:
+                        item = next(remaining, None)
+                        if item is None:
+                            break
+                        index, tool_call = item
+                        task = asyncio.create_task(process_tool_call(tool_call, convert_exceptions=True))
+                        pending[task] = index
+
+                try:
+                    fill_slots()
+                    while pending:
+                        done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                        # Propagate control exceptions before starting more work.
+                        for task in done:
+                            index = pending.pop(task)
+                            results[index] = task.result()
+                        fill_slots()
+                finally:
+                    # gather alone leaves siblings running when a child raises or
+                    # cancels itself. Cancel and drain before leaving this group.
+                    for task in pending:
+                        if not task.done():
+                            task.cancel()
+                    if pending:
+                        await asyncio.gather(*pending, return_exceptions=True)
+
+            pending_parallel: list[tuple[int, dict[str, Any]]] = []
+            for index, tool_call in enumerate(tool_calls):
                 if owner._tool_call_is_parallel_safe(tool_call):
-                    pending_parallel.append(tool_call)
+                    pending_parallel.append((index, tool_call))
                     continue
 
                 await run_parallel_group(pending_parallel)
                 pending_parallel = []
-                tool_msg, had_error, issue = await process_tool_call(tool_call)
-                results[index_by_identity[id(tool_call)]] = (tool_msg, had_error, issue)
+                results[index] = await process_tool_call(tool_call)
 
             await run_parallel_group(pending_parallel)
 
             # Re-assemble in original order.
-            for item in results:
-                tool_msg, had_error, issue = item
+            for index in range(len(tool_calls)):
+                tool_msg, had_error, issue = results[index]
                 final_messages.append(tool_msg)
                 has_error = has_error or had_error
                 if issue:
@@ -814,6 +839,9 @@ class ToolBatchCoordinator:
                     }
                 )
             return payload
+        except (asyncio.CancelledError, GraphBubbleUp):
+            # Graph control flow is not a tool execution failure.
+            raise
         except Exception as exc:
             owner._log_node_error(
                 state,
@@ -871,7 +899,7 @@ class ToolBatchCoordinator:
     ) -> str:
         """Return a human-readable execution mode for logging.
 
-        - ``"all"``       — every call is parallel-safe (concurrent gather)
+        - ``"all"``       — every call is parallel-safe (bounded task pool)
         - ``"mixed"``     — some calls parallel, some sequential
         - ``"sequential"`` — no parallel-safe calls, all run one-by-one
         """

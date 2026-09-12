@@ -3,10 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QActionGroup, QColor
+from PySide6.QtGui import QActionGroup
 from PySide6.QtWidgets import (
     QFrame,
-    QGraphicsDropShadowEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -236,7 +235,7 @@ class WorkspaceBuilder:
         insert_file_path_action = attach_menu.addAction(COMPOSER_INSERT_FILE_PATH_LABEL)
         attach_button.setMenu(attach_menu)
         attach_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        apply_popup_shadow(attach_menu)
+        configure_composer_popup(attach_menu)
         control_row.addWidget(attach_button, 0, Qt.AlignVCenter)
 
         model_chip = QToolButton()
@@ -253,7 +252,7 @@ class WorkspaceBuilder:
         model_chip.setMenu(model_chip_menu)
         model_chip_group = QActionGroup(model_chip_menu)
         model_chip_group.setExclusive(True)
-        apply_popup_shadow(model_chip_menu)
+        configure_composer_popup(model_chip_menu)
         model_chip.setProperty("chipPosition", "single")
         meta_chip_row = QHBoxLayout()
         meta_chip_row.setContentsMargins(0, 0, 0, 0)
@@ -277,7 +276,7 @@ class WorkspaceBuilder:
         reasoning_chip.setMenu(reasoning_chip_menu)
         reasoning_chip_group = QActionGroup(reasoning_chip_menu)
         reasoning_chip_group.setExclusive(True)
-        apply_popup_shadow(reasoning_chip_menu)
+        configure_composer_popup(reasoning_chip_menu)
 
         model_image_badge = QLabel()
         model_image_badge.setObjectName("ComposerCapabilityBadge")
@@ -397,9 +396,12 @@ class WorkspaceBuilder:
         )
 
 
-def apply_popup_shadow(popup: QWidget) -> None:
-    shadow = QGraphicsDropShadowEffect(popup)
-    shadow.setBlurRadius(28)
-    shadow.setOffset(0, 10)
-    shadow.setColor(QColor(0, 0, 0, 160))
-    popup.setGraphicsEffect(shadow)
+def configure_composer_popup(popup: QWidget) -> None:
+    # Rounded stylesheet corners need a translucent native window. On Windows,
+    # Qt also requires FramelessWindowHint; set both before the first show.
+    popup.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+    popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    # A graphics shadow on the top-level menu expands dirty regions beyond
+    # its backing store, causing UpdateLayeredWindowIndirect failures on Windows.
+    # Keep the rounded alpha surface without an effect or a rectangular OS shadow.
+    popup.setWindowFlags(popup.windowFlags() | Qt.WindowType.NoDropShadowWindowHint)

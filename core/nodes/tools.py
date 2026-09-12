@@ -6,7 +6,7 @@ from contextlib import nullcontext
 from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.messages import ToolMessage
-from langgraph.errors import GraphInterrupt
+from langgraph.errors import GraphBubbleUp
 
 from core.state import AgentState
 from core.errors import format_error, ErrorType
@@ -21,11 +21,15 @@ class ToolsMixin:
         return await self.tool_batch.run(state)
 
     def _tool_call_is_parallel_safe(self, tool_call: Dict[str, Any]) -> bool:
-        """Allow whitelisted read-only calls and explicitly allowed shell calls to overlap."""
+        """Allow registered read-only tools and the existing shell exception to overlap."""
         name = tool_call.get("name") or "unknown_tool"
-        if name not in self.PARALLEL_SAFE_TOOL_NAMES:
+        if name not in self._all_tool_names or name == "request_user_input":
             return False
-        return name == "cli_exec" or self._tool_is_read_only(name)
+        if name == "cli_exec":
+            return True
+        if name not in self.PARALLEL_SAFE_TOOL_NAMES and name not in self.tool_metadata:
+            return False
+        return self._tool_is_read_only(name)
 
     def _partition_tool_calls(
         self,
@@ -34,9 +38,9 @@ class ToolsMixin:
         """Split tool calls into (parallel_safe, sequential) groups.
 
         Each call is independently classified.  The original ordering within
-        each group is preserved, enabling mixed-mode batch execution where
-        whitelisted read-only calls and cli_exec calls run concurrently while
-        other mutating calls run sequentially.
+        each group is preserved for diagnostics. Execution uses contiguous
+        parallel-safe groups separated by sequential barriers, so reads cannot
+        overtake writes. Registered read-only tools and cli_exec may overlap.
         """
         parallel: List[Dict[str, Any]] = []
         sequential: List[Dict[str, Any]] = []
@@ -150,7 +154,7 @@ class ToolsMixin:
                 reason="task_cancelled",
             )
             raise
-        except GraphInterrupt:
+        except GraphBubbleUp:
             raise
         except Exception as e:
             self._log_run_event(

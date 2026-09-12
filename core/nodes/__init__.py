@@ -58,9 +58,10 @@ class AgentNodes(
         "active_tools_provider",
     )
 
-    # Only these tools are allowed to run in parallel in a single tool-call batch.
-    # cli_exec is an explicit exception: independent shell calls may overlap even
-    # though their command profiles can be mutating. Unknown tools stay sequential.
+    # Built-in fallback when explicit metadata is unavailable. Registered tools
+    # with read-only metadata (including MCP) may also run in parallel.
+    # cli_exec remains an explicit exception; its independence is the caller's
+    # responsibility. Unknown tools and request_user_input stay sequential.
     PARALLEL_SAFE_TOOL_NAMES = frozenset(
         {
             "read_file",

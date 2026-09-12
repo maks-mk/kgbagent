@@ -3655,6 +3655,45 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(self.window.attach_button.toolTip(), "Add images or insert file paths")
         self.assertEqual(self.window.send_button.toolTip(), "Send (Enter)")
 
+    def test_composer_popup_menus_keep_rounded_corners_translucent(self):
+        payload = self._snapshot_payload()
+        payload["model_profiles"]["profiles"][0].update(
+            {"model": "gpt-5.6", "base_url": "https://api.openai.com/v1"}
+        )
+        self.window._handle_initialized(payload)
+
+        for button in (self.window.attach_button, self.window.model_chip, self.window.reasoning_chip):
+            menu = button.menu()
+            with self.subTest(selector=button.accessibleName()):
+                self.assertTrue(menu.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground))
+                self.assertTrue(menu.windowFlags() & Qt.WindowType.FramelessWindowHint)
+                self.assertEqual(menu.windowType(), Qt.WindowType.Popup)
+                self.assertTrue(menu.windowFlags() & Qt.WindowType.NoDropShadowWindowHint)
+                self.assertIsNone(menu.graphicsEffect())
+                self.assertTrue(menu.actions())
+                # Reopening must retain transparency and normal popup dismissal.
+                for _ in range(3):
+                    try:
+                        menu.popup(button.mapToGlobal(QPoint(0, button.height())))
+                        self._process_events()
+                        self.assertTrue(menu.isVisible())
+                        menu.setActiveAction(menu.actions()[0])
+                        self._process_events()
+                        image = menu.grab().toImage()
+                        self.assertFalse(image.isNull())
+                        corners = (
+                            (0, 0), (image.width() - 1, 0),
+                            (0, image.height() - 1), (image.width() - 1, image.height() - 1),
+                        )
+                        for x, y in corners:
+                            self.assertEqual(image.pixelColor(x, y).alpha(), 0)
+                        self.assertEqual(image.pixelColor(image.width() // 2, image.height() // 2).alpha(), 255)
+                        QTest.keyClick(menu, Qt.Key_Escape)
+                        self._process_events()
+                        self.assertFalse(menu.isVisible())
+                    finally:
+                        menu.close()
+
     def test_model_selector_renders_active_profile_and_tooltip(self):
         self.window._handle_initialized(self._snapshot_payload())
 

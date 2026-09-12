@@ -16,7 +16,10 @@ from typing import Any
 from unittest import mock
 
 from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.errors import GraphBubbleUp, GraphInterrupt
+from pydantic import ValidationError
 
+from core.config import AgentConfig
 from core.node_orchestrators import (
     AgentTurnOrchestrator,
     AgentTurnOwner,
@@ -53,8 +56,10 @@ class _FakeOwner:
 
     def __init__(self, tool_metadata: dict[str, ToolMetadata]) -> None:
         self._metadata = tool_metadata
+        self.tool_metadata = tool_metadata
         self._all_tool_names = tuple(tool_metadata.keys())
         self.config = SimpleNamespace(
+            max_parallel_tool_calls=4,
             model_supports_tools=True,
             effective_tool_loop_window=0,
             effective_tool_loop_limit_readonly=99,
@@ -190,6 +195,26 @@ class OwnerProtocolContractTests(unittest.TestCase):
                     and node.value.id == "owner"
                 }
                 self.assertEqual(owner_accesses, owner_protocol.__protocol_attrs__)
+
+
+class ParallelToolConfigTests(unittest.TestCase):
+    def _config(self, **overrides):
+        # Isolate this test from local profiles, environment files and credentials.
+        with mock.patch.object(AgentConfig, "settings_customise_sources", side_effect=lambda *args, **kwargs: (kwargs["init_settings"],)):
+            return AgentConfig(PROVIDER="openai", OPENAI_BASE_URL="http://localhost", **overrides)
+
+    def test_default_concurrency_limit(self):
+        self.assertEqual(self._config().max_parallel_tool_calls, 4)
+
+    def test_concurrency_limit_accepts_positive_integers(self):
+        for value in (1, 8, "16"):
+            with self.subTest(value=value):
+                self.assertEqual(self._config(MAX_PARALLEL_TOOL_CALLS=value).max_parallel_tool_calls, int(value))
+
+    def test_concurrency_limit_rejects_invalid_values(self):
+        for value in (0, -1, "invalid", 1.5):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                self._config(MAX_PARALLEL_TOOL_CALLS=value)
 
 
 class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
@@ -434,6 +459,255 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["messages"]), 2)
         # tc2 should have a valid result.
         self.assertEqual(result["messages"][1].content, "result:list_directory")
+
+    async def test_parallel_pool_limits_in_flight_calls_and_refills_slots(self):
+        owner = self._make_owner({"read_file": True})
+        owner.config.max_parallel_tool_calls = 2
+        gates = [asyncio.Event() for _ in range(6)]
+        started = [asyncio.Event() for _ in gates]
+        active = 0
+        peak = 0
+
+        async def process(tool_call, *args):
+            nonlocal active, peak
+            index = int(tool_call["id"])
+            active += 1
+            peak = max(peak, active)
+            started[index].set()
+            try:
+                await gates[index].wait()
+                return ToolMessage(content=f"result:{index}", tool_call_id=str(index)), False, None
+            finally:
+                active -= 1
+
+        owner._process_tool_call = process
+        state = self._make_state([_tc("read_file", str(i)) for i in range(len(gates))])
+        task = asyncio.create_task(ToolBatchCoordinator(owner).run(state))
+        try:
+            await asyncio.wait_for(started[1].wait(), 2)
+            self.assertEqual([event.is_set() for event in started], [True, True, False, False, False, False])
+            gates[1].set()
+            # A free slot must be reused without waiting for the slow first call.
+            await asyncio.wait_for(started[2].wait(), 2)
+            self.assertFalse(gates[0].is_set())
+            for gate in gates:
+                gate.set()
+            result = await asyncio.wait_for(task, 2)
+            self.assertEqual(peak, 2)
+            self.assertEqual([message.tool_call_id for message in result["messages"]], [str(i) for i in range(6)])
+        finally:
+            task.cancel()
+            for gate in gates:
+                gate.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_limit_one_serializes_parallel_safe_calls(self):
+        owner = self._make_owner({"read_file": True})
+        owner.config.max_parallel_tool_calls = 1
+        events = []
+
+        async def process(tool_call, *args):
+            events.append(("start", tool_call["id"]))
+            await asyncio.sleep(0)
+            events.append(("end", tool_call["id"]))
+            return ToolMessage(content="ok", tool_call_id=tool_call["id"]), False, None
+
+        owner._process_tool_call = process
+        await ToolBatchCoordinator(owner).run(self._make_state([_tc("read_file", "a"), _tc("read_file", "b")]))
+        self.assertEqual(events, [("start", "a"), ("end", "a"), ("start", "b"), ("end", "b")])
+
+    async def test_write_barrier_waits_for_reads_and_blocks_following_reads(self):
+        owner = self._make_owner({"read_file": True, "write_file": False})
+        events = []
+
+        async def process(tool_call, *args):
+            events.append(("start", tool_call["id"]))
+            await asyncio.sleep(0)
+            events.append(("end", tool_call["id"]))
+            return ToolMessage(content="ok", tool_call_id=tool_call["id"]), False, None
+
+        owner._process_tool_call = process
+        await ToolBatchCoordinator(owner).run(self._make_state([
+            _tc("read_file", "a"), _tc("read_file", "b"),
+            _tc("write_file", "w"), _tc("read_file", "c"),
+        ]))
+        self.assertLess(events.index(("end", "a")), events.index(("start", "w")))
+        self.assertLess(events.index(("end", "b")), events.index(("start", "w")))
+        self.assertLess(events.index(("end", "w")), events.index(("start", "c")))
+
+    async def test_graph_control_and_child_cancellation_stop_and_drain_siblings(self):
+        for exception_type in (GraphInterrupt, GraphBubbleUp, asyncio.CancelledError):
+            with self.subTest(exception_type=exception_type.__name__):
+                owner = self._make_owner({"read_file": True, "write_file": False})
+                owner.config.max_parallel_tool_calls = 2
+                sibling_started = asyncio.Event()
+                sibling_cleaned = asyncio.Event()
+                release = asyncio.Event()
+                calls = []
+                exception = exception_type()
+
+                async def process(tool_call, *args):
+                    calls.append(tool_call["id"])
+                    if tool_call["id"] == "fail":
+                        await sibling_started.wait()
+                        raise exception
+                    if tool_call["id"] == "slow":
+                        sibling_started.set()
+                        try:
+                            await release.wait()
+                        finally:
+                            await asyncio.sleep(0)
+                            sibling_cleaned.set()
+                    return ToolMessage(content="ok", tool_call_id=tool_call["id"]), False, None
+
+                owner._process_tool_call = process
+                coordinator = ToolBatchCoordinator(owner)
+                state = self._make_state([
+                    _tc("read_file", "fail"), _tc("read_file", "slow"),
+                    _tc("read_file", "queued"), _tc("write_file", "write"),
+                ])
+                try:
+                    with self.assertRaises(exception_type) as raised:
+                        await asyncio.wait_for(coordinator.run(state), 2)
+                    self.assertIs(raised.exception, exception)
+                    self.assertTrue(sibling_cleaned.is_set(), "Sibling task must finish cleanup before propagation")
+                    self.assertEqual(calls, ["fail", "slow"])
+                finally:
+                    release.set()
+                    await asyncio.sleep(0)
+
+    async def test_parent_cancellation_drains_running_tools_without_starting_queued_calls(self):
+        owner = self._make_owner({"read_file": True})
+        owner.config.max_parallel_tool_calls = 2
+        started = asyncio.Event()
+        calls = []
+        cleaned = []
+
+        async def process(tool_call, *args):
+            calls.append(tool_call["id"])
+            if len(calls) == 2:
+                started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await asyncio.sleep(0)
+                cleaned.append(tool_call["id"])
+
+        owner._process_tool_call = process
+        task = asyncio.create_task(ToolBatchCoordinator(owner).run(self._make_state([
+            _tc("read_file", str(i)) for i in range(5)
+        ])))
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertEqual(calls, ["0", "1"])
+            self.assertCountEqual(cleaned, calls)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_registered_read_only_mcp_calls_overlap(self):
+        from tools.tool_registry import ToolRegistry
+
+        owner = _FakeOwner({
+            name: ToolRegistry._infer_mcp_metadata(name, server_policy={"read_only": True})
+            for name in ("mcp_lookup", "mcp_search")
+        })
+        both_started = asyncio.Event()
+        calls = []
+
+        async def process(tool_call, *args):
+            calls.append(tool_call["id"])
+            if len(calls) == 2:
+                both_started.set()
+            await both_started.wait()
+            return ToolMessage(content="ok", tool_call_id=tool_call["id"]), False, None
+
+        owner._process_tool_call = process
+        result = await asyncio.wait_for(ToolBatchCoordinator(owner).run(self._make_state([
+            _tc("mcp_lookup", "a"), _tc("mcp_search", "b"),
+        ])), 2)
+        self.assertEqual([message.tool_call_id for message in result["messages"]], ["a", "b"])
+
+    def test_unregistered_tools_and_user_input_stay_sequential(self):
+        owner = self._make_owner({"request_user_input": True, "custom_read": True})
+        self.assertTrue(owner._tool_call_is_parallel_safe(_tc("custom_read", "a")))
+        self.assertFalse(owner._tool_call_is_parallel_safe(_tc("request_user_input", "b")))
+        self.assertFalse(owner._tool_call_is_parallel_safe(_tc("unknown", "c")))
+        owner.tool_metadata.clear()
+        self.assertFalse(owner._tool_call_is_parallel_safe(_tc("custom_read", "d")))
+
+    def test_conflicting_metadata_keeps_tools_sequential(self):
+        for flag in ("mutating", "destructive"):
+            with self.subTest(flag=flag):
+                owner = _FakeOwner({"custom_read": ToolMetadata(name="custom_read", read_only=True, **{flag: True})})
+                self.assertFalse(owner._tool_call_is_parallel_safe(_tc("custom_read", "a")))
+
+    async def test_execute_tool_propagates_graph_control_exceptions(self):
+        from core.nodes.tools import ToolsMixin
+
+        for exception_type in (GraphInterrupt, GraphBubbleUp):
+            with self.subTest(exception_type=exception_type.__name__):
+                exception = exception_type()
+                owner = ToolsMixin()
+                owner.tools_map = {"graph_tool": SimpleNamespace(ainvoke=mock.AsyncMock(side_effect=exception))}
+                owner._log_run_event = mock.Mock()
+                with self.assertRaises(exception_type) as raised:
+                    await owner._execute_tool("graph_tool", {})
+                self.assertIs(raised.exception, exception)
+
+    async def test_parallel_error_does_not_skip_queued_calls_or_duplicate_results(self):
+        owner = self._make_owner({"read_file": True})
+        owner.config.max_parallel_tool_calls = 2
+        streamed = []
+
+        async def process(tool_call, *args):
+            if tool_call["id"] == "bad":
+                raise RuntimeError("boom")
+            await asyncio.sleep(0)
+            return ToolMessage(content="ok", tool_call_id=tool_call["id"]), False, None
+
+        owner._process_tool_call = process
+        state = self._make_state([_tc("read_file", tc_id) for tc_id in ("a", "bad", "b", "c")])
+        with mock.patch("core.node_orchestrators.get_stream_writer", return_value=streamed.append):
+            result = await ToolBatchCoordinator(owner).run(state)
+        self.assertEqual([message.tool_call_id for message in result["messages"]], ["a", "bad", "b", "c"])
+        self.assertIn("boom", result["messages"][1].content)
+        self.assertEqual(len([event for event in streamed if event["type"] == "tool_result"]), 4)
+
+    async def test_result_positions_do_not_depend_on_tool_call_object_identity(self):
+        owner = self._make_owner({"read_file": True})
+        shared_call = _tc("read_file", "shared")
+        # Bypass AIMessage's copying of tool-call dictionaries to exercise aliasing.
+        state = {"messages": [SimpleNamespace(tool_calls=[shared_call, shared_call])], "run_id": "test"}
+        result = await ToolBatchCoordinator(owner).run(state)
+        self.assertEqual([message.tool_call_id for message in result["messages"]], ["shared", "shared"])
+
+    async def test_tool_tasks_inherit_context_without_leaking_changes_to_next_calls(self):
+        from contextvars import ContextVar
+
+        context = ContextVar("tool_test_context", default="outside")
+        owner = self._make_owner({"read_file": True})
+        owner.config.max_parallel_tool_calls = 1
+        seen = []
+
+        async def process(tool_call, *args):
+            seen.append(context.get())
+            context.set(tool_call["id"])
+            await asyncio.sleep(0)
+            self.assertEqual(context.get(), tool_call["id"])
+            return ToolMessage(content="ok", tool_call_id=tool_call["id"]), False, None
+
+        owner._process_tool_call = process
+        token = context.set("batch")
+        try:
+            await ToolBatchCoordinator(owner).run(self._make_state([_tc("read_file", "a"), _tc("read_file", "b")]))
+            self.assertEqual(seen, ["batch", "batch"])
+            self.assertEqual(context.get(), "batch")
+        finally:
+            context.reset(token)
 
     # --- _partition_tool_calls unit tests ---
 
