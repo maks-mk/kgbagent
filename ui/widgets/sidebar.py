@@ -3,9 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
+from PySide6.QtCore import QAbstractListModel, QEvent, QModelIndex, QRect, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QHelpEvent, QPainter
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyleOptionViewItem,
     QStyledItemDelegate,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -413,6 +415,23 @@ class SessionItemDelegate(QStyledItemDelegate):
         if kind == "more":
             return QSize(260, 30)
         return QSize(260, 32)
+
+    def helpEvent(  # type: ignore[override]
+        self,
+        event: QHelpEvent,
+        view: QAbstractItemView,
+        option: QStyleOptionViewItem,
+        index: QModelIndex,
+    ) -> bool:
+        if event.type() == QEvent.ToolTip and index.isValid():
+            kind = str(index.data(SessionListModel.KindRole) or "session")
+            if kind == "session":
+                title = str(index.data(SessionListModel.TitleRole) or "").strip()
+                if title:
+                    QToolTip.showText(event.globalPos(), title, view)
+                    return True
+        QToolTip.hideText()
+        return super().helpEvent(event, view, option, index)
 
 
 class SessionSidebarWidget(QWidget):

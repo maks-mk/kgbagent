@@ -321,6 +321,56 @@ def _plain_summary_text(text: str) -> str:
     return re.sub(r"\[[^\]]+\]", "", text or "").strip()
 
 
+TITLE_GENERATION_PROMPT = """Generate a concise title for this conversation.
+
+Rules:
+- 2–4 words
+- Describe the main topic of the user's request
+- Be specific and natural
+- Use the same language as the user's message
+- Preserve technical names and terms
+- No quotes
+- No period
+- No \"Title:\" prefix
+- Return ONLY the title
+
+User request:
+{user_message}"""
+
+
+def validate_chat_title(value: object) -> str | None:
+    if isinstance(value, (list, tuple, dict)):
+        value = stringify_content(value)
+    raw_text = str(value or "")
+    text = " ".join(raw_text.replace("\r", " ").replace("\n", " ").split()).strip()
+    text = re.sub(r"^title\s*:\s*", "", text, flags=re.IGNORECASE).strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ('\"', "'"):
+        text = text[1:-1].strip()
+    words = text.split()
+    if not text or len(words) < 2 or len(words) > 4 or "\n" in raw_text or "\r" in raw_text:
+        return None
+    if re.search(r"[.!?]$", text) or re.match(r"^(this is|here is|the user|title)\b", text, re.I):
+        return None
+    return text[:1].upper() + text[1:]
+
+
+async def generate_chat_title_with_llm(llm: Any, user_text: str, logger: Any = None) -> str | None:
+    if logger:
+        logger.info("chat_title_generation_start")
+    try:
+        response = await llm.ainvoke(TITLE_GENERATION_PROMPT.format(user_message=user_text))
+        value = getattr(response, "content", response)
+        title = validate_chat_title(value)
+        if title is None:
+            if logger: logger.warning("chat_title_generation_rejected")
+            return None
+        if logger: logger.info("chat_title_generation_success")
+        return title
+    except Exception:
+        if logger: logger.exception("chat_title_generation_error")
+        return None
+
+
 def generate_chat_title(user_text: str) -> str:
     text = " ".join(str(user_text or "").replace("\r", " ").replace("\n", " ").split()).strip()
     text = TITLE_PREFIX_RE.sub("", text)

@@ -37,7 +37,11 @@ from ui.runtime_payloads import (
     close_runtime_resources,
     load_state_values,
     normalize_approval_mode,
+    generate_chat_title,
+    generate_chat_title_with_llm,
+    append_project_label,
 )
+
 from ui.runtime_session import RuntimeSessionCoordinator
 from ui.streaming import StreamEvent, StreamProcessor
 
@@ -625,16 +629,48 @@ class AgentRunWorker(QObject):
                 self._set_busy(False)
                 return
             persisted_now = self._ensure_current_session_persisted()
-            title_changed = self._maybe_set_session_title(request_user_text(request_payload))
-            if persisted_now or title_changed:
+            if persisted_now:
                 self._run(self._emit_session_payload(include_transcript=False))
             self._run(self._start_run_async(request_payload))
         except Exception as exc:
             self.event_emitted.emit(StreamEvent("run_failed", {"message": str(exc)}))
             self._set_busy(False)
 
+    def _apply_fallback_chat_title(self, user_text: str) -> None:
+        if self.current_session is None:
+            return
+        self._log_ui_run_event("chat_title_generation_fallback")
+        try:
+            title = generate_chat_title(user_text)
+            if str(self.current_session.title or "").strip().startswith("New Chat ["):
+                title = append_project_label(title, self.current_session.project_path)
+            if not title or title == self.current_session.title:
+                return
+            self.current_session.title = title
+            self.store.save_active_session(self.current_session, touch=False, set_active=True)
+            self._run(self._emit_session_payload(include_transcript=False))
+        except Exception:
+            logger.exception("chat_title_fallback_apply_failed")
+
     async def _start_run_async(self, user_text: object) -> None:
         request_payload = normalize_request_payload(user_text)
+        if self.current_session is not None:
+            current_title = str(self.current_session.title or "").strip()
+            is_default_title = current_title in {"New Chat", ""} or current_title.startswith("New Chat [")
+            if is_default_title:
+                try:
+                    from core.providers.factory import create_runtime_llm
+                    title_llm = create_runtime_llm(self.config)
+                    generated = await generate_chat_title_with_llm(title_llm, request_payload["text"], logger)
+                    if generated:
+                        self.current_session.title = generated
+                        self.store.save_active_session(self.current_session, touch=False, set_active=True)
+                        await self._emit_session_payload(include_transcript=False)
+                    else:
+                        self._apply_fallback_chat_title(request_payload["text"])
+                except Exception:
+                    logger.exception("chat_title_generation_error")
+                    self._apply_fallback_chat_title(request_payload["text"])
         self._active_run_elapsed_seconds = 0.0
         self._active_request_has_images = bool(request_payload["attachments"])
         await self._reset_live_summary_progress_from_state()
