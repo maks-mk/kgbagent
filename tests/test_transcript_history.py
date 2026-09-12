@@ -205,3 +205,49 @@ class TranscriptHistoryTests(unittest.TestCase):
         finally:
             widget.close()
             widget.deleteLater()
+
+    def test_history_batch_size_is_configurable_per_widget(self):
+        widget = ChatTranscriptWidget(history_batch_size=5)
+        try:
+            widget.load_transcript({"turns": [
+                {"user_text": str(i), "blocks": [{"type": "assistant", "markdown": f"Answer {i}"}]}
+                for i in range(23)
+            ]})
+            self.assertEqual(len(widget._older_turns), 18)
+            widget.load_older_turns()
+            self.assertEqual(len(widget._older_turns), 13)
+            widget.load_older_turns()
+            self.assertEqual(len(widget._older_turns), 8)
+        finally:
+            widget.close()
+            widget.deleteLater()
+
+    def test_history_batch_size_falls_back_to_default_for_invalid_values(self):
+        for bad in (0, -3, "abc", None):
+            widget = ChatTranscriptWidget(history_batch_size=bad)
+            try:
+                self.assertEqual(widget.history_batch_size, 10)
+            finally:
+                widget.close()
+                widget.deleteLater()
+        widget = ChatTranscriptWidget(history_batch_size=999)
+        try:
+            self.assertEqual(widget.history_batch_size, 200)
+        finally:
+            widget.close()
+            widget.deleteLater()
+
+    def test_history_batch_size_reads_from_agent_config_env(self):
+        widget = ChatTranscriptWidget(history_batch_size=3)
+        try:
+            self.assertEqual(widget.history_batch_size, 3)
+        finally:
+            widget.close()
+            widget.deleteLater()
+        from core.config import AgentConfig
+        cfg = AgentConfig(HISTORY_BATCH_SIZE=25)
+        self.assertEqual(cfg.history_batch_size, 25)
+        cfg = AgentConfig(HISTORY_BATCH_SIZE=0)
+        self.assertEqual(cfg.history_batch_size, 10)
+        cfg = AgentConfig(HISTORY_BATCH_SIZE=1000)
+        self.assertEqual(cfg.history_batch_size, 200)

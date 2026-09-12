@@ -95,6 +95,7 @@
 | `SUMMARY_RESERVED_TOKENS` | Запас на системные инструкции, tool schemas и provider overhead |
 | `SUMMARY_KEEP_LAST` | Сколько последних сообщений не трогать при суммаризации |
 | `SUMMARY_MAX_TOKENS` | Лимит токенов сжатой памяти; `0` — четверть от `SESSION_SIZE` |
+| `HISTORY_BATCH_SIZE` | Сколько сообщений (turns) GUI подгружает за один раз при прокрутке длинной истории; по умолчанию 10, диапазон 1–200 |
 | `MAX_RETRIES` | Число попыток при ошибке LLM |
 | `RETRY_DELAY` | Базовая задержка между попытками (секунды); также используется как base delay для stream-repair backoff |
 

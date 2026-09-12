@@ -792,6 +792,7 @@ class ModelSettingsDialog(QDialog):
         layout.addLayout(value_row)
 
         self.session_size_slider = QSlider(Qt.Orientation.Horizontal)
+        self.session_size_slider.setObjectName("SessionSizeSlider")
         self.session_size_slider.setAccessibleName("Session size")
         self.session_size_slider.setAccessibleDescription(
             "Adjust SESSION_SIZE from 10k to 256k estimated context tokens"

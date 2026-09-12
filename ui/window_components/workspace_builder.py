@@ -124,6 +124,17 @@ class WorkspaceBuilder:
         shell.activate()
         center_panel.layout().activate()
 
+    def _history_batch_size(self) -> int | None:
+        """Read HISTORY_BATCH_SIZE from the agent config without importing heavy modules."""
+        try:
+            from core.config import AgentConfig
+        except Exception:
+            return None
+        try:
+            return int(AgentConfig().history_batch_size)
+        except Exception:
+            return None
+
     def build(self) -> WorkspaceBuildResult:
         workspace = QWidget()
         layout = QVBoxLayout(workspace)
@@ -150,7 +161,7 @@ class WorkspaceBuilder:
         center_layout.setHorizontalSpacing(8)
         center_layout.setVerticalSpacing(0)
 
-        transcript = ChatTranscriptWidget()
+        transcript = ChatTranscriptWidget(history_batch_size=self._history_batch_size())
         transcript.setAccessibleName("Conversation transcript")
         transcript.setAccessibleDescription("Shows user messages, assistant output, tools, and notices")
         center_layout.addWidget(transcript, 0, 0)

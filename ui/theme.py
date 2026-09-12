@@ -801,6 +801,37 @@ def build_stylesheet() -> str:
         background: transparent;
     }}
 
+    /* Round thumb over the accent track for the Test-tab SESSION_SIZE slider.
+       Fusion paints the filled part of the groove with the highlight color;
+       keep that blue line and add a circular handle on top of it. */
+    QSlider#SessionSizeSlider {{
+        min-height: 22px;
+    }}
+
+    QSlider#SessionSizeSlider::groove:horizontal {{
+        height: 4px;
+        border-radius: 2px;
+        background: {model_dialog_field_border};
+    }}
+
+    QSlider#SessionSizeSlider::sub-page:horizontal {{
+        background: {blend_hex("#5B8DEF", "#FFFFFF", 0.06)};
+        border-radius: 2px;
+    }}
+
+    QSlider#SessionSizeSlider::handle:horizontal {{
+        background: {blend_hex("#5B8DEF", "#FFFFFF", 0.55)};
+        width: 14px;
+        height: 14px;
+        margin: -5px 0;
+        border-radius: 7px;
+        border: 1px solid {blend_hex("#5B8DEF", "#FFFFFF", 0.75)};
+    }}
+
+    QSlider#SessionSizeSlider::handle:horizontal:hover {{
+        background: {blend_hex("#5B8DEF", "#FFFFFF", 0.7)};
+    }}
+
     QDialog#ModelSettingsDialog QDialogButtonBox {{
         border-top: 1px solid {model_dialog_border};
         padding-top: 6px;

@@ -307,8 +307,17 @@ class ConversationTurnWidget(QWidget):
 class ChatTranscriptWidget(QWidget):
     HISTORY_BATCH_SIZE = 10
 
-    def __init__(self) -> None:
+    def __init__(self, history_batch_size: int | None = None) -> None:
         super().__init__()
+        try:
+            requested = int(history_batch_size) if history_batch_size is not None else self.HISTORY_BATCH_SIZE
+        except (TypeError, ValueError):
+            requested = self.HISTORY_BATCH_SIZE
+        # Same rule as the AgentConfig validator: non-positive or invalid
+        # values fall back to the default, oversized values clamp to 200.
+        if requested < 1:
+            requested = self.HISTORY_BATCH_SIZE
+        self.history_batch_size = min(200, requested)
         self._auto_follow_enabled = True
         self._pending_scroll = False
         self._pending_force_scroll = False
@@ -414,14 +423,14 @@ class ChatTranscriptWidget(QWidget):
             self.clear_transcript()
             payload = payload or {}
             turns = list(payload.get("turns", []) or [])
-            self._older_turns = turns[:-self.HISTORY_BATCH_SIZE]
+            self._older_turns = turns[:-self.history_batch_size]
             if self._older_turns:
                 self._history_button = QPushButton(self.column)
                 self._history_button.setObjectName("TranscriptJumpButton")
                 self._history_button.clicked.connect(self.load_older_turns)
                 self.layout.insertWidget(0, self._history_button)
                 self._update_history_button()
-            for turn_data in turns[-self.HISTORY_BATCH_SIZE:]:
+            for turn_data in turns[-self.history_batch_size:]:
                 self._insert_restored_turn(turn_data, self.layout.count() - 1)
         finally:
             self.column.setUpdatesEnabled(True)
@@ -472,8 +481,8 @@ class ChatTranscriptWidget(QWidget):
         self.setUpdatesEnabled(False)
         self._programmatic_scroll = True
         try:
-            batch = self._older_turns[-self.HISTORY_BATCH_SIZE:]
-            del self._older_turns[-self.HISTORY_BATCH_SIZE:]
+            batch = self._older_turns[-self.history_batch_size:]
+            del self._older_turns[-self.history_batch_size:]
             for index, data in enumerate(batch, 1):
                 self._insert_restored_turn(data, index)
             self._update_history_button()

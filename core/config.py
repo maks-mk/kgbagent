@@ -209,6 +209,13 @@ class AgentConfig(BaseSettings):
     max_search_chars: int = Field(default=15000, alias="MAX_SEARCH_CHARS")
     max_read_lines: int = Field(default=DEFAULT_READ_LIMIT, alias="MAX_READ_LINES")
 
+    # UI
+    history_batch_size: int = Field(
+        default=10,
+        alias="HISTORY_BATCH_SIZE",
+        description="How many chat turns the transcript renders per batch when loading older history",
+    )
+
     # Deterministic Mode
     strict_mode: bool = Field(default=False, alias="STRICT_MODE")
 
@@ -282,6 +289,20 @@ class AgentConfig(BaseSettings):
     @classmethod
     def resolve_path_fields(cls, v: Union[str, Path]) -> Path:
         return _resolve_runtime_path(v)
+
+    @field_validator("history_batch_size", mode="before")
+    @classmethod
+    def validate_history_batch_size(cls, v: Any) -> int:
+        """Clamp HISTORY_BATCH_SIZE to a sane positive range; 0 or invalid falls back to 10."""
+        try:
+            value = int(float(v))
+        except (TypeError, ValueError):
+            return 10
+        if value < 1:
+            return 10
+        if value > 200:
+            return 200
+        return value
 
     @field_validator("log_level", mode="before")
     @classmethod
