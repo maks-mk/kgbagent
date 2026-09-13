@@ -9,10 +9,11 @@ passthrough result.
 Compression is delegated to headroom's ``ContentRouter``, which detects the
 content type (build log, search results, JSON array, tabular data, plain text)
 and applies the matching compressor. The router has no notion of this runtime's
-output budget and stops at its lossless fold as soon as that shrinks the content
-at all, so a routed result still above the budget is re-compressed through
-headroom's ``LogCompressor`` - log content only - whose caps are sized to the
-budget instead of headroom's small defaults. CCR retrieval markers are disabled:
+output budget and may stop after a small lossless fold, so an oversized or rejected
+routed result gets a log-only fallback whose caps are sized to the budget instead
+of headroom's small defaults. Candidates are validated lazily against one source
+diagnostic profile; an explicit lossless chain permits compact repetition folds.
+CCR retrieval markers are disabled:
 this runtime exposes no ``headroom_retrieve`` tool, so a marker would leave the
 model with an unresolvable pointer instead of data. MCP tool outputs use the same
 router and are identified by their runtime metadata (``source == "mcp"``)
@@ -28,8 +29,9 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
 
+from core.tool_results import parse_tool_execution_result
 from core.utils import truncate_output
 
 logger = logging.getLogger(__name__)
@@ -45,10 +47,10 @@ COMPRESSIBLE_TOOL_NAMES = frozenset(
 )
 
 _MIN_COMPRESSION_CHARS = 2000
-# Content without diagnostics carries nothing that can be verified line by line, so
-# compression must still fill at least this fraction (1/N) of the output budget,
-# otherwise a compressor that deleted content instead of condensing it would win
-# over the deterministic reducer, which keeps verbatim head/diagnostics/tail.
+# Unless Headroom explicitly reports a lossless chain, content without diagnostics
+# must still fill at least this fraction (1/N) of the output budget. Otherwise a
+# compressor that deleted content instead of condensing it would win over the
+# deterministic reducer, which keeps verbatim head/diagnostics/tail.
 _MIN_BUDGET_FRACTION = 4
 # Log lines stay well below this width, so the output budget divided by it is a line
 # count whose rendering still fits the budget. Used to size headroom's log-compressor
@@ -170,7 +172,7 @@ class ToolOutputCompressor:
         """Return compressed content, or None when compression is not applicable."""
         if not self._enabled:
             return None
-        if not content or len(content) <= max(limit, self._min_chars):
+        if limit <= 0 or not content or len(content) <= max(limit, self._min_chars):
             return None
         if not is_mcp and tool_name not in COMPRESSIBLE_TOOL_NAMES:
             return None
@@ -179,48 +181,47 @@ class ToolOutputCompressor:
         if router is None:
             return None
 
-        candidates: Dict[str, str] = {}
-        routed, strategy = self._route(
+        routed, strategy, lossless = self._route(
             router,
             content=content,
             tool_name=tool_name,
             tool_args=tool_args,
             user_query=user_query,
         )
-        if routed is not None:
-            candidates[routed] = strategy
-        # A candidate above the budget gets cut by the deterministic reducer, which
-        # can only drop spans, while headroom's log compressor condenses. The router
-        # never reaches it once its lossless-first fold shrank the content at all -
-        # a fold of a few percent is enough - so ask it directly instead of handing
-        # an oversized result to the reducer. Its warning dedupe normalises digits
-        # before comparing, which folds pure repetition on one log and erases
-        # distinct identifiers on the next, so both variants are offered and the
-        # selection below decides: the smaller one wins unless it lost diagnostics.
-        if routed is None or len(routed) > limit:
-            for dedupe_warnings in (True, False):
-                log_candidate = self._log_candidate(
-                    content=content,
-                    tool_name=tool_name,
-                    limit=limit,
-                    routed_strategy=strategy,
-                    dedupe_warnings=dedupe_warnings,
-                )
-                if log_candidate is not None:
-                    candidates.setdefault(log_candidate, _LOG_STRATEGY)
+        # Prepare the source-side comparison only once, and only if a candidate
+        # exists. Re-tokenizing every diagnostic and reducing the source for each
+        # candidate used to cost several full passes over large outputs.
+        diagnostic_profile: Optional[tuple[list[frozenset[str]], int]] = None
 
-        # Smallest first: same information for fewer tokens. A candidate that lost
-        # diagnostics is skipped rather than ending the search, so a compact result
-        # is never preferred at the cost of losing what the output is read for.
-        for candidate, candidate_strategy in sorted(
-            candidates.items(), key=lambda item: len(item[0])
-        ):
+        def validate(
+            candidate: str, candidate_strategy: str, *, lossless: bool = False
+        ) -> Optional[str]:
+            nonlocal diagnostic_profile
             result = candidate + (
                 f"\n[COMPRESSED by headroom | {len(content)} -> {len(candidate)} chars | "
                 f"tool={tool_name} | strategy={candidate_strategy}]"
             )
+            # Metadata is part of the cost, not useful content or proof of savings.
+            if len(result) >= len(content):
+                return None
+            if diagnostic_profile is None:
+                diagnostics = self._diagnostic_tokens(content)
+                baseline = ""
+                if diagnostics:
+                    baseline = self.reduce_to_limit(
+                        content=content, tool_name=tool_name, limit=limit, is_mcp=is_mcp
+                    )
+                diagnostic_profile = diagnostics, self._diagnostics_kept(diagnostics, baseline)
+            diagnostics, baseline_kept = diagnostic_profile
             if self._preserves_diagnostics(
-                content=content, compressed=result, tool_name=tool_name, limit=limit, is_mcp=is_mcp
+                diagnostics=diagnostics,
+                baseline_kept=baseline_kept,
+                compressed=result,
+                body_length=len(candidate),
+                tool_name=tool_name,
+                limit=limit,
+                is_mcp=is_mcp,
+                lossless=lossless,
             ):
                 return result
             logger.debug(
@@ -228,7 +229,26 @@ class ToolOutputCompressor:
                 candidate_strategy,
                 tool_name,
             )
-        return None
+            return None
+
+        routed_result = validate(routed, strategy, lossless=lossless) if routed is not None else None
+        if routed_result is not None and len(routed_result) <= limit:
+            return routed_result
+
+        # The router can stop after a tiny lossless fold, or return a short but
+        # unusable result. Try log condensation in both cases. Warning dedupe can
+        # still normalize values after ':'/'=' in headroom 0.37, so retry without
+        # it only when the first candidate fails validation, not unconditionally.
+        for candidate in self._log_candidates(
+            content=content, tool_name=tool_name, limit=limit, routed_strategy=strategy
+        ):
+            log_result = validate(candidate, _LOG_STRATEGY)
+            if log_result is not None:
+                return min(
+                    (result for result in (routed_result, log_result) if result is not None),
+                    key=len,
+                )
+        return routed_result
 
     def _route(
         self,
@@ -238,8 +258,8 @@ class ToolOutputCompressor:
         tool_name: str,
         tool_args: Optional[Dict[str, Any]],
         user_query: str,
-    ) -> tuple[Optional[str], str]:
-        """Compress through the content router, returning the result and its strategy."""
+    ) -> tuple[Optional[str], str, bool]:
+        """Return routed content, strategy and explicit lossless provenance."""
         question = str(user_query or "").strip()
         try:
             result = router.compress(
@@ -249,43 +269,47 @@ class ToolOutputCompressor:
             )
         except Exception:
             logger.debug("headroom compression failed for tool %s", tool_name, exc_info=True)
-            return None, ""
+            return None, "", False
 
         strategy = getattr(getattr(result, "strategy_used", None), "value", "") or "unknown"
         compressed = getattr(result, "compressed", None)
         if not self._is_usable(compressed, content=content, tool_name=tool_name):
-            return None, strategy
-        return compressed, strategy
+            return None, strategy, False
+        # Only an explicit, entirely lossless chain proves a tiny result is safe.
+        # A strategy name alone ("text", "log", ...) says nothing about data loss.
+        chain = getattr(result, "strategy_chain", None)
+        lossless = isinstance(chain, (list, tuple)) and bool(chain) and all(
+            isinstance(step, str) and step.startswith("lossless_") for step in chain
+        )
+        return compressed, strategy, lossless
 
-    def _log_candidate(
+    def _log_candidates(
         self,
         *,
         content: str,
         tool_name: str,
         limit: int,
         routed_strategy: str,
-        dedupe_warnings: bool,
-    ) -> Optional[str]:
-        """Compress through headroom's log compressor, or None for non-log content."""
-        compressor = self._get_log_compressor(limit, dedupe_warnings=dedupe_warnings)
-        if compressor is None:
-            return None
-        try:
-            result = compressor.compress(content)
-        except Exception:
-            logger.debug("headroom log compression failed for tool %s", tool_name, exc_info=True)
-            return None
+    ) -> Iterator[str]:
+        """Yield deduped then verbatim-warning candidates, lazily and only for logs."""
+        for dedupe_warnings in (True, False):
+            compressor = self._get_log_compressor(limit, dedupe_warnings=dedupe_warnings)
+            if compressor is None:
+                return
+            try:
+                result = compressor.compress(content)
+            except Exception:
+                logger.debug("headroom log compression failed for tool %s", tool_name, exc_info=True)
+                continue
 
-        # Dropping whole lines only makes sense on content headroom itself reads as a
-        # log: either the router routed it there, or a concrete build/test format was
-        # recognised. The same pass over prose or source code would delete most of it.
-        log_format = getattr(getattr(result, "format_detected", None), "value", "")
-        if routed_strategy != _LOG_STRATEGY and log_format == _GENERIC_LOG_FORMAT:
-            return None
-        compressed = getattr(result, "compressed", None)
-        if not self._is_usable(compressed, content=content, tool_name=tool_name):
-            return None
-        return compressed
+            # Detect once: a generic non-log never benefits from a second pass.
+            # Missing format metadata is not evidence that prose is a build log.
+            log_format = getattr(getattr(result, "format_detected", None), "value", "")
+            if routed_strategy != _LOG_STRATEGY and log_format in ("", _GENERIC_LOG_FORMAT):
+                return
+            compressed = getattr(result, "compressed", None)
+            if self._is_usable(compressed, content=content, tool_name=tool_name):
+                yield compressed
 
     @staticmethod
     def _is_usable(compressed: Any, *, content: str, tool_name: str) -> bool:
@@ -298,48 +322,55 @@ class ToolOutputCompressor:
         if _CCR_MARKER_RE.search(compressed):
             logger.debug("headroom returned an unresolved retrieval marker for tool %s", tool_name)
             return False
+        # Diagnostics anywhere in the body are not enough: the executor parses
+        # ERROR[TYPE] only at the start. Never turn a failed tool into a success
+        # (or change its retryability) by moving or rewriting that envelope.
+        if (
+            parse_tool_execution_result(content).error_type
+            != parse_tool_execution_result(compressed).error_type
+        ):
+            return False
         return True
 
     def _preserves_diagnostics(
-        self, *, content: str, compressed: str, tool_name: str, limit: int, is_mcp: bool
+        self,
+        *,
+        diagnostics: list[frozenset[str]],
+        baseline_kept: int,
+        compressed: str,
+        body_length: int,
+        tool_name: str,
+        limit: int,
+        is_mcp: bool,
+        lossless: bool,
     ) -> bool:
-        """Reject a candidate that delivers fewer diagnostics than plain reduction.
+        """Compare diagnostics on the delivered text, not an oversized candidate.
 
-        Diagnostics are what verbose tool output is read for, and every compressor
-        caps how many of them it keeps, so a run with more failures than that cap
-        loses the rest. Both candidates are measured on the text the model actually
-        receives, because a candidate above the budget is cut afterwards by the
-        deterministic reducer, which keeps a verbatim head, the deduplicated
-        diagnostics and the tail. Tokens are compared rather than whole lines
-        because compressors for structured content re-serialise records (JSON
-        objects into CSV rows), which preserves the data in another shape. Content
-        without any diagnostic line offers nothing to compare, so such a candidate
-        must still fill a meaningful part of the budget instead of collapsing into
-        an "N lines omitted" marker.
+        Without diagnostics, only explicit lossless provenance may bypass the
+        minimum useful-content budget. A footer cannot make an omission-only
+        summary useful. Structured records are compared by significant tokens
+        so JSON-to-CSV reserialization remains acceptable.
         """
-        diagnostics = {
+        if not diagnostics:
+            return lossless or body_length * _MIN_BUDGET_FRACTION >= limit
+        delivered = self.reduce_to_limit(
+            content=compressed, tool_name=tool_name, limit=limit, is_mcp=is_mcp
+        )
+        return self._diagnostics_kept(diagnostics, delivered) >= baseline_kept
+
+    @staticmethod
+    def _diagnostic_tokens(content: str) -> list[frozenset[str]]:
+        lines = {
             line.strip()
             for line in content.splitlines()
             if line.strip() and _DIAGNOSTIC_LINE_RE.search(line)
         }
-        if not diagnostics:
-            return len(compressed) * _MIN_BUDGET_FRACTION >= limit
-        delivered = self.reduce_to_limit(
-            content=compressed, tool_name=tool_name, limit=limit, is_mcp=is_mcp
-        )
-        reduced = self.reduce_to_limit(
-            content=content, tool_name=tool_name, limit=limit, is_mcp=is_mcp
-        )
-        return self._diagnostics_kept(diagnostics, delivered) >= self._diagnostics_kept(
-            diagnostics, reduced
-        )
+        return [frozenset(_SIGNIFICANT_TOKEN_RE.findall(line)) for line in lines]
 
     @staticmethod
-    def _diagnostics_kept(diagnostics: set[str], text: str) -> int:
+    def _diagnostics_kept(diagnostics: list[frozenset[str]], text: str) -> int:
         tokens = set(_SIGNIFICANT_TOKEN_RE.findall(text))
-        return sum(
-            1 for line in diagnostics if set(_SIGNIFICANT_TOKEN_RE.findall(line)) <= tokens
-        )
+        return sum(1 for line_tokens in diagnostics if line_tokens <= tokens)
 
     def reduce_to_limit(
         self,

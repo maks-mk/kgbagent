@@ -950,7 +950,15 @@ class RefactorServicesTests(unittest.TestCase):
             compressed=kept_errors, strategy_used=mock.Mock(value="log")
         )
 
-        with mock.patch.object(compressor, "_get_router", return_value=fake_router):
+        # Even the fallback must be rejected if it loses the same diagnostics.
+        fake_log = mock.Mock()
+        fake_log.compress.return_value = mock.Mock(
+            compressed=kept_errors, format_detected=mock.Mock(value="generic")
+        )
+        with (
+            mock.patch.object(compressor, "_get_router", return_value=fake_router),
+            mock.patch.object(compressor, "_get_log_compressor", return_value=fake_log),
+        ):
             result = compressor.compress(
                 content=content,
                 tool_name="cli_exec",
