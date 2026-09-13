@@ -13,7 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import agent as agent_module
-from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, RemoveMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 from pydantic import BaseModel, RootModel
@@ -5502,6 +5502,142 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         rate_limit_samples = [gui_runtime.AgentRunWorker._stream_retry_backoff(0, 2.0, "rate_limit") for _ in range(100)]
         self.assertGreater(sum(rate_limit_samples) / len(rate_limit_samples),
                            sum(network_samples) / len(network_samples))
+
+    def _make_token_usage_worker(self, segments, *, approval_mode="prompt", repairs=None):
+        worker = gui_runtime.AgentRunWorker()
+        worker.config = self._make_config(MAX_RETRIES=2)
+        worker.store = mock.Mock()
+        worker.current_session = SessionSnapshot(
+            session_id="usage-session", thread_id="usage-thread",
+            checkpoint_backend="memory", checkpoint_target="memory",
+            created_at="", updated_at="", project_path=str(Path.cwd()),
+            title="Usage test", approval_mode=approval_mode,
+        )
+        inputs = []
+        pending_segments = iter(segments)
+
+        async def stream(payload, **_kwargs):
+            inputs.append(payload)
+            for event in next(pending_segments):
+                if isinstance(event, BaseException):
+                    raise event
+                yield event
+
+        worker.agent_app = SimpleNamespace(astream=stream)
+        worker._repair_current_session_if_needed = mock.AsyncMock(
+            side_effect=repairs, return_value=[]
+        )
+        worker._emit_session_payload = mock.AsyncMock()
+        worker._reset_live_summary_progress_from_state = mock.AsyncMock()
+        worker._stream_retry_backoff = mock.Mock(return_value=0)
+        events = []
+        worker.event_emitted.connect(events.append)
+        return worker, inputs, events
+
+    @staticmethod
+    def _token_usage_events(message_id, input_tokens, output_tokens, cache_tokens=0):
+        usage = {
+            "input_tokens": input_tokens, "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "input_token_details": {"cache_read": cache_tokens},
+        }
+        return [
+            {"type": "messages", "data": (
+                AIMessageChunk(content="", id=message_id, usage_metadata=usage),
+                {"langgraph_node": "agent"},
+            )},
+            {"type": "updates", "data": {"agent": {
+                "messages": [AIMessage(content="Done", id=message_id, usage_metadata=usage)],
+                "token_usage": usage,
+            }}},
+        ]
+
+    async def test_worker_accumulates_tokens_across_approval_and_user_choice(self):
+        for mode in ("auto", "replay", "approve", "reject", "always", "choice"):
+            with self.subTest(mode=mode):
+                first = self._token_usage_events("first", 40000, 100, 1000)
+                interrupt = {"kind": "user_choice" if mode == "choice" else "tool_approval"}
+                worker, inputs, events = self._make_token_usage_worker([
+                    first + [{"type": "updates", "data": {"__interrupt__": [interrupt]}}],
+                    # A completed update may be delivered again on resume. It must not
+                    # duplicate either the request usage or the session cache hits.
+                    ([first[-1]] if mode == "replay" else [])
+                    + self._token_usage_events("second", 2000, 100, 500),
+                ], approval_mode="always" if mode in {"auto", "replay"} else "prompt")
+                await worker._start_run_async("First request")
+                if mode not in {"auto", "replay"}:
+                    self.assertTrue(worker._awaiting_approval)
+                    if mode == "choice":
+                        await worker._resume_user_choice_async("Option A")
+                    else:
+                        await worker._resume_approval_async(mode != "reject", mode == "always")
+                self.assertEqual(len(inputs), 2)
+                self.assertIsInstance(inputs[1], Command)
+                self.assertIn("↓ 42000", worker.current_session.last_run_stats)
+                self.assertIn("↑ 200", worker.current_session.last_run_stats)
+                self.assertEqual(worker.current_session.cache_hit_tokens, 1500)
+                finished = [e for e in events if e.type == "run_finished"]
+                self.assertEqual(finished[-1].payload["stats"], worker.current_session.last_run_stats)
+
+    async def test_worker_accumulates_tokens_across_stream_repair(self):
+        for failed in (True, False):
+            with self.subTest(failed=failed):
+                worker, inputs, _ = self._make_token_usage_worker([
+                    self._token_usage_events("first", 40000, 100)
+                    + ([ConnectionError("Connection reset by peer")] if failed else []),
+                    self._token_usage_events("retry", 2000, 100),
+                ], repairs=[[], ["repaired missing tool output"], []])
+                await worker._start_run_async("Request")
+                self.assertEqual(inputs[1], None)
+                self.assertIn("↓ 42000", worker.current_session.last_run_stats)
+                self.assertIn("↑ 200", worker.current_session.last_run_stats)
+
+    async def test_worker_clears_usage_if_cancelled_during_stream_repair(self):
+        worker, _, _ = self._make_token_usage_worker([
+            self._token_usage_events("first", 40000, 100),
+        ], repairs=[[], asyncio.CancelledError()])
+        with self.assertRaises(asyncio.CancelledError):
+            await worker._start_run_async("Request")
+        self.assertIsNone(worker._active_run_token_tracker)
+        self.assertEqual(worker._active_run_elapsed_seconds, 0.0)
+
+    async def test_worker_accumulates_tokens_across_repeated_interrupts(self):
+        interrupt = {"type": "updates", "data": {
+            "__interrupt__": [{"kind": "tool_approval"}],
+        }}
+        worker, inputs, _ = self._make_token_usage_worker([
+            self._token_usage_events("first", 40000, 100) + [interrupt],
+            self._token_usage_events("second", 2000, 100) + [interrupt],
+            self._token_usage_events("third", 3000, 200),
+        ], approval_mode="always")
+        await worker._start_run_async("Request")
+        self.assertEqual(len(inputs), 3)
+        self.assertIn("↓ 45000", worker.current_session.last_run_stats)
+        self.assertIn("↑ 400", worker.current_session.last_run_stats)
+
+    async def test_worker_does_not_carry_tokens_into_next_request_or_session(self):
+        for ending in (None, ValueError("permanent failure"), asyncio.CancelledError()):
+            with self.subTest(ending=type(ending).__name__):
+                worker, _, _ = self._make_token_usage_worker([
+                    self._token_usage_events("first", 40000, 100)
+                    + ([ending] if ending is not None else []),
+                    self._token_usage_events("second", 2000, 100),
+                    self._token_usage_events("third", 3000, 200),
+                ])
+                await worker._start_run_async("First")
+                self.assertIsNone(worker._active_run_token_tracker)
+                await worker._start_run_async("Second")
+                self.assertIn("↓ 2000", worker.current_session.last_run_stats)
+                self.assertIn("↑ 100", worker.current_session.last_run_stats)
+                worker._coordinator.set_current_session_active(SessionSnapshot(
+                    session_id="another-session", thread_id="another-thread",
+                    checkpoint_backend="memory", checkpoint_target="memory",
+                    created_at="", updated_at="", project_path=str(Path.cwd()),
+                    title="Another session",
+                ))
+                await worker._start_run_async("Third")
+                self.assertIn("↓ 3000", worker.current_session.last_run_stats)
+                self.assertIn("↑ 200", worker.current_session.last_run_stats)
 
     async def test_run_graph_payload_includes_backoff_and_error_kind_in_log(self):
         """Verify that backoff_seconds and error_kind are logged during stream repair."""

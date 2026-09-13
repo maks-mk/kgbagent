@@ -203,7 +203,7 @@ class AgentConfig(BaseSettings):
         description="Maximum characters captured before tool output compression",
     )
     enable_headroom_compression: bool = Field(
-        default=False,
+        default=True,
         alias="ENABLE_HEADROOM_COMPRESSION",
         description="Compress oversized noisy tool outputs (shell/search/listings) with headroom instead of hard truncation",
     )

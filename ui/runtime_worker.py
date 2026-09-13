@@ -27,6 +27,7 @@ from core.multimodal import (
 from core.run_logger import JsonlRunLogger
 from core.session_store import SessionSnapshot, SessionStore
 from core.summarize_policy import estimate_tokens, summary_remaining_ratio, summary_trigger_tokens
+from core.text_utils import TokenTracker
 from ui.runtime_payloads import (
     APPROVAL_MODE_ALWAYS,
     APPROVAL_MODE_PROMPT,
@@ -148,6 +149,7 @@ class AgentRunWorker(QObject):
         self._awaiting_interrupt_kind = ""
         self._pending_user_choice_type = ""
         self._active_run_elapsed_seconds = 0.0
+        self._active_run_token_tracker: TokenTracker | None = None
         self._active_request_has_images = False
         self._active_summary_estimated_tokens = 0
         self._active_summary_message_count = 0
@@ -672,6 +674,7 @@ class AgentRunWorker(QObject):
                     logger.exception("chat_title_generation_error")
                     await self._apply_fallback_chat_title(request_payload["text"])
         self._active_run_elapsed_seconds = 0.0
+        self._active_run_token_tracker = None
         self._active_request_has_images = bool(request_payload["attachments"])
         await self._reset_live_summary_progress_from_state()
         if self.current_session is not None:
@@ -732,6 +735,8 @@ class AgentRunWorker(QObject):
         return effective_base * (2 ** attempt) + random.uniform(0, effective_base)
 
     async def _run_graph_payload(self, payload: dict | Command | None) -> None:
+        if self._active_run_token_tracker is None:
+            self._active_run_token_tracker = TokenTracker()
         try:
             stream_repair_resume_attempts = 0
             max_stream_repair_resumes = max(0, min(int(getattr(self.config, "max_retries", 1) or 1), 2))
@@ -748,6 +753,7 @@ class AgentRunWorker(QObject):
                     events_max=self.config.stream_events_max,
                     tool_buffer_max=self.config.stream_tool_buffer_max,
                     base_elapsed_seconds=self._active_run_elapsed_seconds,
+                    token_tracker=self._active_run_token_tracker,
                     tool_sources={
                         name: str(getattr(metadata, "source", "local") or "local")
                         for name, metadata in getattr(self.tool_registry, "tool_metadata", {}).items()
@@ -766,6 +772,7 @@ class AgentRunWorker(QObject):
                     await self._repair_current_session_if_needed()
                     self._refresh_model_profiles_from_store()
                     self._active_run_elapsed_seconds = 0.0
+                    self._active_run_token_tracker = None
                     self._active_request_has_images = False
                     self._set_busy(False)
                     return
@@ -815,6 +822,7 @@ class AgentRunWorker(QObject):
                         continue
                     self._refresh_model_profiles_from_store()
                     self._active_run_elapsed_seconds = 0.0
+                    self._active_run_token_tracker = None
                     self._active_request_has_images = False
                     self._set_busy(False)
                     return
@@ -862,6 +870,7 @@ class AgentRunWorker(QObject):
                     # transcript here rebuilds widgets and resets the reading position.
                     await self._emit_session_payload(include_transcript=False)
                     self._active_run_elapsed_seconds = 0.0
+                    self._active_run_token_tracker = None
                     self._active_request_has_images = False
                     self._set_busy(False)
                     return
@@ -890,9 +899,16 @@ class AgentRunWorker(QObject):
                 self.approval_requested.emit(approval_payload)
                 self._set_busy(False)
                 return
+        except asyncio.CancelledError:
+            # Cancellation can also arrive during repair/backoff, outside the stream.
+            self._active_run_elapsed_seconds = 0.0
+            self._active_run_token_tracker = None
+            self._active_request_has_images = False
+            raise
         except Exception as exc:
             self._refresh_model_profiles_from_store()
             self._active_run_elapsed_seconds = 0.0
+            self._active_run_token_tracker = None
             if self._active_request_has_images:
                 self.event_emitted.emit(
                     StreamEvent(

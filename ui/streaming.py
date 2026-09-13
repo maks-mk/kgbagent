@@ -214,11 +214,14 @@ class StreamProcessor:
         events_max: int = 400,
         tool_buffer_max: int = 128,
         base_elapsed_seconds: float = 0.0,
+        token_tracker: TokenTracker | None = None,
         tool_sources: Dict[str, str] | None = None,
         mcp_tool_servers: Dict[str, str] | None = None,
     ):
         self.emit_event = emit_event
-        self.tracker = TokenTracker()
+        # Keep request usage and message-ID deduplication across stream segments.
+        self.tracker = token_tracker if token_tracker is not None else TokenTracker()
+        self.tracker.advance_step()
         self.full_text = ""
         self.clean_full = ""
         self.printed_tool_ids: Set[str] = set()

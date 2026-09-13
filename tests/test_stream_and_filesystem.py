@@ -909,6 +909,26 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertIn("↓ 0", stats)
         self.assertIn("↑ 0", stats)
 
+    def test_stream_processor_shares_usage_but_separates_unkeyed_segments(self):
+        first = StreamProcessor()
+        first._handle_messages((
+            AIMessageChunk(content="", usage_metadata={
+                "input_tokens": 40000, "output_tokens": 100, "total_tokens": 40100,
+            }),
+            {"langgraph_node": "agent"},
+        ))
+        # An interrupted stream may have usage but no final node update or ID.
+        resumed = StreamProcessor(token_tracker=first.tracker)
+        resumed._handle_updates({"agent": {"token_usage": {
+            "input_tokens": 2000, "output_tokens": 100,
+        }}})
+        self.assertIs(resumed.tracker, first.tracker)
+        self.assertEqual(resumed.tracker.total_input, 42000)
+        self.assertEqual(resumed.tracker.total_output, 200)
+        fresh = StreamProcessor()
+        self.assertEqual(fresh.tracker.total_input, 0)
+        self.assertEqual(fresh.tracker.total_output, 0)
+
     def test_stream_processor_accumulates_total_elapsed_from_previous_segments(self):
         events = []
         perf_values = iter([100.0, 100.0])
