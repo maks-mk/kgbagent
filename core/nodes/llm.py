@@ -19,6 +19,8 @@ from core.api_key_rotation import (
 from core.state import AgentState
 from core.node_errors import EmptyLLMResponseError
 from core.message_utils import stringify_content
+from core.providers.anthropic import anthropic_prompt_cache_kwargs
+from core.providers.factory import prepare_llm_with_tools
 
 logger = logging.getLogger("agent")
 
@@ -84,18 +86,14 @@ class LLMMixin:
         if active_tool_names == list(self._all_tool_names):
             return self.llm_with_tools
 
-        binder = getattr(self.llm, "bind_tools", None)
-        if not callable(binder):
-            return self.llm_with_tools
-
-        try:
-            return binder(active_tools)
-        except Exception as exc:
-            logger.warning(
-                "Failed to bind active tool subset; falling back to pre-bound tool model: %s",
-                exc,
-            )
-            return self.llm_with_tools
+        bound_llm, enabled, error = prepare_llm_with_tools(self.llm, active_tools)
+        if enabled:
+            return bound_llm
+        logger.warning(
+            "Failed to bind active tool subset; falling back to pre-bound tool model: %s",
+            error,
+        )
+        return self.llm_with_tools
 
     async def _invoke_llm_with_retry(
         self,
@@ -106,6 +104,9 @@ class LLMMixin:
     ):
         current_llm = llm
         context = list(context)
+        # One-shot summarization calls bypass this loop: only agent requests
+        # build a reusable conversation prefix worth caching.
+        invocation_kwargs = anthropic_prompt_cache_kwargs(self.config)
         configured_max_attempts = max(1, self.config.max_retries)
         retry_delay = max(0, self.config.retry_delay)
         transient_retry_count = 0
@@ -127,7 +128,7 @@ class LLMMixin:
             invocation_attempt += 1
             try:
                 normalized_context = self._normalize_system_prefix_for_provider(context)
-                response = await current_llm.ainvoke(normalized_context)
+                response = await current_llm.ainvoke(normalized_context, **invocation_kwargs)
                 invalid_calls = getattr(response, "invalid_tool_calls", None)
                 if not response.content and not response.tool_calls and not invalid_calls:
                     raise EmptyLLMResponseError("Empty response from LLM")

@@ -373,10 +373,19 @@ def choose_summary_boundary(
     return candidates[0]
 
 
-def _compact_for_summary(text: str, *, limit: int = 500) -> str:
+def _compact_for_summary(text: str, *, limit: int = 500, preserve_tail: bool = False) -> str:
     normalized = " ".join(str(text or "").split())
     if len(normalized) <= limit:
         return normalized
+    if preserve_tail:
+        marker = " ... [truncated] ... "
+        if limit <= len(marker):
+            return normalized[:max(0, limit)]
+        available = limit - len(marker)
+        # Tool outcomes and diagnostics often follow lengthy progress output.
+        head = available * 3 // 10
+        tail = available - head
+        return normalized[:head] + marker + normalized[-tail:]
     return normalized[:limit] + "... [truncated]"
 
 
@@ -410,7 +419,9 @@ def format_history_for_summary(
     for message in messages:
         if isinstance(message, HumanMessage) and is_internal_retry(message):
             continue
-        rendered = _compact_for_summary(stringify_content(message.content), limit=500)
+        rendered = _compact_for_summary(
+            stringify_content(message.content), limit=500, preserve_tail=isinstance(message, ToolMessage)
+        )
         tool_call_text = _format_tool_calls_for_summary(message)
         if isinstance(message, ToolMessage):
             tool_name = str(getattr(message, "name", "") or "tool").strip() or "tool"

@@ -160,6 +160,11 @@ class AgentConfig(BaseSettings):
     anthropic_max_tokens: int = Field(default=8192, alias="ANTHROPIC_MAX_TOKENS")
     anthropic_thinking_budget: int = Field(default=4096, alias="ANTHROPIC_THINKING_BUDGET")
     anthropic_reasoning: str = Field(default="", alias="ANTHROPIC_REASONING")
+    anthropic_prompt_caching: Literal["auto", "on", "off"] = Field(
+        default="auto",
+        alias="ANTHROPIC_PROMPT_CACHING",
+        description="Agent prompt caching: auto for direct Claude API, on for compatible proxies, off to disable",
+    )
     enable_model_reasoning: bool = Field(default=True, alias="ENABLE_MODEL_REASONING")
     debug_reasoning_stream: bool = Field(default=False, alias="DEBUG_REASONING_STREAM")
     model_reasoning_effort: str = Field(default="medium", alias="MODEL_REASONING_EFFORT")
@@ -227,7 +232,7 @@ class AgentConfig(BaseSettings):
 
     # Summarization
     summary_threshold: int = Field(
-        default=8000,
+        default=40000,
         alias="SESSION_SIZE",
         description="Estimated input context tokens before summarizing (~chars/2)",
     )

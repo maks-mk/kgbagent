@@ -55,7 +55,6 @@ def blend_hex(start_hex: str, end_hex: str, factor: float) -> str:
 
 _POPUP_BG = blend_hex(SURFACE_BG, SURFACE_CARD, 0.66)
 _POPUP_BORDER = blend_hex(BORDER, "#FFFFFF", 0.12)
-_POPUP_ITEM_HOVER = blend_hex(SURFACE_ALT, "#FFFFFF", 0.08)
 _POPUP_ITEM_SELECTED = blend_hex(SURFACE_ALT, ACCENT_BLUE_SOFT, 0.28)
 
 
@@ -288,7 +287,7 @@ def build_stylesheet() -> str:
     QFrame#ModelSettingsPane {{
         background: {model_dialog_card_alt};
         border: 1px solid {model_dialog_border};
-        border-radius: {SOFT_RADIUS_MD + 6}px;
+        border-radius: {SOFT_RADIUS_MD + 4}px;
     }}
 
     QFrame#ModelSettingsPane[paneRole="editor"] {{
@@ -347,17 +346,6 @@ def build_stylesheet() -> str:
         padding: 3px 8px;
         font-size: 8pt;
         font-weight: 700;
-    }}
-
-    QFrame#ModelSettingsPane {{
-        background: {model_dialog_card_alt};
-        border: 1px solid {model_dialog_border};
-        border-radius: {SOFT_RADIUS_MD + 4}px;
-    }}
-
-    QFrame#ModelSettingsPane[paneRole="editor"] {{
-        background: {model_dialog_editor};
-        border: 1px solid {blend_hex(model_dialog_border, "#FFFFFF", 0.08)};
     }}
 
     QFrame#ModelSettingsFormCard,
@@ -970,12 +958,6 @@ def build_stylesheet() -> str:
         background: transparent;
     }}
 
-    QLabel#TranscriptMeta {{
-        color: {TEXT_MUTED};
-        font-size: 8.5pt;
-        background: transparent;
-    }}
-
     QLabel#ComposerCapabilityBadge {{
         color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.18)};
         background: {blend_hex(SURFACE_ALT, "#FFFFFF", 0.04)};
@@ -1067,12 +1049,6 @@ def build_stylesheet() -> str:
     QLabel#ApprovalRiskBadge[riskLevel="critical"] {{
         background: {blend_hex(ERROR_RED, SURFACE_ALT, 0.82)};
         color: {blend_hex(ERROR_RED, TEXT_PRIMARY, 0.18)};
-    }}
-
-    QFrame#ApprovalToolCard {{
-        background: {approval_dialog_soft};
-        border: 1px solid {approval_dialog_border};
-        border-radius: {SOFT_RADIUS_MD + 2}px;
     }}
 
     QLabel#ApprovalToolTitle {{
@@ -1934,6 +1910,10 @@ def build_stylesheet() -> str:
         font-size: 10pt;
         border-radius: {SOFT_RADIUS_SM}px;
         padding: 0px;
+    }}
+
+    QLabel#TranscriptMeta,
+    QLabel#TranscriptRole {{
         color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.06)};
         font-size: 10.7pt;
         font-weight: 500;

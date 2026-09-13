@@ -86,11 +86,19 @@ class ContextBuilder:
         # Memory goes early: it's context ballast, must not override operational rules
         if summary:
             full_context.append(SystemMessage(content=f"<memory>\n{summary}\n</memory>"))
+        # The latest user message already carries the full task. Keep the hint only
+        # for continuation/recovery contexts where it adds information.
+        task_hint = current_task
+        for message in reversed(sanitized_messages):
+            if isinstance(message, HumanMessage) and not self._is_internal_retry(message):
+                if stringify_content(message.content).strip() == str(current_task or "").strip():
+                    task_hint = ""
+                break
         inferred_user_choice_locked = user_choice_locked or self._has_request_user_input_tool_result(sanitized_messages)
         full_context.extend(
             self._runtime_policy_builder.build_messages(
                 RuntimePromptContext(
-                    current_task=current_task,
+                    current_task=task_hint,
                     tools_available=tools_available,
                     active_tool_names=tuple(active_tool_names),
                     user_choice_locked=inferred_user_choice_locked,

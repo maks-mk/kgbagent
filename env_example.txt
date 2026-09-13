@@ -34,6 +34,10 @@ GEMINI_THINKING_BUDGET=4096
 # Fixed-budget thinking for Claude 4.5; Opus 4.5 combines it with low, medium, or high effort.
 # Sampling temperature is omitted whenever thinking is enabled.
 # ANTHROPIC_THINKING_BUDGET=4096
+# Prompt caching for agent calls (5m TTL): auto = direct Claude API only;
+# on = also opt in for a compatible Claude proxy; off = disable.
+# Summarization calls stay uncached. Cache writes can cost extra if never reused.
+# ANTHROPIC_PROMPT_CACHING=auto
 
 # --- OpenAI / Compatible (OpenRouter, LocalLLM, etc.) ---
 # OPENAI_API_KEY=sk-REPLACE_WITH_YOUR_KEY

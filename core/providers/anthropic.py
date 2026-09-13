@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
+from urllib.parse import urlsplit
 
 from langchain_core.language_models import BaseChatModel
 
@@ -100,6 +102,37 @@ from core.http_headers import load_provider_headers
 from core.reasoning_debug import debug_event
 
 reasoning_logger = logging.getLogger("agent.reasoning_debug")
+
+
+def anthropic_prompt_cache_kwargs(config: AgentConfig) -> dict[str, Any]:
+    """Opt into API prefix caching without altering messages or reasoning blocks.
+
+    Unknown endpoints require explicit opt-in: not all Messages-compatible
+    proxies accept top-level cache_control. Honor the SDK's environment URL too.
+    """
+    if config.provider != "anthropic" or not is_claude_model(config.anthropic_model):
+        return {}
+    mode = config.anthropic_prompt_caching
+    if mode == "off":
+        return {}
+    if mode == "auto":
+        base_url = config.anthropic_base_url or os.environ.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com"
+        try:
+            endpoint = urlsplit(base_url.strip())
+            direct_api = (
+                endpoint.scheme == "https"
+                and endpoint.hostname == "api.anthropic.com"
+                and endpoint.port in (None, 443)
+                and endpoint.path.rstrip("/") in ("", "/v1")
+                and not endpoint.query
+                and not endpoint.fragment
+                and endpoint.username is None
+            )
+        except ValueError:
+            direct_api = False
+        if not direct_api:
+            return {}
+    return {"cache_control": {"type": "ephemeral"}}
 
 
 def _manual_thinking_config(max_tokens: int, configured_budget: int) -> tuple[dict[str, Any], int | None]:

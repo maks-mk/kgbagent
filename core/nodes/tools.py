@@ -128,7 +128,7 @@ class ToolsMixin:
                 raw_result = await tool.ainvoke(args)
             if isinstance(raw_result, (dict, list)):
                 try:
-                    content = json.dumps(raw_result, ensure_ascii=False)
+                    content = json.dumps(raw_result, ensure_ascii=False, separators=(",", ":"))
                 except (TypeError, ValueError):
                     content = str(raw_result)
             else:

@@ -636,7 +636,7 @@ class AgentRunWorker(QObject):
             self.event_emitted.emit(StreamEvent("run_failed", {"message": str(exc)}))
             self._set_busy(False)
 
-    def _apply_fallback_chat_title(self, user_text: str) -> None:
+    async def _apply_fallback_chat_title(self, user_text: str) -> None:
         if self.current_session is None:
             return
         self._log_ui_run_event("chat_title_generation_fallback")
@@ -648,7 +648,7 @@ class AgentRunWorker(QObject):
                 return
             self.current_session.title = title
             self.store.save_active_session(self.current_session, touch=False, set_active=True)
-            self._run(self._emit_session_payload(include_transcript=False))
+            await self._emit_session_payload(include_transcript=False)
         except Exception:
             logger.exception("chat_title_fallback_apply_failed")
 
@@ -667,10 +667,10 @@ class AgentRunWorker(QObject):
                         self.store.save_active_session(self.current_session, touch=False, set_active=True)
                         await self._emit_session_payload(include_transcript=False)
                     else:
-                        self._apply_fallback_chat_title(request_payload["text"])
+                        await self._apply_fallback_chat_title(request_payload["text"])
                 except Exception:
                     logger.exception("chat_title_generation_error")
-                    self._apply_fallback_chat_title(request_payload["text"])
+                    await self._apply_fallback_chat_title(request_payload["text"])
         self._active_run_elapsed_seconds = 0.0
         self._active_request_has_images = bool(request_payload["attachments"])
         await self._reset_live_summary_progress_from_state()

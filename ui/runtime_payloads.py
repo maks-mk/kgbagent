@@ -321,35 +321,47 @@ def _plain_summary_text(text: str) -> str:
     return re.sub(r"\[[^\]]+\]", "", text or "").strip()
 
 
-TITLE_GENERATION_PROMPT = """Generate a concise title for this conversation.
+TITLE_GENERATION_PROMPT = """Generate a short chat title for the user request below.
+
+You are a title generator. Output the title and NOTHING else.
 
 Rules:
 - 2–4 words
 - Describe the main topic of the user's request
-- Be specific and natural
 - Use the same language as the user's message
 - Preserve technical names and terms
-- No quotes
-- No period
-- No \"Title:\" prefix
-- Return ONLY the title
+- No quotes, no period, no \"Title:\" prefix
+- Do NOT explain, do NOT reason, do NOT restate the task
+
+Examples:
+User request: "Помоги скачать и настроить Apache на Windows"
+Title: Настройка Apache на Windows
+
+User request: "расскажи кратко, что такое солверы простым языком"
+Title: Что такое солверы
+
+User request: "What is on this image?"
+Title: Анализ изображения
 
 User request:
-{user_message}"""
+{user_message}
+Title:"""
 
 
 def validate_chat_title(value: object) -> str | None:
     if isinstance(value, (list, tuple, dict)):
         value = stringify_content(value)
     raw_text = str(value or "")
-    text = " ".join(raw_text.replace("\r", " ").replace("\n", " ").split()).strip()
+    text = strip_inline_thought_blocks(raw_text)
+    text = " ".join(text.replace("\r", " ").replace("\n", " ").split()).strip()
     text = re.sub(r"^title\s*:\s*", "", text, flags=re.IGNORECASE).strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in ('\"', "'"):
         text = text[1:-1].strip()
+    text = re.sub(r"[.!?]+$", "", text).strip()
     words = text.split()
-    if not text or len(words) < 2 or len(words) > 4 or "\n" in raw_text or "\r" in raw_text:
+    if not text or len(words) < 2 or len(words) > 4:
         return None
-    if re.search(r"[.!?]$", text) or re.match(r"^(this is|here is|the user|title)\b", text, re.I):
+    if re.match(r"^(this is|here is|the user|title)\b", text, re.I):
         return None
     return text[:1].upper() + text[1:]
 
@@ -362,7 +374,10 @@ async def generate_chat_title_with_llm(llm: Any, user_text: str, logger: Any = N
         value = getattr(response, "content", response)
         title = validate_chat_title(value)
         if title is None:
-            if logger: logger.warning("chat_title_generation_rejected")
+            if logger: logger.warning(
+                "chat_title_generation_rejected raw_response=%r",
+                stringify_content(value)[:120],
+            )
             return None
         if logger: logger.info("chat_title_generation_success")
         return title
@@ -418,15 +433,17 @@ def serialize_session_entries(entries: list[SessionListEntry]) -> list[dict[str,
     ]
 
 
-def _extract_ai_text(message: AIMessage | AIMessageChunk) -> str:
-    def _strip_inline_thought_content(text: str) -> str:
-        cleaned = _INLINE_THOUGHT_BLOCK_RE.sub("", text)
-        cleaned = _INLINE_THOUGHT_CLOSE_PREFIX_RE.sub("", cleaned)
-        return _INLINE_THOUGHT_UNCLOSED_RE.sub("", cleaned)
+def strip_inline_thought_blocks(text: str) -> str:
+    """Remove inline reasoning blocks (<think>...</think>, DeepSeek-style) from text."""
+    cleaned = _INLINE_THOUGHT_BLOCK_RE.sub("", text)
+    cleaned = _INLINE_THOUGHT_CLOSE_PREFIX_RE.sub("", cleaned)
+    return _INLINE_THOUGHT_UNCLOSED_RE.sub("", cleaned)
 
+
+def _extract_ai_text(message: AIMessage | AIMessageChunk) -> str:
     def _extract_visible_text(content: Any) -> str:
         if isinstance(content, str):
-            return _strip_inline_thought_content(content)
+            return strip_inline_thought_blocks(content)
         if content is None:
             return ""
         if isinstance(content, list):

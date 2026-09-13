@@ -12,6 +12,7 @@ from ui.runtime_payloads import (
     build_ui_payload,
     build_user_choice_payload,
     generate_chat_title,
+    validate_chat_title,
 )
 
 
@@ -126,6 +127,30 @@ class RuntimePayloadTests(unittest.TestCase):
         )
         self.assertEqual(generate_chat_title("   \n   "), "New Chat")
         self.assertTrue(generate_chat_title("сделай " + ("очень длинный запрос " * 10)).endswith("…"))
+
+    def test_validate_chat_title_accepts_question_style_title(self):
+        self.assertEqual(validate_chat_title("Что на изображении?"), "Что на изображении")
+        self.assertEqual(validate_chat_title("Title: Настройка сети."), "Настройка сети")
+        self.assertEqual(validate_chat_title('"Анализ данных"'), "Анализ данных")
+        self.assertEqual(validate_chat_title("Оптимизация запросов"), "Оптимизация запросов")
+
+    def test_validate_chat_title_strips_deepseek_think_blocks(self):
+        self.assertEqual(
+            validate_chat_title("<think>Нужно дать короткий заголовок из 2-4 слов</think>\nЧто такое солверы"),
+            "Что такое солверы",
+        )
+        self.assertEqual(
+            validate_chat_title("<think>reasoning here</think>Настройка Apache на Windows"),
+            "Настройка Apache на Windows",
+        )
+        self.assertIsNone(validate_chat_title("<think>Только рассуждение без заголовка</think>"))
+
+    def test_validate_chat_title_rejects_invalid_titles(self):
+        self.assertIsNone(validate_chat_title("Настройка"))
+        self.assertIsNone(validate_chat_title("Слишком много слов в этом заголовке чата"))
+        self.assertIsNone(validate_chat_title(""))
+        self.assertIsNone(validate_chat_title("Title:\nНастройка"))
+        self.assertIsNone(validate_chat_title("This is a test title"))
 
     def test_append_project_label_uses_last_two_segments(self):
         project_path = Path("D:/work/client/demo-app")

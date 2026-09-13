@@ -73,7 +73,14 @@ def _normalize_tool_for_binding(tool: Any) -> Any:
         return tool
     function = normalized.get("function")
     if isinstance(function, dict):
-        _ensure_required_arrays(function.get("parameters"))
+        parameters = function.get("parameters")
+        if isinstance(parameters, dict):
+            # MCP/JSON schemas can repeat the entire tool description here.
+            # Keep distinct parameter guidance and every validation constraint.
+            description = function.get("description")
+            if description and parameters.get("description") == description:
+                parameters.pop("description")
+        _ensure_required_arrays(parameters)
     return normalized
 
 

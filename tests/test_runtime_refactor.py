@@ -3171,6 +3171,76 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("config/settings.json", rendered)
         self.assertIn('tool(read_file)', rendered)
 
+    def test_format_history_for_summary_keeps_tool_error_at_end(self):
+        start = "Running build in project/workspace"
+        error = "ERROR[EXECUTION]: PermissionError: access denied for build/result.bin; Exit Code 1"
+        content = start + "\n" + "build progress\n" * 100 + error
+        message = ToolMessage(tool_call_id="tc-error", name="cli_exec", content=content)
+
+        rendered = format_history_for_summary([message], is_internal_retry=lambda _message: False)
+        compacted = rendered.removeprefix("tool(cli_exec): content=")
+
+        self.assertTrue(compacted.startswith(start))
+        self.assertTrue(compacted.endswith(error))
+        self.assertIn("... [truncated] ...", compacted)
+        self.assertLessEqual(len(compacted), 500)
+        self.assertEqual(message.content, content)
+
+    def test_format_history_for_summary_keeps_test_totals_at_end(self):
+        start = "pytest tests/"
+        for totals in ("837 passed, 1 warning in 56.67s", "2 failed, 835 passed in 56.67s"):
+            with self.subTest(totals=totals):
+                content = start + "\n" + "tests/test_example.py::test_case PASSED\n" * 100 + totals
+                rendered = format_history_for_summary(
+                    [ToolMessage(tool_call_id="tc-tests", name="cli_exec", content=content)],
+                    is_internal_retry=lambda _message: False,
+                )
+                compacted = rendered.removeprefix("tool(cli_exec): content=")
+
+                self.assertTrue(compacted.startswith(start))
+                self.assertTrue(compacted.endswith(totals))
+                self.assertIn("... [truncated] ...", compacted)
+                self.assertLessEqual(len(compacted), 500)
+
+    def test_format_history_for_summary_keeps_short_tool_output_unchanged(self):
+        for content in ("", "ok", "x" * 499, "x" * 500, "line one\n\tline two"):
+            with self.subTest(length=len(content)):
+                rendered = format_history_for_summary(
+                    [ToolMessage(tool_call_id="tc-short", name="read_file", content=content)],
+                    is_internal_retry=lambda _message: False,
+                )
+                normalized = " ".join(content.split())
+                expected = f"content={normalized}" if normalized else "<empty>"
+                self.assertEqual(rendered, f"tool(read_file): {expected}")
+
+    def test_format_history_for_summary_compacts_structured_tool_output_at_boundary(self):
+        content = "START" + "x" * 493 + "END"
+        rendered = format_history_for_summary(
+            [ToolMessage(tool_call_id="tc-block", name="read_file", content=[{"type": "text", "text": content}])],
+            is_internal_retry=lambda _message: False,
+        )
+        compacted = rendered.removeprefix("tool(read_file): content=")
+
+        self.assertTrue(compacted.startswith("START"))
+        self.assertTrue(compacted.endswith("END"))
+        self.assertIn("... [truncated] ...", compacted)
+        self.assertLessEqual(len(compacted), 500)
+
+    def test_format_history_for_summary_preserves_other_message_and_argument_formatting(self):
+        content = "start " + "detail " * 100 + "END_OF_MESSAGE"
+        for message_type in (HumanMessage, AIMessage):
+            with self.subTest(message_type=message_type.__name__):
+                message = message_type(content=content)
+                rendered = format_history_for_summary([message], is_internal_retry=lambda _message: False)
+                expected = " ".join(content.split())[:500] + "... [truncated]"
+                self.assertEqual(rendered, f"{message.type}: content={expected}")
+
+        args = {"content": "detail " * 100 + "END_OF_ARGUMENT", "path": "result.txt"}
+        message = AIMessage(content="", tool_calls=[{"id": "tc-write", "name": "write_file", "args": args}])
+        rendered = format_history_for_summary([message], is_internal_retry=lambda _message: False)
+        expected = " ".join(f"write_file({json.dumps(args, ensure_ascii=False, sort_keys=True)})".split())
+        self.assertEqual(rendered, "ai: tool_calls=" + expected[:320] + "... [truncated]")
+
     def test_session_store_round_trip(self):
         tmp = self._workspace_tempdir()
         store = SessionStore(tmp / "session.json")
@@ -3371,6 +3441,46 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(updated)
         self.assertEqual(worker.current_session.title, "Сводку по ошибкам [client/demo-app]")
+
+    async def test_worker_fallback_chat_title_emits_payload_inside_running_loop(self):
+        """Regression: fallback must not call _run() from inside a running event loop."""
+        import warnings
+
+        tmp = self._workspace_tempdir()
+        worker = gui_runtime.AgentRunWorker()
+        worker.store = SessionStore(tmp / "session.json")
+        worker.current_session = worker.store.new_session(
+            "sqlite",
+            "demo.sqlite",
+            project_path=tmp / "client" / "demo-app",
+            title=append_project_label("New Chat", tmp / "client" / "demo-app"),
+        )
+        worker.config = self._make_config()
+        worker.tool_registry = mock.Mock()
+        worker.tool_registry.get_runtime_status_lines = lambda: []
+        worker.tool_registry.active_tools = lambda: []
+        worker.tool_registry.tool_metadata = {}
+        worker.tool_registry.mcp_server_status = []
+        worker.tool_registry.mcp_config = {}
+        worker.tool_registry.builtin_tools = []
+        worker.tool_registry.checkpoint_info = {}
+        worker.tool_registry.model_capabilities = {}
+        worker.model_profiles = {"active_profile": None, "profiles": []}
+        emitted = []
+        worker.session_changed.connect(emitted.append)
+
+        with (
+            mock.patch.object(worker, "_run", side_effect=AssertionError("_run must not be called from async context")),
+            warnings.catch_warnings(record=True) as caught,
+        ):
+            warnings.simplefilter("always")
+            await worker._apply_fallback_chat_title("Что на изображении?")
+
+        self.assertEqual(worker.current_session.title, "Что на изображении [client/demo-app]")
+        self.assertEqual(len(emitted), 1)
+        self.assertEqual(emitted[0]["snapshot"]["session_title"], "Что на изображении [client/demo-app]")
+        unawaited = [w for w in caught if issubclass(w.category, RuntimeWarning) and "never awaited" in str(w.message)]
+        self.assertEqual(unawaited, [])
 
     def test_worker_persists_cache_hit_delta_for_current_session(self):
         tmp = self._workspace_tempdir()
