@@ -106,7 +106,7 @@ Provider-адаптеры, вынесенные из `agent.py`. Изолиру�
 - `input_sanitizer.py` - санитизация пользовательского ввода.
 - `multimodal.py` - проверка изображений и возможностей мультимодальных моделей.
 - `text_tool_calls.py` - восстановление текстовых pseudo-tool-call маркеров от совместимых провайдеров.
-- `text_utils.py` - форматирование markdown/text и отображение tool output.
+- `text_utils.py` - форматирование markdown/text, отображение tool output, `TokenTracker` (учёт input/output/cache-hit токенов с дедупликацией streamed usage по response ID) и компактное форматирование счётчиков токенов для UI.
 - `utils.py` - общие вспомогательные функции.
 - `validation.py` - валидация runtime-данных.
 
@@ -191,6 +191,9 @@ GUI на PySide6 и слой выполнения агента в отдельн
 - `test_model_profiles.py`, `test_model_fetcher.py` - профили и загрузка моделей.
 - `test_cli_ux.py`, `test_main_window_facade.py`, `test_ui_helpers.py` - UI и UX.
 - `test_refactor_services.py`, `test_self_correction_engine.py`, `test_critic_graph.py`, `test_mixed_parallel_tools.py`, `test_input_sanitizer.py`, `test_logging_config.py`, `test_session_utils.py` - сервисы ядра и вспомогательная логика.
+- `test_intent_engine.py` - `MessageContextHelper`: определение tool-активности в текущем и предыдущем ходах.
+- `test_token_savings.py` - экономия входных токенов (compact JSON, дедупликация подсказок и описаний схем) без API-вызовов.
+- `test_tool_output_compressor.py` - Headroom-сжатие и детерминированный fallback вывода инструментов.
 
 - `test_transcript_history.py` - пакетное отображение истории и стабильность viewport.
 - `test_window_chrome.py` - безрамочные окна и их заголовки.

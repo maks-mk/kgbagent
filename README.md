@@ -166,7 +166,7 @@ venv\Scripts\python.exe -m pytest
 | `mcp` | Model Context Protocol |
 | `requests` | HTTP-клиент (Google API, Tavily) |
 | `QtAwesome` | Иконки для GUI |
-| `sqlite-vec` | Vector-расширение для SQLite checkpoints |
+| `headroom-ai` | Семантическое сжатие большого вывода инструментов (shell, web, listing, MCP) |
 
 ---
 

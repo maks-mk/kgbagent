@@ -3,13 +3,14 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import Final
 
 from PySide6.QtCore import QEvent, QMessageLogContext, Qt, QtMsgType, QSize, QTimer, qInstallMessageHandler
 from PySide6.QtGui import QAction, QCloseEvent, QIcon
 from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMenuBar, QMessageBox, QSizePolicy, QVBoxLayout, QWidget
 
-from core.constants import AGENT_VERSION
+from core.constants import AGENT_VERSION, BASE_DIR
 from core.input_sanitizer import build_user_input_notice, sanitize_user_text
 from core.multimodal import DEFAULT_MODEL_CAPABILITIES, can_read_image_file, resolve_model_capabilities
 from core.model_profiles import normalize_profiles_payload
@@ -67,6 +68,18 @@ def _configure_windows_app_user_model_id() -> None:
 
 
 def _build_app_icon() -> QIcon:
+    # Prefer the bundled icon.ico (also embedded into the exe by PyInstaller);
+    # fall back to the generated qtawesome icon when the file is unavailable.
+    # In a onefile build --add-data extracts next to sys._MEIPASS, not BASE_DIR.
+    icon_candidates = [BASE_DIR / "icon.ico"]
+    meipass = getattr(sys, "_MEIPASS", "")
+    if meipass:
+        icon_candidates.insert(0, Path(meipass) / "icon.ico")
+    for icon_path in icon_candidates:
+        if icon_path.is_file():
+            icon = QIcon(str(icon_path))
+            if not icon.isNull():
+                return icon
     icon = QIcon()
     for size in (16, 24, 32, 48, 64, 128, 256):
         pixmap = _fa_icon("fa5s.robot", color=ACCENT_BLUE, size=size).pixmap(size, size)

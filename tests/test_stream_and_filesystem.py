@@ -909,6 +909,261 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertIn("↓ 0", stats)
         self.assertIn("↑ 0", stats)
 
+    def test_stream_processor_links_responses_api_stream_and_update_under_one_key(self):
+        # Responses API: the opening chunk announces the ``resp_...`` ID, usage
+        # arrives on a chunk keyed by the LangChain run ID, and the node update
+        # is keyed by ``resp_...`` again. One provider call must be counted once.
+        events = []
+        processor = StreamProcessor(events.append)
+        opening = AIMessageChunk(
+            content="",
+            id="resp_linked",
+            response_metadata={"model_provider": "openai", "id": "resp_linked"},
+        )
+        usage_chunk = AIMessageChunk(
+            content="",
+            id="lc_run--linked",
+            usage_metadata={
+                "input_tokens": 9000,
+                "output_tokens": 10,
+                "total_tokens": 9010,
+                "input_token_details": {"cache_read": 8192},
+            },
+            response_metadata={"model_provider": "openai"},
+        )
+        final = AIMessage(
+            content="done",
+            id="resp_linked",
+            usage_metadata={
+                "input_tokens": 9000,
+                "output_tokens": 10,
+                "total_tokens": 9010,
+                "input_token_details": {"cache_read": 8192},
+            },
+        )
+
+        processor._handle_messages((opening, {"langgraph_node": "agent"}))
+        processor._handle_messages((usage_chunk, {"langgraph_node": "agent"}))
+        processor._handle_updates({
+            "agent": {"messages": [final], "token_usage": final.usage_metadata},
+        })
+
+        self.assertEqual(processor.tracker.total_input, 9000)
+        self.assertEqual(processor.tracker.total_output, 10)
+        self.assertEqual(processor.tracker.total_cache_hit, 8192)
+        self.assertEqual([e.payload["tokens"] for e in events if e.type == "cache_hit"], [8192])
+        self.assertEqual(list(processor.tracker._step_usage), ["resp_linked"])
+
+    def test_stream_processor_keys_unkeyed_node_usage_by_active_response(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        opening = AIMessageChunk(
+            content="",
+            id="resp_unkeyed",
+            response_metadata={"model_provider": "openai", "id": "resp_unkeyed"},
+        )
+        usage_chunk = AIMessageChunk(
+            content="",
+            id="lc_run--unkeyed",
+            usage_metadata={"input_tokens": 9000, "output_tokens": 10, "total_tokens": 9010},
+            response_metadata={"model_provider": "openai"},
+        )
+
+        processor._handle_messages((opening, {"langgraph_node": "agent"}))
+        processor._handle_messages((usage_chunk, {"langgraph_node": "agent"}))
+        processor._handle_updates({
+            "agent": {"token_usage": {"input_tokens": 9000, "output_tokens": 10, "total_tokens": 9010}},
+        })
+
+        self.assertEqual(processor.tracker.total_input, 9000)
+        self.assertEqual(processor.tracker.total_output, 10)
+        self.assertEqual(list(processor.tracker._step_usage), ["resp_unkeyed"])
+
+    def test_stream_processor_separates_distinct_responses_api_calls(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        for response_id in ("resp_first", "resp_second"):
+            opening = AIMessageChunk(
+                content="",
+                id=response_id,
+                response_metadata={"model_provider": "openai", "id": response_id},
+            )
+            usage_chunk = AIMessageChunk(
+                content="",
+                id=f"lc_run--{response_id}",
+                usage_metadata={
+                    "input_tokens": 9000,
+                    "output_tokens": 10,
+                    "total_tokens": 9010,
+                    "input_token_details": {"cache_read": 8192},
+                },
+                response_metadata={"model_provider": "openai"},
+            )
+            final = AIMessage(
+                content="done",
+                id=response_id,
+                usage_metadata={
+                    "input_tokens": 9000,
+                    "output_tokens": 10,
+                    "total_tokens": 9010,
+                    "input_token_details": {"cache_read": 8192},
+                },
+            )
+            processor._handle_messages((opening, {"langgraph_node": "agent"}))
+            processor._handle_messages((usage_chunk, {"langgraph_node": "agent"}))
+            processor._handle_updates({
+                "agent": {"messages": [final], "token_usage": final.usage_metadata},
+            })
+            processor.tracker.advance_step()
+
+        self.assertEqual(processor.tracker.total_input, 18000)
+        self.assertEqual(processor.tracker.total_output, 20)
+        self.assertEqual(processor.tracker.total_cache_hit, 16384)
+        self.assertEqual(
+            [e.payload["tokens"] for e in events if e.type == "cache_hit"],
+            [8192, 8192],
+        )
+
+    def test_stream_processor_advancing_step_rebinds_active_response(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        opening = AIMessageChunk(
+            content="",
+            id="resp_step_a",
+            response_metadata={"model_provider": "openai", "id": "resp_step_a"},
+        )
+        usage_chunk = AIMessageChunk(
+            content="",
+            id="lc_run--step_a",
+            usage_metadata={"input_tokens": 500, "output_tokens": 5, "total_tokens": 505},
+            response_metadata={"model_provider": "openai"},
+        )
+        processor._handle_messages((opening, {"langgraph_node": "agent"}))
+        processor._handle_messages((usage_chunk, {"langgraph_node": "agent"}))
+        processor.tracker.advance_step()
+
+        # A later chunk without its own response ID must not silently attach to
+        # the previous response: it starts a fresh (unkeyed) segment instead.
+        later_chunk = AIMessageChunk(
+            content="",
+            id="lc_run--step_b",
+            usage_metadata={"input_tokens": 700, "output_tokens": 6, "total_tokens": 706},
+            response_metadata={"model_provider": "openai"},
+        )
+        processor._handle_messages((later_chunk, {"langgraph_node": "agent"}))
+
+        self.assertEqual(processor.tracker.total_input, 1200)
+        self.assertEqual(processor.tracker.total_output, 11)
+
+    def test_stream_processor_keeps_chat_completions_dedupe_without_response_id(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        # Chat Completions: chunks and the final message share the run ID and no
+        # ``response_metadata["id"]`` is published; dedupe must keep working.
+        usage = {
+            "input_tokens": 9000,
+            "output_tokens": 10,
+            "total_tokens": 9010,
+            "input_token_details": {"cache_read": 8192},
+        }
+        shared_id = "lc_run--chat_shared"
+        for chunk in (
+            AIMessageChunk(content="", id=shared_id, response_metadata={"model_provider": "openai"}),
+            AIMessageChunk(
+                content="",
+                id=shared_id,
+                usage_metadata=usage,
+                response_metadata={"model_provider": "openai"},
+            ),
+        ):
+            processor._handle_messages((chunk, {"langgraph_node": "agent"}))
+        processor._handle_updates({
+            "agent": {"messages": [AIMessage(content="done", id=shared_id)], "token_usage": usage},
+        })
+
+        self.assertEqual(processor.tracker.total_input, 9000)
+        self.assertEqual(processor.tracker.total_output, 10)
+        self.assertEqual(processor.tracker.total_cache_hit, 8192)
+        self.assertEqual([e.payload["tokens"] for e in events if e.type == "cache_hit"], [8192])
+
+    def _responses_sse_body(self, response_id: str) -> bytes:
+        return (
+            f'event: response.created\ndata: {{"type":"response.created","sequence_number":0,'
+            f'"response":{{"id":"{response_id}","object":"response","created_at":1710000000,'
+            f'"model":"gpt-6-astra","output":[],"parallel_tool_calls":true,'
+            f'"tool_choice":"auto","tools":[]}}}}\n\n'
+            f'event: response.output_item.added\ndata: {{"type":"response.output_item.added",'
+            f'"sequence_number":1,"output_index":0,"item":{{"id":"msg_1","type":"message",'
+            f'"role":"assistant","content":[]}}}}\n\n'
+            f'event: response.output_text.delta\ndata: {{"type":"response.output_text.delta",'
+            f'"sequence_number":2,"output_index":0,"content_index":0,"delta":"Hello!",'
+            f'"item_id":"msg_1","logprobs":[]}}\n\n'
+            f'event: response.completed\ndata: {{"type":"response.completed","sequence_number":3,'
+            f'"response":{{"id":"{response_id}","object":"response","created_at":1710000000,'
+            f'"model":"gpt-6-astra","output":[{{"id":"msg_1","type":"message","role":"assistant",'
+            f'"content":[{{"type":"output_text","text":"Hello!","annotations":[]}}]}}],'
+            f'"usage":{{"input_tokens":9000,"output_tokens":10,"total_tokens":9010,'
+            f'"input_tokens_details":{{"cached_tokens":8192}}}},"parallel_tool_calls":true,'
+            f'"tool_choice":"auto","tools":[]}}}}\n\n'
+        ).encode("utf-8")
+
+    def test_stream_processor_counts_real_responses_api_stream_once(self):
+        # End-to-end regression: a real ChatOpenAI Responses-API call streamed
+        # through LangGraph publishes usage on a chunk keyed by the run ID while
+        # the node update is keyed by the ``resp_...`` ID. Before the alias fix
+        # this doubled input/output/cache tokens (18000/20/16384).
+        from langchain_openai import ChatOpenAI
+        from langgraph.graph import END, START, StateGraph
+        from langchain_core.messages import HumanMessage
+        from core.state import AgentState
+
+        bodies = [self._responses_sse_body("resp_e2e_1")]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = bodies.pop(0) if bodies else self._responses_sse_body("resp_e2e_1")
+            return httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, content=body
+            )
+
+        transport = httpx.MockTransport(handler)
+        model = ChatOpenAI(
+            model="gpt-6-astra",
+            api_key="sk-test",
+            use_responses_api=True,
+            http_client=httpx.Client(transport=transport),
+            http_async_client=httpx.AsyncClient(transport=transport),
+            stream_usage=True,
+        )
+
+        async def run() -> StreamProcessor:
+            async def node(state):
+                res = await model.ainvoke(state["messages"])
+                return {"messages": [res], "token_usage": res.usage_metadata}
+
+            builder = StateGraph(AgentState)
+            builder.add_node("agent", node)
+            builder.add_edge(START, "agent")
+            builder.add_edge("agent", END)
+            graph = builder.compile()
+
+            processor = StreamProcessor()
+            async for chunk in graph.astream(
+                {"messages": [HumanMessage(content="hi")]},
+                stream_mode=["messages", "updates"],
+                version="v2",
+            ):
+                mode, payload = chunk["type"], chunk["data"]
+                if mode == "updates":
+                    processor._handle_updates(payload)
+                elif mode == "messages":
+                    processor._handle_messages(payload)
+            return processor
+
+        processor = asyncio.run(run())
+        self.assertEqual(processor.tracker.total_input, 9000)
+        self.assertEqual(processor.tracker.total_output, 10)
+        self.assertEqual(processor.tracker.total_cache_hit, 8192)
+
     def test_stream_processor_shares_usage_but_separates_unkeyed_segments(self):
         first = StreamProcessor()
         first._handle_messages((

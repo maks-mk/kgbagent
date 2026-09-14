@@ -856,6 +856,8 @@ class TokenTracker:
         "_step_usage",
         "_unkeyed_step_index",
         "_active_step_has_data",
+        "_aliases",
+        "_active_response_id",
     )
 
     def __init__(self):
@@ -863,6 +865,9 @@ class TokenTracker:
         self._step_usage: dict[str, tuple[int, int, int]] = {}
         self._unkeyed_step_index = 0
         self._active_step_has_data = False
+        # alias key (e.g. ``lc_run--...``) -> canonical key (e.g. ``resp_...``)
+        self._aliases: dict[str, str] = {}
+        self._active_response_id: str | None = None
 
     @property
     def total_input(self) -> int:
@@ -880,6 +885,9 @@ class TokenTracker:
         if self._active_step_has_data:
             self._unkeyed_step_index += 1
             self._active_step_has_data = False
+        # A new stream segment starts a new provider response; stale response
+        # IDs must not capture unrelated ``lc_run--`` keys of later invocations.
+        self._active_response_id = None
 
     def update_from_message(self, msg: Any) -> int:
         if isinstance(msg, (AIMessage, AIMessageChunk)):
@@ -901,6 +909,7 @@ class TokenTracker:
         # publish a per-chunk delta. Complete messages and node updates instead
         # report the cumulative usage of the whole response.
         is_delta = isinstance(msg, AIMessageChunk)
+        self._register_response_alias(msg, is_delta=is_delta)
         usage_candidates = (
             getattr(msg, "usage_metadata", None),
             getattr(msg, "response_metadata", None),
@@ -955,7 +964,8 @@ class TokenTracker:
 
             usage = node_payload.get("token_usage")
             if isinstance(usage, dict) and usage:
-                cache_hit_delta += self._apply_metadata(usage, msg_id=primary_msg_id, source="update")
+                fallback_id = primary_msg_id or self._active_response_id
+                cache_hit_delta += self._apply_metadata(usage, msg_id=fallback_id, source="update")
                 applied_any = True
 
         if applied_any:
@@ -969,6 +979,49 @@ class TokenTracker:
         except (TypeError, ValueError):
             return 0
         return coerced if allow_negative else max(0, coerced)
+
+    def _register_response_alias(self, msg: Any, *, is_delta: bool) -> None:
+        """Link a streamed chunk ID to the provider response it belongs to.
+
+        The Responses API announces the canonical ``resp_...`` response ID on the
+        first streamed chunk (``response_metadata["id"]``), while usage arrives on
+        later chunks whose LangChain-assigned IDs are ``lc_run--...``. The final
+        message and the node update are keyed by the ``resp_...`` ID again.
+        Without linking, one provider call is counted under two keys and every
+        token bucket (input/output/cache) doubles.
+        """
+        msg_id = getattr(msg, "id", None)
+        msg_key = str(msg_id).strip() if msg_id else ""
+        response_metadata = getattr(msg, "response_metadata", None)
+        response_id = ""
+        if isinstance(response_metadata, dict):
+            raw_response_id = response_metadata.get("id")
+            response_id = str(raw_response_id).strip() if raw_response_id else ""
+        if response_id:
+            if msg_key and msg_key != response_id:
+                self._aliases[msg_key] = response_id
+            if is_delta:
+                # Only the currently streaming response may capture new chunk IDs;
+                # replayed or unrelated messages must not rebind the active alias.
+                self._active_response_id = response_id
+            return
+        if not is_delta or not msg_key or not self._active_response_id:
+            return
+        # Usage chunks of the Responses API carry the ``lc_run--...`` run ID and
+        # no response ID in their metadata; bind them to the response announced
+        # by the opening chunk. Only chunks that actually report usage create
+        # tracker keys, so only those need the alias.
+        usage_metadata = getattr(msg, "usage_metadata", None)
+        if isinstance(usage_metadata, dict) and usage_metadata:
+            self._aliases[msg_key] = self._active_response_id
+
+    def _resolve_key(self, msg_key: str) -> str:
+        seen: set[str] = set()
+        key = msg_key
+        while key in self._aliases and key not in seen:
+            seen.add(key)
+            key = self._aliases[key]
+        return key
 
     @classmethod
     def _extract_output_tokens(cls, usage: Dict[str, Any], *, allow_negative: bool = False) -> int:
@@ -1035,6 +1088,11 @@ class TokenTracker:
         msg_key = str(msg_id).strip() if msg_id else ""
         if not msg_key:
             msg_key = f"_unkeyed_step_{self._unkeyed_step_index}"
+        else:
+            # One provider call must land under a single key: streamed chunks
+            # (``lc_run--...``) and the final message/node update (``resp_...``)
+            # describe the same response.
+            msg_key = self._resolve_key(msg_key)
 
         existing_in, existing_out, existing_cache_hit = self._step_usage.get(msg_key, (0, 0, 0))
         if accumulate:

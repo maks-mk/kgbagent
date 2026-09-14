@@ -14,7 +14,7 @@ if not exist "venv\Scripts\python.exe" (
 
 echo [INFO] Building...
 
-venv\Scripts\python.exe -m PyInstaller --name kgb --onefile --windowed --clean --paths . --collect-all tiktoken --collect-all langgraph --collect-all langchain --collect-all langchain_openai --collect-all langchain_google_genai --collect-all langchain_anthropic --collect-all anthropic --collect-all qtawesome --collect-submodules tools --collect-submodules ui --hidden-import=PySide6.QtCore --hidden-import=PySide6.QtGui --hidden-import=PySide6.QtWidgets --hidden-import=PySide6.QtSvg --hidden-import=tiktoken_ext --hidden-import=tiktoken_ext.openai_public --icon=icon.ico main.py
+venv\Scripts\python.exe -m PyInstaller --name kgb --onefile --windowed --clean --paths . --collect-all tiktoken --collect-all langgraph --collect-all langchain --collect-all langchain_openai --collect-all langchain_google_genai --collect-all langchain_anthropic --collect-all anthropic --collect-all qtawesome --collect-submodules tools --collect-submodules ui --hidden-import=PySide6.QtCore --hidden-import=PySide6.QtGui --hidden-import=PySide6.QtWidgets --hidden-import=PySide6.QtSvg --hidden-import=tiktoken_ext --hidden-import=tiktoken_ext.openai_public --icon=icon.ico --add-data "icon.ico;." main.py
 
 set "BUILD_EXIT=%ERRORLEVEL%"
 

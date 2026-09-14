@@ -1,12 +1,32 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFileDialog, QHBoxLayout, QLabel,
     QStyle, QToolButton, QVBoxLayout, QWidget,
 )
 
-from ui.theme import build_stylesheet
+from ui.theme import TEXT_PRIMARY, TEXT_SECONDARY, build_stylesheet
+from ui.widgets.foundation import _fa_icon
+
+
+def _style_file_dialog_navigation(dialog: QFileDialog) -> None:
+    # Qt's built-in file-dialog arrows assume a light palette. QSS text colors
+    # do not recolor those pixmaps, including the auto-generated disabled state.
+    for name, glyph in (
+        ("backButton", "fa5s.arrow-left"),
+        ("forwardButton", "fa5s.arrow-right"),
+        ("toParentButton", "fa5s.arrow-up"),
+    ):
+        button = dialog.findChild(QToolButton, name)
+        if button is None:
+            continue
+        size = max(16, button.iconSize().width())
+        icon = _fa_icon(glyph, color=TEXT_PRIMARY, size=size)
+        disabled = _fa_icon(glyph, color=TEXT_SECONDARY, size=size)
+        icon.addPixmap(disabled.pixmap(size, size), QIcon.Mode.Disabled)
+        button.setIcon(icon)
 
 
 class _DialogTitleBar(QWidget):
@@ -135,6 +155,7 @@ class _DialogChromeFilter(QObject):
                 layout.setMenuBar(_DialogTitleBar(watched))
             if isinstance(watched, QFileDialog):
                 watched.setSizeGripEnabled(True)
+                _style_file_dialog_navigation(watched)
         return False
 
 

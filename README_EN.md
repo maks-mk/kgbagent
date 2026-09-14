@@ -164,7 +164,7 @@ For a portable build, copy `rg.exe` next to the agent executable. If `rg` is not
 | `mcp` | Model Context Protocol |
 | `requests` | HTTP client for Google API and Tavily |
 | `QtAwesome` | Icons for the GUI |
-| `sqlite-vec` | Vector extension for SQLite checkpoints |
+| `headroom-ai` | Semantic compression of large tool output (shell, web, listings, MCP) |
 
 ---
 
