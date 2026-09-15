@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import difflib
 import re
 from dataclasses import dataclass
@@ -39,6 +40,13 @@ _INLINE_THOUGHT_CLOSE_PREFIX_RE = re.compile(r"^.*?</(think|thought)>\s*", re.IG
 _INLINE_THOUGHT_UNCLOSED_RE = re.compile(r"<(think|thought)\b[^>]*>.*$", re.IGNORECASE | re.DOTALL)
 CHAT_TITLE_MAX_LENGTH = 50
 CHAT_TITLE_FALLBACK = DEFAULT_CHAT_TITLE
+CHAT_TITLE_LLM_TIMEOUT_SECONDS = 15.0
+CHAT_TITLE_LLM_ATTEMPTS = 3
+TITLE_STRIP_CHARS = " \t\r\n-.,:;!?\"'`~()[]{}<>/\\"
+_TITLE_TRAILING_STOP_WORDS = {
+    "и", "в", "во", "на", "с", "со", "о", "об", "от", "до", "по", "за", "к",
+    "the", "a", "an", "of", "for", "on", "in", "to", "with", "and", "or",
+}
 TITLE_PREFIX_RE = re.compile(
     r"^(?:(?:пожалуйста|плиз|please)\s+)?"
     r"(?:(?:помоги(?:те)?|можешь(?:\s+ли)?|сделай(?:те)?|подскажи(?:те)?|нужно|надо|хочу|help|can you|could you|please)\s+)+",
@@ -348,6 +356,16 @@ User request:
 Title:"""
 
 
+def _trim_title_words(text: str) -> str:
+    """Trim a raw title to the word budget, dropping dangling stop words."""
+    words = text.split()
+    if len(words) > 4:
+        words = words[:4]
+    while len(words) > 1 and words[-1].strip(TITLE_STRIP_CHARS).lower() in _TITLE_TRAILING_STOP_WORDS:
+        words.pop()
+    return " ".join(words)
+
+
 def validate_chat_title(value: object) -> str | None:
     if isinstance(value, (list, tuple, dict)):
         value = stringify_content(value)
@@ -358,8 +376,13 @@ def validate_chat_title(value: object) -> str | None:
     if len(text) >= 2 and text[0] == text[-1] and text[0] in ('\"', "'"):
         text = text[1:-1].strip()
     text = re.sub(r"[.!?]+$", "", text).strip()
+    text = _trim_title_words(text)
     words = text.split()
-    if not text or len(words) < 2 or len(words) > 4:
+    if not text or len(words) < 1 or len(words) > 4:
+        return None
+    # A single word is only a meaningful title when it is long enough to be
+    # a real term (e.g. "Солверы", "Docker"); short fragments are rejected.
+    if len(words) == 1 and len(words[0]) < 4:
         return None
     if re.match(r"^(this is|here is|the user|title)\b", text, re.I):
         return None
@@ -369,21 +392,29 @@ def validate_chat_title(value: object) -> str | None:
 async def generate_chat_title_with_llm(llm: Any, user_text: str, logger: Any = None) -> str | None:
     if logger:
         logger.info("chat_title_generation_start")
-    try:
-        response = await llm.ainvoke(TITLE_GENERATION_PROMPT.format(user_message=user_text))
-        value = getattr(response, "content", response)
-        title = validate_chat_title(value)
-        if title is None:
-            if logger: logger.warning(
-                "chat_title_generation_rejected raw_response=%r",
-                stringify_content(value)[:120],
+    prompt = TITLE_GENERATION_PROMPT.format(user_message=user_text)
+    for attempt in range(1, CHAT_TITLE_LLM_ATTEMPTS + 1):
+        try:
+            response = await asyncio.wait_for(
+                llm.ainvoke(prompt),
+                timeout=CHAT_TITLE_LLM_TIMEOUT_SECONDS,
             )
-            return None
-        if logger: logger.info("chat_title_generation_success")
-        return title
-    except Exception:
-        if logger: logger.exception("chat_title_generation_error")
-        return None
+            value = getattr(response, "content", response)
+            title = validate_chat_title(value)
+            if title is None:
+                if logger: logger.warning(
+                    "chat_title_generation_rejected attempt=%s raw_response=%r",
+                    attempt,
+                    stringify_content(value)[:120],
+                )
+            else:
+                if logger: logger.info("chat_title_generation_success attempt=%s", attempt)
+                return title
+        except Exception:
+            if logger: logger.exception("chat_title_generation_error attempt=%s", attempt)
+        if attempt < CHAT_TITLE_LLM_ATTEMPTS:
+            await asyncio.sleep(0.5 * attempt)
+    return None
 
 
 def generate_chat_title(user_text: str) -> str:

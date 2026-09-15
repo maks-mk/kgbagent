@@ -12,11 +12,12 @@ from ui.runtime_payloads import (
     build_ui_payload,
     build_user_choice_payload,
     generate_chat_title,
+    generate_chat_title_with_llm,
     validate_chat_title,
 )
 
 
-class RuntimePayloadTests(unittest.TestCase):
+class RuntimePayloadTests(unittest.IsolatedAsyncioTestCase):
     def test_build_summary_progress_payload_reports_context_budget(self):
         config = type("Config", (), {"summary_threshold": 100, "summary_keep_last": 4})()
 
@@ -134,6 +135,23 @@ class RuntimePayloadTests(unittest.TestCase):
         self.assertEqual(validate_chat_title('"Анализ данных"'), "Анализ данных")
         self.assertEqual(validate_chat_title("Оптимизация запросов"), "Оптимизация запросов")
 
+    def test_validate_chat_title_trims_long_titles_to_word_budget(self):
+        self.assertEqual(
+            validate_chat_title("Настройка Apache веб сервера на Windows"),
+            "Настройка Apache веб сервера",
+        )
+        self.assertEqual(
+            validate_chat_title("Анализ логов и поиск ошибок в приложении"),
+            "Анализ логов и поиск",
+        )
+
+    def test_validate_chat_title_accepts_single_word_term(self):
+        self.assertEqual(validate_chat_title("Солверы"), "Солверы")
+        self.assertEqual(validate_chat_title("Docker"), "Docker")
+        self.assertEqual(validate_chat_title("Title:\nНастройка"), "Настройка")
+        self.assertIsNone(validate_chat_title("Ок"))
+        self.assertIsNone(validate_chat_title(""))
+
     def test_validate_chat_title_strips_deepseek_think_blocks(self):
         self.assertEqual(
             validate_chat_title("<think>Нужно дать короткий заголовок из 2-4 слов</think>\nЧто такое солверы"),
@@ -146,11 +164,42 @@ class RuntimePayloadTests(unittest.TestCase):
         self.assertIsNone(validate_chat_title("<think>Только рассуждение без заголовка</think>"))
 
     def test_validate_chat_title_rejects_invalid_titles(self):
-        self.assertIsNone(validate_chat_title("Настройка"))
-        self.assertIsNone(validate_chat_title("Слишком много слов в этом заголовке чата"))
+        self.assertIsNone(validate_chat_title("Ок"))
+        self.assertIsNone(validate_chat_title("the"))
         self.assertIsNone(validate_chat_title(""))
-        self.assertIsNone(validate_chat_title("Title:\nНастройка"))
         self.assertIsNone(validate_chat_title("This is a test title"))
+
+    async def test_generate_chat_title_with_llm_retries_until_valid_title(self):
+        class FlakyLLM:
+            def __init__(self):
+                self.calls = 0
+
+            async def ainvoke(self, _prompt):
+                self.calls += 1
+                if self.calls == 1:
+                    raise ConnectionError("transient network error")
+                if self.calls == 2:
+                    return SimpleNamespace(content="This is a test title")
+                return SimpleNamespace(content="Настройка Apache")
+
+        llm = FlakyLLM()
+        title = await generate_chat_title_with_llm(llm, "Помоги настроить Apache", logger=None)
+        self.assertEqual(title, "Настройка Apache")
+        self.assertEqual(llm.calls, 3)
+
+    async def test_generate_chat_title_with_llm_returns_none_after_exhausted_retries(self):
+        class BrokenLLM:
+            def __init__(self):
+                self.calls = 0
+
+            async def ainvoke(self, _prompt):
+                self.calls += 1
+                raise TimeoutError("provider timeout")
+
+        llm = BrokenLLM()
+        title = await generate_chat_title_with_llm(llm, "Помоги настроить Apache", logger=None)
+        self.assertIsNone(title)
+        self.assertEqual(llm.calls, 3)
 
     def test_append_project_label_uses_last_two_segments(self):
         project_path = Path("D:/work/client/demo-app")

@@ -1923,7 +1923,7 @@ def build_stylesheet() -> str:
         background: transparent;
         border: none;
         border-radius: {SOFT_RADIUS_XS}px;
-        padding: 0px;
+        padding: 0px 2px 0px 0px;
         color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.20)};
         font-size: 10.35pt;
         font-weight: 500;
@@ -1950,7 +1950,7 @@ def build_stylesheet() -> str:
         background: transparent;
         border: none;
         border-radius: {SOFT_RADIUS_SM}px;
-        padding: 2px 0px;
+        padding: 2px 2px 2px 0px;
         color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
         font-size: 10pt;
         font-weight: 500;

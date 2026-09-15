@@ -196,9 +196,14 @@ class CliExecWidget(QFrame):
 class _ToolActionLabel(ElidedLabel):
     """Size to the full caption while allowing the layout to elide it."""
 
+    # Rich-text rendering and fractional font sizes can paint a glyph or two
+    # wider than fontMetrics().horizontalAdvance(); keep a small reserve so
+    # the trailing characters are not clipped by the adjacent chevron button.
+    WIDTH_RESERVE_PX = 2
+
     def sizeHint(self) -> QSize:
         hint = super().sizeHint()
-        hint.setWidth(self.fontMetrics().horizontalAdvance(self.full_text()))
+        hint.setWidth(self.fontMetrics().horizontalAdvance(self.full_text()) + self.WIDTH_RESERVE_PX)
         return hint
 
     def minimumSizeHint(self) -> QSize:
