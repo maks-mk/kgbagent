@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 
 from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QPropertyAnimation, QSize, Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from .foundation import _fa_icon
@@ -37,13 +38,13 @@ class ToolGroupWidget(QFrame):
         self.header_btn.setFlat(True)
         self.header_btn.setChecked(True)
         self.header_btn.setCursor(Qt.PointingHandCursor)
-        self.header_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.header_btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.header_btn.setMinimumWidth(0)
         self.header_btn.setIconSize(QSize(9, 9))
         self.header_btn.setAccessibleName("Tool results group")
         self.header_btn.setAccessibleDescription("Expand or collapse the tool results for this turn")
         self.header_btn.clicked.connect(self._toggle)
-        header_layout.addWidget(self.header_btn, 1)
+        header_layout.addWidget(self.header_btn, 0)
 
         self.error_icon_label = QLabel(self.header_row)
         self.error_icon_label.setObjectName("MetaText")
@@ -56,6 +57,17 @@ class ToolGroupWidget(QFrame):
         self.error_count_label.setProperty("severity", "error")
         self.error_count_label.setVisible(False)
         header_layout.addWidget(self.error_count_label, 0, Qt.AlignVCenter)
+
+        self.expand_button = QPushButton(self.header_row)
+        self.expand_button.setObjectName("ToolCallButton")
+        self.expand_button.setFlat(True)
+        self.expand_button.setFixedSize(16, 18)
+        self.expand_button.setIconSize(QSize(8, 8))
+        self.expand_button.setCursor(Qt.PointingHandCursor)
+        self.expand_button.setAccessibleName("Expand or collapse tool results")
+        self.expand_button.clicked.connect(self.header_btn.click)
+        header_layout.insertWidget(1, self.expand_button, 0, Qt.AlignVCenter)
+        header_layout.addStretch(1)
 
         layout.addWidget(self.header_row)
 
@@ -299,6 +311,9 @@ class ToolGroupWidget(QFrame):
 
     def _sync_header(self) -> None:
         expanded = not self._collapsed
+        self.expand_button.setIcon(
+            _fa_icon("fa5s.chevron-down" if expanded else "fa5s.chevron-right", color=TEXT_MUTED, size=8)
+        )
         if self._completion_announced:
             total = len(self._tools)
             errors = sum(1 for tool in self._tools if tool.payload.get("is_error", False))
@@ -309,7 +324,7 @@ class ToolGroupWidget(QFrame):
             if errors > 0:
                 self.header_btn.setIcon(_fa_icon("fa5s.check-circle", color=SUCCESS_GREEN, size=9))
                 error_title = self._error_header_text(errors)
-                self.header_btn.setText(f"{error_title} ·" if total == 1 else error_title)
+                self.header_btn.setText(error_title)
             else:
                 self.header_btn.setIcon(_fa_icon("fa5s.check-circle", color=SUCCESS_GREEN, size=9))
                 self.header_btn.setText(self._header_text(completed=True))
@@ -318,5 +333,5 @@ class ToolGroupWidget(QFrame):
         self.error_count_label.setVisible(False)
         self.error_count_label.clear()
         self._set_header_state(state="active")
-        self.header_btn.setIcon(_fa_icon("fa5s.caret-down" if expanded else "fa5s.caret-right", color=TEXT_MUTED, size=9))
+        self.header_btn.setIcon(QIcon())
         self.header_btn.setText(self._header_text(completed=False))

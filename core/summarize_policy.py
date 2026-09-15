@@ -6,7 +6,9 @@ from typing import Callable, List, Optional
 
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
+from core.logging_config import SensitiveDataFilter
 from core.message_utils import is_user_turn_message, stringify_content
+from core.tool_output_compressor import iter_diagnostic_lines
 
 
 IsInternalRetry = Callable[[BaseMessage], bool]
@@ -389,25 +391,150 @@ def _compact_for_summary(text: str, *, limit: int = 500, preserve_tail: bool = F
     return normalized[:limit] + "... [truncated]"
 
 
-def _format_tool_calls_for_summary(message: BaseMessage) -> str:
+def _render_summary_excerpt(text: str, spans: list[tuple[int, int]]) -> str:
+    """Render verbatim source spans in order; every gap is explicitly marked."""
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        start, end = max(0, start), min(len(text), end)
+        if end <= start:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    marker = "\n... [truncated] ...\n"
+    parts = []
+    cursor = 0
+    for start, end in merged:
+        if start > cursor:
+            parts.append(marker)
+        parts.append(text[start:end])
+        cursor = end
+    if cursor < len(text):
+        parts.append(marker)
+    return "".join(parts)
+
+
+def _format_tool_content_for_summary(text: str, *, tool_name: str, limit: int = 500) -> str:
+    # Only shell output is treated as diagnostics. ERROR in a file or document
+    # may be an example, not an observed execution failure.
+    diagnostics = list(iter_diagnostic_lines(text, include_outcomes=True)) if tool_name == "cli_exec" else []
+    if not diagnostics:
+        return _compact_for_summary(text, limit=limit, preserve_tail=True)
+    if len(text) <= limit:
+        return text
+
+    lines = text.splitlines(keepends=True)
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line))
+    # Reserve 40% for operation context, split like the head/tail fallback;
+    # diagnostics and omission markers get the rest before any extra context.
+    context_budget = max(0, limit) * 2 // 5
+    head_budget = context_budget * 3 // 10
+    tail_budget = context_budget - head_budget
+    spans = [(0, min(head_budget, len(lines[0]))), (len(text) - min(tail_budget, len(lines[-1])), len(text))]
+    seen = set()
+    kept_lines = []
+    for index, line in diagnostics:
+        if line.strip() in seen:
+            continue
+        seen.add(line.strip())
+        candidate = spans + [(offsets[index], offsets[index + 1])]
+        if len(_render_summary_excerpt(text, candidate)) <= limit:
+            spans = candidate
+            kept_lines.append(index)
+    if not kept_lines:
+        return _compact_for_summary(text, limit=limit, preserve_tail=True)
+
+    # Once the diagnostic lines fit, retain adjacent source context (notably
+    # traceback frames) when there is room, without flattening indentation.
+    for index in kept_lines:
+        for neighbor in (index - 1, index + 1):
+            if 0 <= neighbor < len(lines):
+                candidate = spans + [(offsets[neighbor], offsets[neighbor + 1])]
+                if len(_render_summary_excerpt(text, candidate)) <= limit:
+                    spans = candidate
+
+    # Spend the remaining budget on context, retaining the original head/tail
+    # preference. Re-rendering merges overlaps rather than duplicating facts.
+    remaining = max(0, limit - len(_render_summary_excerpt(text, spans)))
+    head_extra = remaining * 3 // 10
+    spans += [(0, spans[0][1] + head_extra), (spans[1][0] - (remaining - head_extra), len(text))]
+    rendered = _render_summary_excerpt(text, spans)
+    return rendered if len(rendered) <= limit else _compact_for_summary(text, limit=limit, preserve_tail=True)
+
+
+_SUMMARY_ARG_PRIORITY = ("command", "path", "query", "queries", "url", "urls", "pattern")
+_SUMMARY_BODY_ARGS = frozenset({"content", "old_string", "new_string"})
+
+
+def _summary_safe_args(value, *, key: str = ""):
+    # Reuse the runtime's masking rules before selection/truncation. Do not
+    # partially expose explicitly sensitive fields, including nested values.
+    if key.strip().lower() in SensitiveDataFilter.SENSITIVE_FIELD_NAMES:
+        return "<redacted>"
+    if isinstance(value, dict):
+        return {k: _summary_safe_args(v, key=str(k)) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_summary_safe_args(item) for item in value]
+    if isinstance(value, str):
+        return SensitiveDataFilter._sanitize_string(value)
+    return value
+
+
+def _format_tool_calls_for_summary(message: BaseMessage, refs: list[str]) -> str:
     if not isinstance(message, (AIMessage, AIMessageChunk)):
         return ""
-    raw_tool_calls = list(getattr(message, "tool_calls", []) or [])
-    if not raw_tool_calls:
+    calls = [call for call in (message.tool_calls or []) if isinstance(call, dict)]
+    if not calls:
         return ""
 
-    parts: List[str] = []
-    for tool_call in raw_tool_calls:
-        if not isinstance(tool_call, dict):
-            continue
-        tool_name = str(tool_call.get("name") or "tool").strip() or "tool"
-        tool_args = tool_call.get("args")
+    headers = []
+    arguments = []
+    for call, ref in zip(calls, refs):
+        name = str(call.get("name") or "tool").strip() or "tool"
+        headers.append(f"{name}[{ref}]")
+        args = _summary_safe_args(call.get("args"))
+        if isinstance(args, dict):
+            keys = [key for key in _SUMMARY_ARG_PRIORITY if key in args]
+            keys += sorted((key for key in args if key not in keys), key=lambda key: (key in _SUMMARY_BODY_ARGS, key))
+            args = {key: args[key] for key in keys}
         try:
-            rendered_args = json.dumps(tool_args, ensure_ascii=False, sort_keys=True)
-        except TypeError:
-            rendered_args = str(tool_args)
-        parts.append(f"{tool_name}({rendered_args})")
-    return _compact_for_summary("; ".join(parts), limit=320)
+            arguments.append(json.dumps(args, ensure_ascii=False))
+        except (TypeError, ValueError):
+            arguments.append(SensitiveDataFilter._sanitize_string(str(args)))
+
+    limit = 320
+    marker = "... [truncated]"
+    fixed = sum(len(header) + 2 for header in headers) + 2 * (len(headers) - 1)
+    budgets = [min(len(marker), len(arg)) for arg in arguments]
+    if fixed + sum(budgets) > limit:
+        # An arbitrarily large batch cannot fit all arguments (or even names).
+        # Keep explicit references and say how many calls were omitted.
+        parts = []
+        for index, header in enumerate(headers):
+            suffix = f"; ... [{len(headers) - index - 1} calls omitted]"
+            candidate = "; ".join(parts + [header + "(" + marker + ")"])
+            if len(candidate + suffix) > limit:
+                break
+            parts.append(header + "(" + marker + ")")
+        return "; ".join(parts + [f"... [{len(headers) - len(parts)} calls omitted]"])
+
+    # Fair allocation prevents one large write_file body hiding later calls.
+    remaining = limit - fixed - sum(budgets)
+    while remaining and any(budget < len(arg) for budget, arg in zip(budgets, arguments)):
+        for index, arg in enumerate(arguments):
+            if remaining and budgets[index] < len(arg):
+                budgets[index] += 1
+                remaining -= 1
+    parts = []
+    for header, args, budget in zip(headers, arguments, budgets):
+        args = " ".join(args.split())
+        if len(args) > budget:
+            args = args[:budget - len(marker)] + marker
+        parts.append(f"{header}({args})")
+    return "; ".join(parts)
 
 
 def format_history_for_summary(
@@ -416,17 +543,33 @@ def format_history_for_summary(
     is_internal_retry: IsInternalRetry,
 ) -> str:
     parts: List[str] = []
+    call_refs: dict[str, Optional[str]] = {}
+    call_number = 0
     for message in messages:
         if isinstance(message, HumanMessage) and is_internal_retry(message):
             continue
-        rendered = _compact_for_summary(
-            stringify_content(message.content), limit=500, preserve_tail=isinstance(message, ToolMessage)
-        )
-        tool_call_text = _format_tool_calls_for_summary(message)
+        refs = []
+        if isinstance(message, (AIMessage, AIMessageChunk)):
+            batch_ids = set()
+            for call in message.tool_calls or []:
+                if not isinstance(call, dict):
+                    continue
+                call_number += 1
+                ref = f"c{call_number}"
+                refs.append(ref)
+                call_id = str(call.get("id") or "")
+                if call_id:
+                    call_refs[call_id] = None if call_id in batch_ids else ref
+                    batch_ids.add(call_id)
+        tool_call_text = _format_tool_calls_for_summary(message, refs)
+        text = stringify_content(message.content)
         if isinstance(message, ToolMessage):
             tool_name = str(getattr(message, "name", "") or "tool").strip() or "tool"
-            header = f"{message.type}({tool_name})"
+            rendered = _format_tool_content_for_summary(text, tool_name=tool_name)
+            ref = call_refs.get(str(message.tool_call_id or "")) or "unmatched"
+            header = f"{message.type}({tool_name})[{ref}]"
         else:
+            rendered = _compact_for_summary(text)
             header = message.type
 
         segments: List[str] = []

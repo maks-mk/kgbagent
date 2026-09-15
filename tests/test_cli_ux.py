@@ -347,9 +347,9 @@ class GuiUxTests(unittest.TestCase):
         for name, (active_title, completed_title) in title_cases.items():
             with self.subTest(name=name):
                 card = ToolCardWidget({"name": name, "phase": "running"})
-                self.assertEqual(card.action_label.full_text(), active_title)
+                self.assertEqual(card.action_label.full_text(), f"{active_title}")
                 card.finish({"name": name})
-                self.assertEqual(card.action_label.full_text(), completed_title)
+                self.assertEqual(card.action_label.full_text(), f"{completed_title}")
                 card.deleteLater()
 
     def test_safe_delete_cards_render_paths_like_other_filesystem_tools(self):
@@ -397,6 +397,101 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(card.action_label.full_text(), "Reading failed")
         card.deleteLater()
 
+    def test_tool_chevron_tracks_expansion_without_text_suffix(self):
+        for name, source in (("read_file", "tool"), ("query_docs", "mcp"), ("cli_exec", "cli")):
+            with self.subTest(name=name):
+                card = ToolCardWidget({"name": name, "source_kind": source, "phase": "running"})
+                self.assertEqual(card.tool_button.isChecked(), name == "cli_exec")
+                layout = card.header_container.layout()
+                self.assertGreater(layout.indexOf(card.tool_button), layout.indexOf(card.action_label))
+                for expanded in (True, False, True):
+                    card.tool_button.setChecked(expanded)
+                    expected = "fa5s.chevron-down" if expanded else "fa5s.chevron-right"
+                    with mock.patch("ui.widgets.tools._fa_icon", return_value=QIcon()) as icons:
+                        if name == "cli_exec":
+                            card._set_cli_expanded(expanded)
+                        else:
+                            card._set_args_expanded(expanded)
+                        icons.assert_called_with(expected, color=TEXT_MUTED, size=8)
+                card.finish({"content": "done"})
+                self.assertFalse(card.tool_button.isChecked())
+                self.assertFalse(card.action_label.full_text().endswith(" >"))
+                card.deleteLater()
+
+    def test_group_trailing_chevron_tracks_completion_and_clicks(self):
+        for is_error in (False, True):
+            with self.subTest(is_error=is_error):
+                group = ToolGroupWidget(parent=self.window)
+                card = ToolCardWidget({"name": "read_file", "phase": "running"})
+                group.add_tool(card)
+                for expanded in (False, True):
+                    with mock.patch("ui.widgets.tool_group._fa_icon", return_value=QIcon()) as icons:
+                        group.expand_button.click()
+                        expected = "fa5s.chevron-down" if expanded else "fa5s.chevron-right"
+                        icons.assert_any_call(expected, color=TEXT_MUTED, size=8)
+                    self.assertEqual(group.header_btn.isChecked(), expanded)
+                    self.assertEqual(group._collapsed, not expanded)
+                card.finish({"is_error": is_error})
+                with mock.patch("ui.widgets.tool_group._fa_icon", return_value=QIcon()) as icons:
+                    group.refresh_completion(auto_collapse=True)
+                    icons.assert_any_call("fa5s.chevron-right", color=TEXT_MUTED, size=8)
+                    group.expand()
+                    icons.assert_any_call("fa5s.chevron-down", color=TEXT_MUTED, size=8)
+                self.assertFalse(group.header_btn.text().endswith(" >"))
+                group.deleteLater()
+
+    def test_tool_chevron_stays_next_to_caption_on_resize_and_update(self):
+        card = ToolCardWidget({"name": "read_file", "args": {"path": "short.py"}, "phase": "running"})
+        try:
+            card.resize(800, 200)
+            card.show()
+            self._process_events()
+            label = card.action_label
+            button = card.tool_button
+            self.assertLess(label.width(), 300)
+            self.assertLessEqual(button.x() - (label.x() + label.width()), 6)
+            self.assertLess(button.geometry().right(), card.width() // 2)
+            card.update_started_payload({"subtitle": "long-path/" * 80})
+            card.resize(260, 200)
+            self._process_events()
+            self.assertIn("…", label.text())
+            self.assertLess(button.geometry().right(), card.width())
+            card.resize(800, 200)
+            card.update_started_payload({"subtitle": "short.py"})
+            self._process_events()
+            self.assertLess(label.width(), 300)
+            self.assertNotIn("…", label.text())
+            self.assertLess(button.geometry().right(), card.width() // 2)
+        finally:
+            card.close()
+            card.deleteLater()
+
+    def test_group_chevron_stays_next_to_title(self):
+        group = ToolGroupWidget()
+        try:
+            card = ToolCardWidget({"name": "read_file", "phase": "running"})
+            group.add_tool(card)
+            group.resize(800, 200)
+            group.show()
+            self._process_events()
+            for completed in (False, True):
+                if completed:
+                    card.finish({"is_error": True})
+                    group.refresh_completion()
+                    self._process_events()
+                title = group.header_btn
+                button = group.expand_button
+                self.assertLessEqual(button.x() - (title.x() + title.width()), 8)
+                self.assertLess(button.geometry().right(), group.width() // 2)
+                self.assertEqual(group.header_row.layout().indexOf(button), 1)
+        finally:
+            group.close()
+            group.deleteLater()
+
+    def test_requested_chevrons_exist_in_installed_qtawesome(self):
+        for name in ("fa5s.chevron-right", "fa5s.chevron-down"):
+            self.assertFalse(qta.icon(name).pixmap(8, 8).isNull())
+
     def test_tool_group_titles_include_file_and_command_counts(self):
         cases = (
             (["write_file", "write_file"], "Wrote 2 files"),
@@ -414,7 +509,7 @@ class GuiUxTests(unittest.TestCase):
                     )
                     group.add_tool(card)
                 group.refresh_completion()
-                self.assertEqual(group.header_btn.text(), expected_title)
+                self.assertEqual(group.header_btn.text(), f"{expected_title}")
                 group.deleteLater()
 
     def test_tool_group_error_title_includes_total_tools_and_errors(self):
@@ -2284,7 +2379,8 @@ class GuiUxTests(unittest.TestCase):
 
         tool_card = self.window.current_turn.tool_cards["call-wide"]
         action_label = tool_card.action_label
-        self.assertEqual(action_label.sizePolicy().horizontalPolicy(), QSizePolicy.Ignored)
+        self.assertEqual(action_label.sizePolicy().horizontalPolicy(), QSizePolicy.Preferred)
+        self.assertEqual(action_label.minimumSizeHint().width(), 0)
         action_label.setFixedWidth(180)
         self._process_events()
         self.assertNotIn("\n", action_label.text())
@@ -2647,7 +2743,7 @@ class GuiUxTests(unittest.TestCase):
         tool_card.tool_button.click()
         self._process_events()
         self.assertIn("error[access_denied]", tool_card.args_view.toPlainText().lower())
-        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Editing failed ·")
+        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Editing failed")
         self.assertFalse(self.window.current_turn.tool_group.error_icon_label.isHidden())
         self.assertEqual(self.window.current_turn.tool_group.error_count_label.text(), "1")
 
@@ -2719,7 +2815,7 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
 
         restored_turn = self.window.transcript.layout.itemAt(0).widget()
-        self.assertEqual(restored_turn.tool_group.header_btn.text(), "Editing failed ·")
+        self.assertEqual(restored_turn.tool_group.header_btn.text(), "Editing failed")
         self.assertFalse(restored_turn.tool_group.error_icon_label.isHidden())
         self.assertEqual(restored_turn.tool_group.error_count_label.text(), "1")
         self.assertTrue(restored_turn.tool_group.container.isHidden())

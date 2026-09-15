@@ -193,6 +193,18 @@ class CliExecWidget(QFrame):
         self._scroll_to_bottom()
 
 
+class _ToolActionLabel(ElidedLabel):
+    """Size to the full caption while allowing the layout to elide it."""
+
+    def sizeHint(self) -> QSize:
+        hint = super().sizeHint()
+        hint.setWidth(self.fontMetrics().horizontalAdvance(self.full_text()))
+        return hint
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, super().minimumSizeHint().height())
+
+
 class ToolCardWidget(QFrame):
     def __init__(self, payload: dict[str, Any], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -205,6 +217,7 @@ class ToolCardWidget(QFrame):
         self.cli_exec_widget: CliExecWidget | None = None
         self._args_expanded = False
         self._is_cli_exec = self._is_cli_exec_name(payload.get("name", ""))
+        self._is_mcp = str(payload.get("source_kind", "") or "").strip().lower() == "mcp"
         self._cli_expanded = True
         self._preview_token = 0
 
@@ -235,26 +248,29 @@ class ToolCardWidget(QFrame):
         self.tool_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.tool_button.setFixedSize(16, 18)
         self.tool_button.setCursor(Qt.PointingHandCursor)
-        self.tool_button.setIcon(_fa_icon("fa5s.caret-right", color=TEXT_MUTED, size=8))
+        self.tool_button.setIcon(_fa_icon("fa5s.chevron-right", color=TEXT_MUTED, size=8))
         self.tool_button.setIconSize(QSize(8, 8))
         if not self._is_cli_exec:
             self.tool_button.toggled.connect(self._set_args_expanded)
         else:
             self.tool_button.toggled.connect(self._set_cli_expanded)
-        header.addWidget(self.tool_button, 0, Qt.AlignVCenter)
 
-        self.action_label = ElidedLabel(self.header_container, elide_mode=Qt.ElideRight)
+        self.action_label = _ToolActionLabel(self.header_container, elide_mode=Qt.ElideRight)
+        self.action_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.action_label.setObjectName("ToolActionLabel")
         self.action_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.action_label.setMinimumWidth(0)
         self.action_label.setCursor(Qt.PointingHandCursor)
         self.action_label.mousePressEvent = self._handle_action_label_mouse_press  # type: ignore[method-assign]
-        header.addWidget(self.action_label, 1, Qt.AlignVCenter)
+        header.addWidget(self.action_label, 0, Qt.AlignVCenter)
+        header.addWidget(self.tool_button, 0, Qt.AlignVCenter)
 
         self.phase_badge = QLabel("", self.header_container)
         self.phase_badge.setObjectName("ToolPhaseBadge")
         self.phase_badge.setVisible(False)
         header.addWidget(self.phase_badge, 0, Qt.AlignVCenter)
+
+        header.addStretch(1)
 
         self.timing_label = QLabel("", self.header_container)
         self.timing_label.setObjectName("MetaText")
@@ -603,6 +619,7 @@ class ToolCardWidget(QFrame):
             self.action_label.set_rich_segments(action_segments)
         else:
             self.action_label.set_full_text(action_line)
+        self.action_label.updateGeometry()
         self.action_label.setToolTip(raw_display if raw_display and raw_display != action_line else action_line)
 
         if finished:
@@ -622,6 +639,8 @@ class ToolCardWidget(QFrame):
                 style.polish(self.phase_badge)
 
         icon_name = self._tool_icon_name(tool_name, normalized.get("source_kind", ""))
+        is_mcp = str(normalized.get("source_kind", "") or "").strip().lower() == "mcp"
+        self._is_mcp = is_mcp
         icon_color = TEXT_MUTED
         if phase_variant == "active":
             icon_color = "#A8A49E"
@@ -641,6 +660,9 @@ class ToolCardWidget(QFrame):
         else:
             self._cancel_preview_reveal()
             self._set_tool_visible(True)
+
+        if is_mcp and not self._is_cli_exec:
+            self._set_inline_output_mcp_height()
 
     def _ensure_cli_exec_widget(self) -> CliExecWidget:
         if self.cli_exec_widget is None:
@@ -663,7 +685,11 @@ class ToolCardWidget(QFrame):
         rendered = self._render_inline_output(content, summary)
         if self.args_view.toPlainText() != rendered:
             self.args_view.setPlainText(rendered)
-        _sync_plain_text_height(self.args_view, min_lines=4, max_lines=10, extra_padding=14)
+        min_lines = 6 if self._is_mcp else 4
+        _sync_plain_text_height(self.args_view, min_lines=min_lines, max_lines=10, extra_padding=14)
+
+    def _set_inline_output_mcp_height(self) -> None:
+        _sync_plain_text_height(self.args_view, min_lines=6, max_lines=10, extra_padding=14)
 
     def _uses_diff_only_output(self) -> bool:
         return self._tool_role(self.payload.get("name", "")) in {"write", "edit"} and bool(self.payload.get("diff", ""))
@@ -771,7 +797,7 @@ class ToolCardWidget(QFrame):
         if self._uses_diff_only_output():
             self._args_expanded = expanded
             self.tool_button.setIcon(
-                _fa_icon("fa5s.caret-down" if expanded else "fa5s.caret-right", color=TEXT_MUTED, size=8)
+                _fa_icon("fa5s.chevron-down" if expanded else "fa5s.chevron-right", color=TEXT_MUTED, size=8)
             )
             self.args_container.setVisible(False)
             if self.diff_section is not None:
@@ -779,7 +805,7 @@ class ToolCardWidget(QFrame):
             return
         self._args_expanded = expanded
         self.tool_button.setIcon(
-            _fa_icon("fa5s.caret-down" if expanded else "fa5s.caret-right", color=TEXT_MUTED, size=8)
+            _fa_icon("fa5s.chevron-down" if expanded else "fa5s.chevron-right", color=TEXT_MUTED, size=8)
         )
         self.args_container.setVisible(expanded)
 
@@ -788,7 +814,7 @@ class ToolCardWidget(QFrame):
             return
         self._cli_expanded = expanded
         self.tool_button.setIcon(
-            _fa_icon("fa5s.caret-down" if expanded else "fa5s.caret-right", color=TEXT_MUTED, size=8)
+            _fa_icon("fa5s.chevron-down" if expanded else "fa5s.chevron-right", color=TEXT_MUTED, size=8)
         )
         if self.cli_exec_widget is not None:
             self.cli_exec_widget.setVisible(expanded)

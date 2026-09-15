@@ -1335,22 +1335,22 @@ def build_stylesheet() -> str:
 
     QLabel#ToolActionLabel {{
         background: transparent;
-        color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.18)};
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
         font-size: 10.15pt;
         font-weight: 500;
         padding: 1px 0px;
     }}
 
     QLabel#ToolActionLabel[toolRole="edit"] {{
-        color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.08)};
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
     }}
 
     QLabel#ToolActionLabel[phase="active"] {{
-        color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.12)};
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
     }}
 
     QLabel#ToolActionLabel[phase="success"] {{
-        color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.22)};
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
     }}
 
     QLabel#ToolActionLabel[phase="error"] {{
@@ -1950,19 +1950,19 @@ def build_stylesheet() -> str:
         background: transparent;
         border: none;
         border-radius: {SOFT_RADIUS_SM}px;
-        padding: 1px 0px;
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.28)};
+        padding: 2px 0px;
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
         font-size: 10pt;
         font-weight: 500;
         text-align: left;
     }}
 
     QPushButton#ToolGroupHeaderButton[state="active"] {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.46)};
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
     }}
 
     QPushButton#ToolGroupHeaderButton[state="complete"] {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.38)};
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
     }}
 
     QPushButton#ToolGroupHeaderButton[state="error"] {{
@@ -2008,6 +2008,7 @@ def build_stylesheet() -> str:
         background: {blend_hex(SURFACE_CARD, "#FFFFFF", 0.04)};
         border: none;
         border-radius: {SOFT_RADIUS_MD}px;
+        min-height: 90px;
     }}
 
     QCheckBox#ToolAvailabilitySwitch {{

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import List
 
 from langchain_core.messages import RemoveMessage
@@ -74,6 +75,8 @@ class SummarizeMixin:
             return summary
 
         folded = ""
+        fold_started = time.perf_counter()
+        fold_failed = False
         try:
             res = await self.llm.ainvoke(
                 constants.SUMMARY_FOLD_PROMPT_TEMPLATE.format(
@@ -83,6 +86,7 @@ class SummarizeMixin:
             )
             folded = stringify_content(getattr(res, "content", res)).strip()
         except Exception as exc:
+            fold_failed = True
             logger.warning(
                 "🧹 Memory fold failed, truncating memory instead: %s", format_exception_friendly(exc)
             )
@@ -101,6 +105,9 @@ class SummarizeMixin:
             budget_tokens=budget,
             folded_by_model=candidate is not summary,
             truncated=result != candidate,
+            model_calls=1,
+            model_call_failed=fold_failed,
+            duration_ms=round((time.perf_counter() - fold_started) * 1000, 2),
         )
         return result
 
@@ -191,8 +198,10 @@ class SummarizeMixin:
             max_words=self._memory_word_budget(),
         )
 
+        summary_started = time.perf_counter()
         try:
             res = await self.llm.ainvoke(prompt)
+            summary_duration_ms = round((time.perf_counter() - summary_started) * 1000, 2)
 
             updated_summary = stringify_content(getattr(res, "content", res)).strip()
             if not updated_summary:
@@ -215,6 +224,12 @@ class SummarizeMixin:
             self._log_run_event(
                 state,
                 "summary_compacted",
+                previous_memory_estimated_tokens=estimate_summary_tokens(summary),
+                history_estimated_tokens=estimate_summary_tokens(history_text),
+                snapshot_estimated_tokens=estimate_summary_tokens(state_snapshot),
+                prompt_estimated_tokens=estimate_summary_tokens(prompt),
+                summary_model_calls=1,
+                summary_model_duration_ms=summary_duration_ms,
                 estimated_tokens=estimated_tokens,
                 removed_messages=len(delete_msgs),
                 summarized_messages=len(to_summarize),

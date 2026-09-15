@@ -79,6 +79,38 @@ _SECTION_PREFIXES = {
 }
 
 
+_SUMMARY_OUTCOME_LINE_RE = re.compile(
+    r"(?i)\bexit[\s_-]*code\s*[:=]?\s*-?\d+\b"
+    r"|\b\d+\s+(?:passed|skipped|xfailed|xpassed|deselected)\b"
+    r"|\btests?\s+(?:were\s+)?not\s+(?:run|executed)\b"
+    r"|\bRan\s+\d+\s+tests?\b"
+    r'|^\s*(?:[\w.]+(?:Error|Exception):|File "[^"]+", line \d+)'
+)
+
+
+def iter_diagnostic_lines(content: str, *, include_outcomes: bool = False) -> Iterator[tuple[int, str]]:
+    """Return source line indexes, without interpreting matches as operation status.
+
+    Summary formatting also needs explicit exit codes and test totals, before
+    warnings. Keep that opt-in so the main compressor's validation and source
+    ordering are unchanged. Callers can restore order using the source indexes.
+    """
+    candidates = []
+    for index, line in enumerate(content.splitlines()):
+        if not include_outcomes:
+            if _DIAGNOSTIC_LINE_RE.search(line):
+                yield index, line
+            continue
+        matches = list(_DIAGNOSTIC_LINE_RE.finditer(line))
+        outcome = _SUMMARY_OUTCOME_LINE_RE.search(line)
+        if matches or outcome:
+            warning_only = matches and all(match.group().lower() in {"warn", "warning", "warnings"} for match in matches)
+            priority = 0 if matches and not warning_only else (1 if outcome else 2)
+            candidates.append((priority, index, line))
+    for _priority, index, line in sorted(candidates):
+        yield index, line
+
+
 class ToolOutputCompressor:
     """Lazily-initialised headroom wrapper with deterministic fallbacks."""
 
@@ -362,8 +394,8 @@ class ToolOutputCompressor:
     def _diagnostic_tokens(content: str) -> list[frozenset[str]]:
         lines = {
             line.strip()
-            for line in content.splitlines()
-            if line.strip() and _DIAGNOSTIC_LINE_RE.search(line)
+            for _index, line in iter_diagnostic_lines(content)
+            if line.strip()
         }
         return [frozenset(_SIGNIFICANT_TOKEN_RE.findall(line)) for line in lines]
 
@@ -457,12 +489,11 @@ class ToolOutputCompressor:
 
     @classmethod
     def _reduce_cli(cls, content: str, *, limit: int) -> str:
-        lines = content.splitlines()
         diagnostics = []
         seen = set()
-        for line in lines:
+        for _index, line in iter_diagnostic_lines(content):
             stripped = line.strip()
-            if stripped and _DIAGNOSTIC_LINE_RE.search(stripped) and stripped not in seen:
+            if stripped and stripped not in seen:
                 seen.add(stripped)
                 diagnostics.append(stripped)
 

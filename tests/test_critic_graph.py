@@ -1,14 +1,17 @@
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph.message import add_messages
 from langgraph.types import Command
 
 from agent import create_agent_workflow
 from core.config import AgentConfig
 from core.nodes import AgentNodes
 from core.summarize_policy import estimate_summary_tokens
+from core.tool_output_compressor import ToolOutputCompressor
 from core.tool_policy import ToolMetadata
 from tools.user_input_tool import request_user_input
 from ui.runtime import build_graph_config
@@ -459,6 +462,110 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
             [str(message.content) for message in original_messages],
         )
         self.assertEqual(result["messages"][-1].content, "Continuing with full history.")
+
+    async def test_summary_compressor_to_model_prompt_preserves_failure_and_task_tail(self):
+        diagnostic = "ERROR: build/result.bin denied; Exit Code: 2"
+        raw = "Build workspace\n" + "compile item\n" * 200 + diagnostic + "\n" + "cleanup item\n" * 200 + "Cleanup completed"
+        reduced = ToolOutputCompressor(enabled=False).reduce_to_limit(content=raw, tool_name="cli_exec", limit=1800)
+        task = "Audit the build " + "with care " * 100 + "NEVER DELETE source files"
+        memory = "- Build failed: build/result.bin denied. Cleanup completed, not the build."
+        llm = FakeLLM([AIMessage(content=memory)])
+        nodes = AgentNodes(
+            config=self._make_config(summary_threshold=1, summary_keep_last=1, summary_max_tokens=120),
+            llm=llm, tools=[], llm_with_tools=llm,
+        )
+        state = self._initial_state(task)
+        state["messages"] = [
+            HumanMessage(id="h1", content=task),
+            AIMessage(id="a1", content="", tool_calls=[{"id": "t", "name": "cli_exec", "args": {"command": "build src/"}}]),
+            ToolMessage(id="t1", tool_call_id="t", name="cli_exec", content=reduced),
+            HumanMessage(id="h2", content="continue"),
+        ]
+        with mock.patch.object(nodes, "_log_run_event") as log:
+            result = await nodes.summarize_node(state)
+        prompt = llm.invocations[0]
+        self.assertIn(diagnostic, prompt)
+        self.assertIn("Cleanup completed", prompt)
+        self.assertIn(task, prompt)
+        self.assertIn("tool(cli_exec)[c1]", prompt)
+        self.assertEqual(result["summary"], memory)
+        self.assertEqual([m.id for m in result["messages"]], ["h1", "a1", "t1"])
+        self.assertEqual(result["transcript_messages"], state["messages"])
+        event = next(call.kwargs for call in log.call_args_list if call.args[1] == "summary_compacted")
+        for key in ("previous_memory_estimated_tokens", "history_estimated_tokens", "snapshot_estimated_tokens", "prompt_estimated_tokens"):
+            self.assertIsInstance(event[key], int)
+        self.assertEqual(event["summary_model_calls"], 1)
+        self.assertGreaterEqual(event["summary_model_duration_ms"], 0)
+        self.assertTrue(all(isinstance(value, (int, float)) for value in event.values()))
+
+    async def test_summary_repeated_cycles_keep_prior_memory_and_preserve_history_on_failure(self):
+        # These fake responses verify plumbing and budget guarantees, not LLM
+        # semantic quality. Include new contrary evidence in the second cycle.
+        oversized = "- Build alpha failed; tests not run.\n" + "- lower priority detail\n" * 100
+        first_memory = "- Build alpha failed; tests not run."
+        second_memory = "- Build alpha now passes; beta tests still not run."
+        llm = FakeLLM([
+            AIMessage(content=oversized), AIMessage(content=first_memory),
+            AIMessage(content=second_memory + "\n" + "- lower priority detail\n" * 100), AIMessage(content=second_memory),
+            AIMessage(content="   "), RuntimeError("synthetic provider failure"),
+        ])
+        nodes = AgentNodes(
+            config=self._make_config(summary_threshold=1, summary_keep_last=1, summary_max_tokens=120),
+            llm=llm, tools=[], llm_with_tools=llm,
+        )
+        state = self._initial_state("Audit alpha and beta; never delete files")
+        state["messages"] = [
+            HumanMessage(id="h1", content=state["current_task"]),
+            AIMessage(id="a1", content="Build alpha failed; tests not run"),
+            HumanMessage(id="h2", content="continue"),
+        ]
+        transcript = list(state["messages"])
+        with mock.patch.object(nodes, "_log_run_event") as log:
+            for cycle, expected in enumerate((first_memory, second_memory)):
+                result = await nodes.summarize_node(state)
+                self.assertEqual(result["summary"], expected)
+                self.assertLessEqual(estimate_summary_tokens(result["summary"]), 120)
+                if cycle:
+                    self.assertIn(first_memory, llm.invocations[2])
+                    self.assertIn("Build alpha now passes", llm.invocations[2])
+                state["summary"] = result["summary"]
+                state["messages"] = add_messages(state["messages"], result["messages"])
+                state["transcript_messages"] = transcript
+                new_messages = [
+                    AIMessage(id=f"next-a{cycle}", content="Build alpha now passes; beta tests not run"),
+                    HumanMessage(id=f"next-h{cycle}", content="continue"),
+                ]
+                state["messages"] = add_messages(state["messages"], new_messages)
+                transcript = add_messages(transcript, new_messages)
+            original_messages = list(state["messages"])
+            for _failure in range(2):
+                result = await nodes.summarize_node(state)
+                self.assertNotIn("messages", result)
+                self.assertNotIn("summary", result)
+                self.assertEqual(state["messages"], original_messages)
+                self.assertEqual(state["summary"], second_memory)
+        folds = [call.kwargs for call in log.call_args_list if call.args[1] == "summary_memory_folded"]
+        self.assertEqual(len(folds), 2)
+        self.assertTrue(all(event["model_calls"] == 1 and not event["model_call_failed"] for event in folds))
+        self.assertEqual(len(llm.invocations), 6)
+
+    async def test_summary_empty_and_failed_fold_remain_bounded_and_observable(self):
+        memory = "- Keep user restriction: no deletion.\n" + "- extra detail\n" * 100
+        for response in (AIMessage(content=""), RuntimeError("synthetic failure")):
+            with self.subTest(response_type=type(response).__name__):
+                llm = FakeLLM([response])
+                nodes = AgentNodes(
+                    config=self._make_config(summary_max_tokens=120), llm=llm, tools=[], llm_with_tools=llm,
+                )
+                with mock.patch.object(nodes, "_log_run_event") as log:
+                    result = await nodes._fit_memory_to_budget(self._initial_state(), memory)
+                self.assertLessEqual(estimate_summary_tokens(result), 120)
+                self.assertTrue(result.startswith("- Keep user restriction: no deletion."))
+                event = log.call_args.kwargs
+                self.assertTrue(event["truncated"])
+                self.assertFalse(event["folded_by_model"])
+                self.assertEqual(event["model_call_failed"], isinstance(response, Exception))
+                self.assertGreaterEqual(event["duration_ms"], 0)
 
     async def test_request_user_input_interrupts_and_resumes_with_selected_option(self):
         tool = FakeTool("edit_file", "Success: File edited.")

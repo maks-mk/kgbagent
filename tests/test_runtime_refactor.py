@@ -35,6 +35,7 @@ from core.run_logger import JsonlRunLogger
 from core.session_store import SessionSnapshot, SessionStore
 from core.state import AgentState, append_transcript_messages
 from core.summarize_policy import (
+    _compact_for_summary,
     choose_summary_boundary,
     estimate_summary_tokens,
     format_history_for_summary,
@@ -43,6 +44,7 @@ from core.summarize_policy import (
     summary_trigger_tokens,
     truncate_summary_to_token_budget,
 )
+from core.tool_output_compressor import ToolOutputCompressor
 from core.tool_policy import ToolMetadata
 from core.turn_outcomes import (
     TURN_OUTCOME_CONTINUE_AGENT,
@@ -3178,7 +3180,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         message = ToolMessage(tool_call_id="tc-error", name="cli_exec", content=content)
 
         rendered = format_history_for_summary([message], is_internal_retry=lambda _message: False)
-        compacted = rendered.removeprefix("tool(cli_exec): content=")
+        compacted = rendered.removeprefix("tool(cli_exec)[unmatched]: content=")
 
         self.assertTrue(compacted.startswith(start))
         self.assertTrue(compacted.endswith(error))
@@ -3195,7 +3197,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                     [ToolMessage(tool_call_id="tc-tests", name="cli_exec", content=content)],
                     is_internal_retry=lambda _message: False,
                 )
-                compacted = rendered.removeprefix("tool(cli_exec): content=")
+                compacted = rendered.removeprefix("tool(cli_exec)[unmatched]: content=")
 
                 self.assertTrue(compacted.startswith(start))
                 self.assertTrue(compacted.endswith(totals))
@@ -3211,7 +3213,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                 )
                 normalized = " ".join(content.split())
                 expected = f"content={normalized}" if normalized else "<empty>"
-                self.assertEqual(rendered, f"tool(read_file): {expected}")
+                self.assertEqual(rendered, f"tool(read_file)[unmatched]: {expected}")
 
     def test_format_history_for_summary_compacts_structured_tool_output_at_boundary(self):
         content = "START" + "x" * 493 + "END"
@@ -3219,14 +3221,14 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             [ToolMessage(tool_call_id="tc-block", name="read_file", content=[{"type": "text", "text": content}])],
             is_internal_retry=lambda _message: False,
         )
-        compacted = rendered.removeprefix("tool(read_file): content=")
+        compacted = rendered.removeprefix("tool(read_file)[unmatched]: content=")
 
         self.assertTrue(compacted.startswith("START"))
         self.assertTrue(compacted.endswith("END"))
         self.assertIn("... [truncated] ...", compacted)
         self.assertLessEqual(len(compacted), 500)
 
-    def test_format_history_for_summary_preserves_other_message_and_argument_formatting(self):
+    def test_format_history_for_summary_preserves_other_messages_and_prioritizes_argument_path(self):
         content = "start " + "detail " * 100 + "END_OF_MESSAGE"
         for message_type in (HumanMessage, AIMessage):
             with self.subTest(message_type=message_type.__name__):
@@ -3238,8 +3240,167 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         args = {"content": "detail " * 100 + "END_OF_ARGUMENT", "path": "result.txt"}
         message = AIMessage(content="", tool_calls=[{"id": "tc-write", "name": "write_file", "args": args}])
         rendered = format_history_for_summary([message], is_internal_retry=lambda _message: False)
-        expected = " ".join(f"write_file({json.dumps(args, ensure_ascii=False, sort_keys=True)})".split())
-        self.assertEqual(rendered, "ai: tool_calls=" + expected[:320] + "... [truncated]")
+        self.assertIn('write_file[c1]({"path": "result.txt", "content":', rendered)
+        self.assertIn("... [truncated]", rendered)
+        self.assertLessEqual(len(rendered.removeprefix("ai: tool_calls=")), 320)
+        self.assertEqual(message.tool_calls[0]["args"], args)
+
+    def test_summary_diagnostic_corpus_preserves_required_facts_in_same_budget(self):
+        cases = (
+            "ERROR: build/result.bin denied",
+            "WARNING: optional plugin unavailable",
+            "Exit Code: 2",
+            "12 passed, 2 skipped in 0.4s",
+            "2 failed, 10 passed, 1 skipped in 0.4s",
+            "Tests were not run: missing dependency",
+            'Traceback (most recent call last):\n  File "src/build.py", line 8, in run\n    compile_file()\nValueError: invalid target',
+            "ERROR: target alpha unavailable\nERROR: target beta unavailable",
+        )
+        for diagnostic in cases:
+            for position in ("head", "middle", "tail"):
+                with self.subTest(diagnostic=diagnostic, position=position):
+                    progress = "processing item\n" * 100
+                    sections = {
+                        "head": diagnostic + "\n" + progress + "Cleanup completed",
+                        "middle": "Build workspace\n" + progress + diagnostic + "\n" + progress + "Cleanup completed",
+                        "tail": "Build workspace\n" + progress + diagnostic,
+                    }
+                    content = sections[position]
+                    message = ToolMessage(tool_call_id="build", name="cli_exec", content=content)
+                    rendered = format_history_for_summary([message], is_internal_retry=lambda _message: False)
+                    excerpt = rendered.split("content=", 1)[1]
+                    for fact in diagnostic.splitlines():
+                        self.assertIn(fact, excerpt)
+                    self.assertLessEqual(len(excerpt), 500)
+                    self.assertIn("... [truncated] ...", excerpt)
+                    self.assertEqual(message.content, content)
+                    if position == "middle":
+                        self.assertNotIn(diagnostic, _compact_for_summary(content, preserve_tail=True))
+                        self.assertIn("Cleanup completed", excerpt)
+                        self.assertLess(excerpt.index(diagnostic.splitlines()[0]), excerpt.index("Cleanup completed"))
+
+    def test_summary_diagnostics_prioritize_failure_over_many_warnings(self):
+        diagnostic = "ERROR: build/result.bin is unavailable"
+        content = (
+            "Build workspace\n"
+            + "".join(f"WARNING: optional plugin {index} notice\n" for index in range(60))
+            + diagnostic + "\nExit Code: 2\n2 failed, 10 passed, 1 skipped\n"
+            + "cleanup progress\n" * 100 + "Cleanup completed"
+        )
+        rendered = format_history_for_summary(
+            [ToolMessage(tool_call_id="t", name="cli_exec", content=content)],
+            is_internal_retry=lambda _message: False,
+        )
+        excerpt = rendered.split("content=", 1)[1]
+        for fact in (diagnostic, "Exit Code: 2", "2 failed, 10 passed, 1 skipped", "Cleanup completed"):
+            self.assertIn(fact, excerpt)
+        self.assertLessEqual(len(excerpt), 500)
+        self.assertLess(excerpt.index(diagnostic), excerpt.index("Exit Code: 2"))
+
+    def test_summary_argument_flags_precede_large_edit_bodies(self):
+        args = {"path": "source.py", "new_string": "replacement " * 100, "old_string": "original " * 100, "replace_all": False}
+        message = AIMessage(content="", tool_calls=[{"id": "t", "name": "edit_file", "args": args}])
+        rendered = format_history_for_summary([message], is_internal_retry=lambda _message: False)
+        self.assertIn('"path": "source.py", "replace_all": false', rendered)
+        self.assertIn("... [truncated]", rendered)
+        self.assertLessEqual(len(rendered.removeprefix("ai: tool_calls=")), 320)
+
+    def test_summary_small_arguments_remain_intact(self):
+        message = AIMessage(content="", tool_calls=[
+            {"id": "t1", "name": "read_file", "args": {"path": "a.py", "offset": 20}},
+            {"id": "t2", "name": "cli_exec", "args": {"command": "pytest tests/", "timeout": 120}},
+        ])
+        rendered = format_history_for_summary([message], is_internal_retry=lambda _message: False)
+        self.assertEqual(rendered, 'ai: tool_calls=read_file[c1]({"path": "a.py", "offset": 20}); cli_exec[c2]({"command": "pytest tests/", "timeout": 120})')
+
+    def test_summary_short_traceback_keeps_line_breaks(self):
+        content = 'Traceback (most recent call last):\n  File "src/job.py", line 4\n    run()\nRuntimeError: stopped'
+        rendered = format_history_for_summary(
+            [ToolMessage(tool_call_id="t", name="cli_exec", content=content)],
+            is_internal_retry=lambda _message: False,
+        )
+        self.assertEqual(rendered.split("content=", 1)[1], content)
+
+    def test_summary_unknown_and_oversized_structured_output_use_head_tail(self):
+        for content in (
+            "start\n" + "progress\n" * 200 + "end",
+            json.dumps({"padding": "x" * 1000, "result": {"status": "failed", "path": "out/a", "error": "blocked"}}),
+            '{"padding": "' + "x" * 1000 + '" invalid ERROR: broken',
+        ):
+            with self.subTest(content_length=len(content)):
+                rendered = format_history_for_summary(
+                    [ToolMessage(tool_call_id="t", name="cli_exec", content=content)],
+                    is_internal_retry=lambda _message: False,
+                )
+                self.assertEqual(rendered.split("content=", 1)[1], _compact_for_summary(content, preserve_tail=True))
+        # A file containing an example error must not be treated as a shell log.
+        content = "manual\n" + "text\n" * 200 + "ERROR: example only\n" + "text\n" * 200 + "end"
+        rendered = format_history_for_summary(
+            [ToolMessage(tool_call_id="t", name="read_file", content=content)],
+            is_internal_retry=lambda _message: False,
+        )
+        self.assertEqual(rendered.split("content=", 1)[1], _compact_for_summary(content, preserve_tail=True))
+
+    def test_summary_parallel_calls_keep_distinct_references_and_arguments(self):
+        messages = [
+            AIMessage(content="", tool_calls=[
+                {"id": "long-id-alpha", "name": "cli_exec", "args": {"command": "pytest tests/alpha.py", "padding": "x" * 1000}},
+                {"id": "long-id-beta", "name": "cli_exec", "args": {"command": "pytest tests/beta.py", "padding": "x" * 1000}},
+            ]),
+            ToolMessage(tool_call_id="long-id-beta", name="cli_exec", content="1 passed"),
+            ToolMessage(tool_call_id="long-id-alpha", name="cli_exec", content="1 failed"),
+        ]
+        rendered = format_history_for_summary(messages, is_internal_retry=lambda _message: False)
+        self.assertIn('cli_exec[c1]({"command": "pytest tests/alpha.py"', rendered)
+        self.assertIn('cli_exec[c2]({"command": "pytest tests/beta.py"', rendered)
+        self.assertIn("tool(cli_exec)[c2]: content=1 passed", rendered)
+        self.assertIn("tool(cli_exec)[c1]: content=1 failed", rendered)
+        self.assertLessEqual(len(rendered.splitlines()[0].removeprefix("ai: tool_calls=")), 320)
+
+    def test_summary_excessive_batch_marks_omitted_calls_without_false_links(self):
+        calls = [{"id": f"id-{i}", "name": "read_file", "args": {"path": f"file-{i}"}} for i in range(80)]
+        rendered = format_history_for_summary(
+            [AIMessage(content="", tool_calls=calls), ToolMessage(tool_call_id="id-79", name="read_file", content="ok")],
+            is_internal_retry=lambda _message: False,
+        )
+        self.assertIn("calls omitted", rendered)
+        self.assertIn("tool(read_file)[c80]: content=ok", rendered)
+        self.assertLessEqual(len(rendered.splitlines()[0].removeprefix("ai: tool_calls=")), 320)
+
+    def test_summary_missing_or_duplicate_call_ids_are_not_guessed(self):
+        for ids in (("a", "a"), ("", "")):
+            rendered = format_history_for_summary(
+                [AIMessage(content="", tool_calls=[
+                    {"id": call_id, "name": "read_file", "args": {"path": str(i)}} for i, call_id in enumerate(ids)
+                ]), ToolMessage(tool_call_id=ids[0], name="read_file", content="ok")],
+                is_internal_retry=lambda _message: False,
+            )
+            self.assertIn("tool(read_file)[unmatched]", rendered)
+
+    def test_summary_arguments_are_masked_before_compaction(self):
+        args = {"command": "curl -H 'Authorization: Bearer synthetic-credential' https://example.test", "nested": {
+            "password": "synthetic-password", "token": {"value": "synthetic-token"},
+        }}
+        message = AIMessage(content="", tool_calls=[{"id": "t", "name": "cli_exec", "args": args}])
+        rendered = format_history_for_summary([message], is_internal_retry=lambda _message: False)
+        for secret in ("synthetic-credential", "synthetic-password", "synthetic-token"):
+            self.assertNotIn(secret, rendered)
+        self.assertIn("redacted", rendered)
+        self.assertEqual(message.tool_calls[0]["args"], args)
+
+    def test_summary_compressor_chain_preserves_middle_diagnostic(self):
+        diagnostic = "ERROR: src/target.py denied; Exit Code: 2"
+        content = "Build workspace\n" + "compile item\n" * 200 + diagnostic + "\n" + "cleanup item\n" * 200 + "Cleanup completed"
+        compressor = ToolOutputCompressor(enabled=False)
+        reduced = compressor.reduce_to_limit(content=content, tool_name="cli_exec", limit=1800)
+        self.assertIn(diagnostic, reduced)
+        rendered = format_history_for_summary(
+            [ToolMessage(tool_call_id="t", name="cli_exec", content=reduced)],
+            is_internal_retry=lambda _message: False,
+        )
+        self.assertIn(diagnostic, rendered)
+        self.assertIn("Cleanup completed", rendered)
+        self.assertLessEqual(len(rendered.split("content=", 1)[1]), 500)
 
     def test_session_store_round_trip(self):
         tmp = self._workspace_tempdir()
