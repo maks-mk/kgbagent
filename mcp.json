@@ -32,8 +32,11 @@
   "_builtin_tools": {
     "download_file": false,
     "list_directory": false,
-    "batch_web_search": false,
-    "fetch_content": false,
-    "crawl_site": false
+    "batch_web_search": true,
+    "fetch_content": true,
+    "crawl_site": false,
+    "run_background_process": true,
+    "safe_delete_directory": true,
+    "write_file": true
   }
 }

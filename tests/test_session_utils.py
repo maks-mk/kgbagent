@@ -140,6 +140,9 @@ class SessionRepairTests(unittest.IsolatedAsyncioTestCase):
             PROVIDER="openai",
             OPENAI_API_KEY="test-key",
             PROMPT_PATH=Path(__file__).resolve().parents[1] / "prompt.txt",
+            # Hermetic: chat mode remaps non-compliant tool call IDs; a local
+            # .env selecting LLM_API_MODE=responses must not change that.
+            LLM_API_MODE="chat",
         )
         nodes = AgentNodes(config=config, llm=types.SimpleNamespace(), tools=[], llm_with_tools=types.SimpleNamespace())
         sanitized = nodes._sanitize_messages_for_model(app.values["messages"])

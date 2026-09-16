@@ -525,7 +525,9 @@ class RefactorServicesTests(unittest.TestCase):
 
     def test_context_builder_stringifies_openai_assistant_content_lists(self):
         builder = ContextBuilder(
-            config=self._make_config(),
+            # Hermetic: the chat-mode content flattening below must not depend on
+            # a local .env that selects LLM_API_MODE=responses.
+            config=self._make_config(LLM_API_MODE="chat"),
             prompt_loader=lambda: "Base prompt {{current_date}}",
             is_internal_retry=lambda _msg: False,
             log_run_event=lambda *_args, **_kwargs: None,
@@ -1934,7 +1936,9 @@ class RefactorServicesTests(unittest.TestCase):
         """Reasoning is ephemeral — strip from history even for OpenAI to keep
         cross-provider replay clean and avoid stale reasoning accumulation."""
         builder = ContextBuilder(
-            config=self._make_config(PROVIDER="openai"),
+            # Hermetic: reasoning is stripped in chat mode; in responses mode it
+            # is preserved for tool-call replay, so pin the mode explicitly.
+            config=self._make_config(PROVIDER="openai", LLM_API_MODE="chat"),
             prompt_loader=lambda: "Base prompt {{current_date}}",
             is_internal_retry=lambda _msg: False,
             log_run_event=lambda *_args, **_kwargs: None,

@@ -939,6 +939,54 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(label.text(), "Failed to apply")
         self.assertIn("Tool runtime did not start", label.toolTip())
 
+    def test_tools_panel_keeps_scroll_position_when_tool_is_toggled(self):
+        def payload_for(disabled: str) -> dict:
+            payload = self._snapshot_payload()
+            rows = [
+                {
+                    "name": f"tool_{index:02d}",
+                    "kind": "tool",
+                    "group": "Read-only",
+                    "description": f"Description {index}",
+                    "enabled": f"tool_{index:02d}" != disabled,
+                }
+                for index in range(14)
+            ]
+            payload["tools"] = rows
+            payload["snapshot"]["tools"] = rows
+            payload["snapshot"]["tools_count"] = len(rows)
+            return payload
+
+        self.window.resize(1200, 620)
+        self.window.show()
+        self.window.inspector_container.show()
+        self.window.inspector_panel.tabs.setCurrentIndex(1)
+        self.window._handle_initialized(payload_for(""))
+
+        scrollbar = self.window.tools_panel.scroll.verticalScrollBar()
+        deadline = time.time() + 2.0
+        while scrollbar.maximum() == 0 and time.time() < deadline:
+            QTest.qWait(20)
+        self.assertGreater(scrollbar.maximum(), 120)
+
+        scrollbar.setValue(120)
+        switch = next(
+            item
+            for item in self.window.tools_panel.findChildren(QCheckBox, "ToolAvailabilitySwitch")
+            if item.accessibleName() == "tool_05 enabled"
+        )
+        # A real click focuses the switch; the disabled pending state then hands the
+        # focus to another card, which used to drag the viewport to the bottom.
+        switch.setFocus()
+        switch.setChecked(False)
+        QTest.qWait(20)
+
+        self.window._handle_initialized(payload_for("tool_05"))
+        QTest.qWait(60)
+
+        self.assertEqual(scrollbar.value(), 120)
+        self.assertLess(scrollbar.value(), scrollbar.maximum())
+
     def test_mcp_server_switch_stays_pending_until_runtime_is_initialized(self):
         self.window._handle_initialized(self._snapshot_payload())
         switch = next(
@@ -5227,6 +5275,85 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(self.window.composer.accessibleName(), "Composer")
         self.assertEqual(self.window.send_button.accessibleName(), "Send request")
         self.assertEqual(self.window.inspector_panel.tabs.accessibleName(), "Inspector tabs")
+
+    def _tools_scroll_payload(self, disabled: set) -> dict:
+        payload = self._snapshot_payload()
+        rows = [
+            {
+                "name": f"tool_{index:02d}",
+                "kind": "tool",
+                "group": "Read-only",
+                "description": f"Description {index}",
+                "enabled": f"tool_{index:02d}" not in disabled,
+            }
+            for index in range(14)
+        ]
+        payload["tools"] = rows
+        payload["snapshot"]["tools"] = rows
+        payload["snapshot"]["tools_count"] = len(rows)
+        return payload
+
+    def _show_tools_panel(self, payload: dict):
+        self.window.resize(1200, 620)
+        self.window.show()
+        self.window.inspector_container.show()
+        self.window.inspector_panel.tabs.setCurrentIndex(1)
+        self.window._handle_initialized(payload)
+        scrollbar = self.window.tools_panel.scroll.verticalScrollBar()
+        deadline = time.time() + 2.0
+        while scrollbar.maximum() == 0 and time.time() < deadline:
+            QTest.qWait(20)
+        return scrollbar
+
+    def _tool_switch(self, name: str) -> QCheckBox:
+        return next(
+            item
+            for item in self.window.tools_panel.findChildren(QCheckBox, "ToolAvailabilitySwitch")
+            if item.accessibleName() == f"{name} enabled"
+        )
+
+    def test_tools_panel_keeps_scroll_position_when_tool_is_toggled(self):
+        scrollbar = self._show_tools_panel(self._tools_scroll_payload(set()))
+        self.assertGreater(scrollbar.maximum(), 120)
+
+        scrollbar.setValue(120)
+        # A real click focuses the switch; rebuilding the cards used to destroy the
+        # focused card, which made Qt hand the focus over and scroll it into view.
+        QTest.mouseClick(self._tool_switch("tool_05"), Qt.LeftButton)
+        QTest.qWait(20)
+
+        self.window._handle_initialized(self._tools_scroll_payload({"tool_05"}))
+        QTest.qWait(60)
+
+        self.assertEqual(scrollbar.value(), 120)
+        self.assertLess(scrollbar.value(), scrollbar.maximum())
+        self.assertIs(QApplication.focusWidget(), self._tool_switch("tool_05"))
+
+    def test_tools_panel_keeps_top_position_when_tool_is_toggled(self):
+        scrollbar = self._show_tools_panel(self._tools_scroll_payload(set()))
+        self.assertEqual(scrollbar.value(), 0)
+
+        QTest.mouseClick(self._tool_switch("tool_05"), Qt.LeftButton)
+        QTest.qWait(20)
+
+        self.window._handle_initialized(self._tools_scroll_payload({"tool_05"}))
+        QTest.qWait(60)
+
+        self.assertEqual(scrollbar.value(), 0)
+
+    def test_tools_panel_keeps_scroll_position_when_tool_list_rebuilds_twice(self):
+        scrollbar = self._show_tools_panel(self._tools_scroll_payload(set()))
+        self.assertGreater(scrollbar.maximum(), 120)
+
+        scrollbar.setValue(120)
+        QTest.mouseClick(self._tool_switch("tool_05"), Qt.LeftButton)
+        self.window._handle_initialized(self._tools_scroll_payload({"tool_05"}))
+        # A second payload in the same event-loop turn used to pick up the offset Qt
+        # had already dragged to the bottom.
+        self.window._handle_initialized(self._tools_scroll_payload({"tool_05", "tool_06"}))
+        QTest.qWait(60)
+
+        self.assertEqual(scrollbar.value(), 120)
 
 
 if __name__ == "__main__":

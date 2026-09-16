@@ -123,6 +123,9 @@ class ContextBuilder:
                 return True
         return False
 
+    def _uses_openai_responses_api(self) -> bool:
+        return self.config.provider == "openai" and getattr(self.config, "llm_api_mode", "chat") == "responses"
+
     def sanitize_messages(
         self,
         messages: List[BaseMessage],
@@ -233,7 +236,12 @@ class ContextBuilder:
                     if materialized_content != normalized_message.content:
                         normalized_message = normalized_message.model_copy(update={"content": materialized_content})
 
-            if self.config.provider == "openai" and not (
+            # Responses assistant blocks carry reasoning, item IDs and tool calls;
+            # flattening them loses the protocol state required by the next request.
+            preserve_responses_content = self._uses_openai_responses_api() and isinstance(
+                normalized_message, AIMessage
+            )
+            if self.config.provider == "openai" and not preserve_responses_content and not (
                 isinstance(normalized_message, HumanMessage) and human_message_has_image_content(normalized_message.content)
             ):
                 raw_content = getattr(normalized_message, "content", None)
@@ -298,12 +306,16 @@ class ContextBuilder:
         ``langchain_google_genai.chat_models`` (``part["reasoning"]`` /
         ``content_block["reasoning"]``).
 
-        Reasoning content is ephemeral and never needed for cross-provider
-        replay, so we strip it unconditionally from both ``content`` blocks and
-        ``additional_kwargs``.
+        Responses reasoning (including opaque ``encrypted_content``) is required
+        when replaying tool turns to a Responses endpoint. Preserve both modern
+        content blocks and the legacy ``additional_kwargs['reasoning']`` form in
+        that mode; remove them for other target APIs.
 
         Returns ``(message, stripped_block_count, stripped_kwarg_count)``.
         """
+        if self._uses_openai_responses_api():
+            return message, 0, 0
+
         block_count = 0
         kwarg_count = 0
 
@@ -492,6 +504,11 @@ class ContextBuilder:
 
     def _normalize_tool_call_id_for_provider(self, raw_id: str, *, used_ids: set[str]) -> str:
         normalized = str(raw_id or "").strip()
+        # Responses content blocks retain the provider's call_id. Remapping only
+        # tool_calls / ToolMessage would create duplicate or unmatched calls.
+        if self._uses_openai_responses_api() and normalized and normalized not in used_ids:
+            used_ids.add(normalized)
+            return normalized
         # Anthropic tool_use IDs are provider-issued opaque values (``toolu_…``).
         # They must remain identical to the ID in the assistant content block so
         # the following ToolMessage serializes as its matching tool_result.

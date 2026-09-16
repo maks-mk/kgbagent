@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import QSignalBlocker, Qt, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QDialog,
     QFormLayout,
@@ -20,6 +21,9 @@ from PySide6.QtWidgets import (
 
 from ui.theme import ACCENT_BLUE
 from .foundation import _fa_icon
+
+# Retries used while the rebuilt tool cards settle their scroll range.
+_MAX_SCROLL_RESTORE_ATTEMPTS = 4
 
 
 class OverviewPanelWidget(QWidget):
@@ -93,12 +97,21 @@ class ToolsPanelWidget(QWidget):
         self._inner.addStretch(1)
         self._pending_servers: dict[str, bool] = {}
         self._pending_tools: dict[str, bool] = {}
+        self._pending_scroll_value: int | None = None
+        self._scroll_restore_attempts = 0
 
         self.scroll.setWidget(self._container)
         root.addWidget(self.scroll)
 
     def set_tools(self, tools: list[dict[str, Any]]) -> None:
         self._reconcile_pending_tools(tools)
+        # Destroying the card that holds the focus makes Qt hand the focus to another
+        # widget and scroll it into view, so the offset has to be read before the
+        # rebuild and the focus parked on the scroll area.
+        previous_scroll_value = self._pending_scroll_value
+        if previous_scroll_value is None:
+            previous_scroll_value = self.scroll.verticalScrollBar().value()
+        focus_anchor = self._park_focus_for_rebuild()
 
         while self._inner.count() > 1:
             item = self._inner.takeAt(0)
@@ -130,7 +143,7 @@ class ToolsPanelWidget(QWidget):
                 card = QFrame()
                 card.setObjectName("ToolCard")
                 card_layout = QVBoxLayout(card)
-                card_layout.setContentsMargins(10, 8, 10, 8)
+                card_layout.setContentsMargins(10, 5, 10, 5)
                 card_layout.setSpacing(4)
 
                 top_row = QHBoxLayout()
@@ -229,6 +242,64 @@ class ToolsPanelWidget(QWidget):
             self._inner.insertWidget(insert_pos, sep)
             insert_pos += 1
 
+        self._restore_scroll_position(previous_scroll_value)
+        self._restore_focus_after_rebuild(focus_anchor)
+
+    def _park_focus_for_rebuild(self) -> tuple[str, str] | None:
+        """Move focus to the scroll area and report which card control had it."""
+        focus = QApplication.focusWidget()
+        if focus is None or not self._container.isAncestorOf(focus):
+            return None
+        anchor: tuple[str, str] | None = None
+        for card in self.findChildren(QFrame, "ToolCard"):
+            if not card.isAncestorOf(focus):
+                continue
+            title = card.findChild(QToolButton, "ToolCardTitle")
+            if title is not None:
+                role = "switch" if focus.objectName() == "ToolAvailabilitySwitch" else "title"
+                anchor = (title.text(), role)
+            break
+        self.scroll.setFocus(Qt.OtherFocusReason)
+        return anchor
+
+    def _restore_focus_after_rebuild(self, anchor: tuple[str, str] | None) -> None:
+        if anchor is None:
+            return
+        name, role = anchor
+        for card in self.findChildren(QFrame, "ToolCard"):
+            title = card.findChild(QToolButton, "ToolCardTitle")
+            if title is None or title.text() != name:
+                continue
+            target: QWidget | None = None
+            if role == "switch":
+                switch = card.findChild(QCheckBox, "ToolAvailabilitySwitch")
+                if switch is not None and switch.isEnabled():
+                    target = switch
+            (target or title).setFocus(Qt.OtherFocusReason)
+            return
+
+    def _restore_scroll_position(self, value: int) -> None:
+        """Re-apply a scroll offset once Qt has recomputed the rebuilt content.
+
+        The range is stale right after the rebuild, so the offset is re-applied while
+        the range settles instead of clamping it against an outdated maximum.
+        """
+        self._pending_scroll_value = value
+        self._scroll_restore_attempts = 0
+        QTimer.singleShot(0, self._apply_pending_scroll_position)
+
+    def _apply_pending_scroll_position(self) -> None:
+        value = self._pending_scroll_value
+        if value is None:
+            return
+        scrollbar = self.scroll.verticalScrollBar()
+        scrollbar.setValue(min(value, scrollbar.maximum()))
+        self._scroll_restore_attempts += 1
+        settled = scrollbar.maximum() >= value
+        if not settled and self._scroll_restore_attempts < _MAX_SCROLL_RESTORE_ATTEMPTS:
+            QTimer.singleShot(0, self._apply_pending_scroll_position)
+            return
+        self._pending_scroll_value = None
 
     @staticmethod
     def _set_details_expanded(button: QToolButton, details: QWidget, expanded: bool) -> None:

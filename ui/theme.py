@@ -2008,7 +2008,7 @@ def build_stylesheet() -> str:
         background: {blend_hex(SURFACE_CARD, "#FFFFFF", 0.04)};
         border: none;
         border-radius: {SOFT_RADIUS_MD}px;
-        min-height: 90px;
+        min-height: 44px;
     }}
 
     QCheckBox#ToolAvailabilitySwitch {{

@@ -2635,7 +2635,9 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("declined", final_text)
 
     def test_sanitize_messages_for_model_remaps_non_compliant_tool_call_ids(self):
-        config = self._make_config()
+        # Hermetic: in responses mode provider call IDs are preserved (they must
+        # match the function_call blocks), so pin chat mode explicitly.
+        config = self._make_config(LLM_API_MODE="chat")
         nodes = AgentNodes(
             config=config,
             llm=FakeLLM([]),
@@ -2706,7 +2708,9 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool_message.tool_call_id, source_id)
 
     async def test_openai_context_stringifies_assistant_content_lists_before_invoke(self):
-        config = self._make_config()
+        # Hermetic: assistant content is only flattened in chat mode; responses
+        # mode keeps the structured blocks, so pin chat mode explicitly.
+        config = self._make_config(LLM_API_MODE="chat")
         llm = OpenAIContentSafeFakeLLM([AIMessage(content="ok")])
         nodes = AgentNodes(
             config=config,
