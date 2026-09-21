@@ -8,7 +8,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 
 _CLEAN_MD_RE = re.compile(r"\n{3,}")
 _INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
-_SIMPLE_LATEX_INLINE_RE = re.compile(r"\$\s*(\\[A-Za-z]+)\s*\$")
+_SIMPLE_LATEX_INLINE_RE = re.compile(r"(?<![\\$])\$(?!\$)[ \t]*(\\{1,2}[A-Za-z]+)[ \t]*\$(?!\$)")
 _MARKDOWN_FENCE_RE = re.compile(r"^(?P<indent>[ \t]{0,3})(?P<fence>`{3,}|~{3,})(?P<info>[^`~\r\n]*)[ \t]*(?:\r?\n)?$")
 _INVISIBLE_TEXT_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
 
@@ -360,10 +360,15 @@ def _rewrite_outside_inline_code(text: str, replacer: Callable[[str], str]) -> s
     return "".join(parts)
 
 
-def _normalize_simple_latex_inline(text: str) -> str:
+def normalize_simple_latex_inline(text: str) -> str:
+    """Render standalone math symbols, including provider-doubled backslashes.
+
+    Keep code, incomplete expressions and unsupported LaTeX literal. Qt's
+    Markdown reader has no math support, so normalize before it consumes escapes.
+    """
     def _replace_segment(segment: str) -> str:
         def _replace_match(match: re.Match) -> str:
-            command = str(match.group(1) or "").strip()
+            command = "\\" + match.group(1).lstrip("\\")
             return _SIMPLE_LATEX_SYMBOLS.get(command, match.group(0))
 
         return _SIMPLE_LATEX_INLINE_RE.sub(_replace_match, segment)
@@ -747,7 +752,7 @@ def clean_markdown_text(text: str) -> str:
 
 
 def prepare_markdown_for_render(text: str) -> str:
-    text = _normalize_simple_latex_inline(text)
+    text = normalize_simple_latex_inline(text)
     text = _unescape_common_markdown_markers(text)
     text = _rewrite_local_file_links(text)
     # Do not infer fenced code while text is streaming. The inference can change

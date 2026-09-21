@@ -1255,6 +1255,49 @@ class GuiUxTests(unittest.TestCase):
         self.assertTrue(code_sizes)
         self.assertTrue(all(size == body_font_size for size in code_sizes))
 
+    def test_assistant_message_renders_latex_symbols_in_table(self):
+        for symbol in (r'$\to$', r'$\\to$'):
+            with self.subTest(symbol=symbol):
+                widget = AssistantMessageWidget()
+                source = (
+                    '| Если ошибка | Попробуйте сделать следующее |\n'
+                    '| --- | --- |\n'
+                    f'| Недостаточно людей | Н {symbol} Д |'
+                )
+                widget.set_content(source)
+                browser = widget.parts_widgets[0]
+
+                self.assertIn('Н → Д', browser.toPlainText())
+                self.assertNotIn('$', browser.toPlainText())
+                self.assertIn('<table', browser.toHtml())
+                self.assertEqual(widget.markdown(), source)
+                cursor = QTextCursor(browser.document())
+                cursor.select(QTextCursor.Document)
+                browser.setTextCursor(cursor)
+                self.assertIn('Н → Д', browser.createMimeDataFromSelection().text())
+                widget.deleteLater()
+
+    def test_assistant_message_renders_latex_when_streaming_delimiter_arrives(self):
+        widget = AssistantMessageWidget()
+        widget.set_content(r'Н $\\to')
+        browser = widget.parts_widgets[0]
+        self.assertNotIn('→', browser.toPlainText())
+
+        widget.set_content(r'Н $\\to$ Д')
+
+        self.assertIs(widget.parts_widgets[0], browser)
+        self.assertEqual(browser.toPlainText(), 'Н → Д')
+        widget.deleteLater()
+
+    def test_browser_preserves_latex_in_code(self):
+        browser = AutoTextBrowser()
+        browser.setMarkdown(r'`$\to$` and ``$\\to$``' + '\n\n```text\n' + r'$\to$' + '\n```')
+
+        self.assertIn(r'$\to$', browser.toPlainText())
+        self.assertIn(r'$\\to$', browser.toPlainText())
+        self.assertNotIn('→', browser.toPlainText())
+        browser.deleteLater()
+
     def test_assistant_message_widget_renders_overescaped_markdown(self):
         widget = AssistantMessageWidget()
         self.addCleanup(widget.deleteLater)

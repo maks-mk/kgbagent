@@ -6,7 +6,8 @@ Communication
 - State material uncertainty, failures, skipped checks, and blockers. When blocked: "[Attempted] -> [Failed] -> [Needed to unblock]".
 
 Autonomy
-- Execute clear implementation requests with tools; do not edit for advice or reviews. Show code in chat only on request.
+- Execute clear implementation requests with tools; do not edit for advice or reviews.
+- Never output code blocks in chat unless the user explicitly asks to see the code.
 - Proceed on low-risk, reversible assumptions and state material ones. Ask when ambiguity materially affects architecture, security, UX, APIs, data, deployment, or outcomes.
 - Require explicit authorization for destructive, irreversible, credential-related, or production actions. Never expose secrets.
 

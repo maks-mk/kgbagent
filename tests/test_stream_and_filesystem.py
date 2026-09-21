@@ -208,6 +208,25 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertNotIn("$\\rightarrow$", rendered)
         self.assertNotIn("$\\Rightarrow$", rendered)
 
+    def test_prepare_markdown_normalizes_doubled_latex_symbols(self):
+        source = r'Н $\\to$ Д; $\\Rightarrow$; $\\geq$; $ \pm $'
+
+        rendered = prepare_markdown_for_render(source)
+
+        self.assertEqual(rendered, 'Н → Д; ⇒; ≥; ±')
+        self.assertEqual(prepare_markdown_for_render(rendered), rendered)
+
+    def test_prepare_markdown_keeps_unsupported_and_incomplete_math(self):
+        for source in (r'$\unknown$', r'$\frac{1}{2}$', r'$\to',
+                       r'\$\to\$', r'$$\to$$', r'$\\\to$', '$5 and $10'):
+            with self.subTest(source=source):
+                self.assertEqual(prepare_markdown_for_render(source), source)
+
+    def test_prepare_markdown_keeps_single_and_doubled_latex_in_code(self):
+        source = r'`$\to$` and ``$\\to$``' + '\n~~~text\n' + r'$\to$ $\\to$' + '\n~~~'
+
+        self.assertEqual(prepare_markdown_for_render(source), source)
+
     def test_prepare_markdown_keeps_latex_symbols_literal_inside_code(self):
         source = 'Текст `$\\\\rightarrow$` и блок:\n```text\n$\\\\Rightarrow$\n```'
 

@@ -28,7 +28,7 @@ from ui.theme import (
     TEXT_MUTED,
     TEXT_PRIMARY,
 )
-from core.text_utils import find_filename_spans
+from core.text_utils import find_filename_spans, normalize_simple_latex_inline
 
 DIFF_HUNK_HEADER_RE = re.compile(r"^@@ -(?P<old>\d+)(?:,\d+)? \+(?P<new>\d+)(?:,\d+)? @@")
 RENDERED_DIFF_LINE_RE = re.compile(r"^\s*\d*\s+\d*\s(?P<marker>[+\- ])\s")
@@ -451,7 +451,7 @@ class AutoTextBrowser(QTextBrowser):
         if markdown == self._last_markdown:
             return
         self._last_markdown = markdown
-        super().setMarkdown(markdown)
+        super().setMarkdown(normalize_simple_latex_inline(markdown))
         self._normalize_inline_code_font_size()
         self._highlight_filenames()
         self._queue_height_sync()
