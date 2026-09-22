@@ -103,6 +103,8 @@ class AgentState(TypedDict):
 
     # Compressed memory
     summary: NotRequired[str]
+    # Latest local count of generated instructions and active tool schemas.
+    summary_context_overhead_tokens: NotRequired[int]
 
     # Step counter
     steps: int

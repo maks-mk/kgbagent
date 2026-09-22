@@ -2364,6 +2364,58 @@ class GuiUxTests(unittest.TestCase):
         self.assertTrue(tool_card.phase_badge.isHidden())
         self.assertNotIn("write_file()", tool_card.action_label.full_text())
 
+    def test_unknown_tool_card_does_not_repeat_tool_name_in_argument_text(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Какая погода в Москве?"}))
+        self.window._handle_event(
+            StreamEvent(
+                "tool_started",
+                {
+                    "tool_id": "call-weather",
+                    "name": "get_weather",
+                    "args": {"city": "Moscow", "units": "metric"},
+                    "display": "Get Weather",
+                    "subtitle": "",
+                    "raw_display": "get_weather(city=Moscow, units=metric)",
+                    "args_state": "complete",
+                    "display_state": "resolved",
+                    "phase": "running",
+                    "source_kind": "tool",
+                },
+            )
+        )
+        self._process_events()
+
+        tool_card = self.window.current_turn.tool_cards["call-weather"]
+        self.assertEqual(tool_card.action_label.full_text(), "Get Weather city=Moscow, units=metric")
+        self.assertEqual(tool_card.action_label.toolTip(), "get_weather(city=Moscow, units=metric)")
+
+    def test_unknown_tool_card_without_args_keeps_only_the_tool_name(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Пинг"}))
+
+        self.window._handle_event(
+            StreamEvent(
+                "tool_started",
+                {
+                    "tool_id": "call-ping",
+                    "name": "ping_service",
+                    "args": {},
+                    "display": "Ping Service",
+                    "subtitle": "",
+                    "raw_display": "ping_service()",
+                    "args_state": "complete",
+                    "display_state": "resolved",
+                    "phase": "running",
+                    "source_kind": "tool",
+                },
+            )
+        )
+        self._process_events()
+
+        tool_card = self.window.current_turn.tool_cards["call-ping"]
+        self.assertEqual(tool_card.action_label.full_text(), "Ping Service")
+
     def test_write_file_finished_label_says_file_created(self):
         self.window._handle_initialized(self._snapshot_payload())
         self.window._handle_event(StreamEvent("run_started", {"text": "Создай файл"}))

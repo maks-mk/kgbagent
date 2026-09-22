@@ -2337,14 +2337,12 @@ class StreamAndFilesystemTests(unittest.TestCase):
         )
 
         started = [event.payload for event in events if event.type == "tool_started"]
-        self.assertEqual(len(started), 2)
+        self.assertEqual(len(started), 1)
         self.assertEqual({payload["tool_id"] for payload in started}, {"call-stream"})
-        self.assertEqual(started[0]["args"], {})
+        self.assertEqual(started[0]["args"], {"path": "demo.txt"})
         self.assertFalse(started[0].get("refresh", False))
-        self.assertEqual(started[-1]["args"], {"path": "demo.txt"})
-        self.assertTrue(started[-1].get("refresh", False))
 
-    def test_stream_processor_starts_tool_before_streamed_args_are_parseable(self):
+    def test_stream_processor_waits_until_streamed_args_are_parseable(self):
         events = []
         processor = StreamProcessor(
             events.append,
@@ -2360,10 +2358,7 @@ class StreamAndFilesystemTests(unittest.TestCase):
             source="messages",
         )
         started = [event.payload for event in events if event.type == "tool_started"]
-        self.assertEqual(len(started), 1)
-        self.assertEqual(started[0]["tool_id"], "call-delayed")
-        self.assertEqual(started[0]["name"], "read_file")
-        self.assertEqual(started[0]["args"], {})
+        self.assertEqual(started, [])
 
         processor._handle_agent_message(
             AIMessageChunk(
@@ -2377,11 +2372,11 @@ class StreamAndFilesystemTests(unittest.TestCase):
         )
 
         started = [event.payload for event in events if event.type == "tool_started"]
-        self.assertEqual(len(started), 2)
+        self.assertEqual(len(started), 1)
         self.assertEqual(started[-1]["tool_id"], "call-delayed")
         self.assertEqual(started[-1]["name"], "read_file")
         self.assertEqual(started[-1]["args"], {"path": "demo.txt"})
-        self.assertTrue(started[-1].get("refresh", False))
+        self.assertFalse(started[-1].get("refresh", False))
 
     def test_stream_processor_starts_tool_from_result_when_streamed_args_never_arrive(self):
         events = []

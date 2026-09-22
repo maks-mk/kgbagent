@@ -26,7 +26,7 @@ from core.multimodal import (
 )
 from core.run_logger import JsonlRunLogger
 from core.session_store import SessionSnapshot, SessionStore
-from core.summarize_policy import estimate_tokens, summary_remaining_ratio, summary_trigger_tokens
+from core.summarize_policy import token_model_name, estimate_tokens, summary_fill_ratio, summary_trigger_tokens
 from core.text_utils import TokenTracker
 from ui.runtime_payloads import (
     APPROVAL_MODE_ALWAYS,
@@ -376,7 +376,8 @@ class AgentRunWorker(QObject):
             return
         tool_name = str(payload.get("name", "") or "tool").strip() or "tool"
         tool_tokens = estimate_tokens(
-            [ToolMessage(content=content, tool_call_id="live-summary-progress", name=tool_name)]
+            [ToolMessage(content=content, tool_call_id="live-summary-progress", name=tool_name)],
+            model_name=token_model_name(self.config),
         )
         self._active_summary_estimated_tokens = max(0, self._active_summary_estimated_tokens + tool_tokens)
         self._active_summary_message_count = max(0, self._active_summary_message_count + 1)
@@ -399,9 +400,10 @@ class AgentRunWorker(QObject):
             "reserved_tokens": reserved,
             "summary_tokens": memory_tokens,
             "provider_input_tokens": max(0, int(self._active_provider_input_tokens or 0)),
-            "progress": summary_remaining_ratio(
+            "progress": 1.0 - summary_fill_ratio(
                 estimated,
                 threshold=threshold,
+                baseline_tokens=reserved + memory_tokens,
             ),
             "message_count": max(0, int(self._active_summary_message_count or 0)),
             "has_summary": has_summary,

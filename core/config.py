@@ -234,12 +234,12 @@ class AgentConfig(BaseSettings):
     summary_threshold: int = Field(
         default=40000,
         alias="SESSION_SIZE",
-        description="Estimated input context tokens before summarizing (~chars/2)",
+        description="Locally estimated input context tokens before summarizing",
     )
     summary_reserved_tokens: int = Field(
-        default=3000,
+        default=256,
         alias="SUMMARY_RESERVED_TOKENS",
-        description="Estimated fixed context overhead for prompts, tool schemas, and provider wrappers",
+        description="Extra safety margin for provider wrappers; prompts and tool schemas are counted separately",
     )
     summary_keep_last: int = Field(default=4, alias="SUMMARY_KEEP_LAST")
     summary_max_tokens: int = Field(

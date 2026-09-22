@@ -33,10 +33,6 @@ class RuntimePayloadTests(unittest.IsolatedAsyncioTestCase):
             payload["remaining_tokens"],
             max(0, payload["trigger_tokens"] - payload["estimated_tokens"]),
         )
-        self.assertAlmostEqual(
-            payload["progress"],
-            max(0.0, 1.0 - (payload["estimated_tokens"] / payload["threshold"])),
-        )
         self.assertGreaterEqual(payload["progress"], 0.0)
         self.assertLessEqual(payload["progress"], 1.0)
         self.assertFalse(payload["will_summarize"])
@@ -61,9 +57,10 @@ class RuntimePayloadTests(unittest.IsolatedAsyncioTestCase):
             payload["remaining_tokens"],
             max(0, payload["trigger_tokens"] - payload["estimated_tokens"]),
         )
+        # Progress excludes the fixed reserve: only history fills the compactable span.
         self.assertAlmostEqual(
             payload["progress"],
-            max(0.0, 1.0 - (payload["estimated_tokens"] / payload["threshold"])),
+            1.0 - (estimate_tokens(messages) / (payload["threshold"] - 25)),
         )
 
     def test_build_summary_progress_payload_reports_summary_and_provider_input_separately(self):

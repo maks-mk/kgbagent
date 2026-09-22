@@ -15,72 +15,61 @@ IsInternalRetry = Callable[[BaseMessage], bool]
 
 logger = logging.getLogger("agent")
 
-# ---------------------------------------------------------------------------
-# Tiktoken — lazy initialization.
-# The encoder is created once and reused for the lifetime of the process.
-# cl100k_base is the GPT-4/GPT-3.5 encoding. It is not ideal for Gemini, but
-# its accuracy is within about ±15%, which is far better than a char heuristic.
-# ---------------------------------------------------------------------------
-
-_TIKTOKEN_ENCODER = None
-_TIKTOKEN_AVAILABLE: Optional[bool] = None  # None = not checked yet
+# Encoders are cached per model; unknown/non-OpenAI models use an approximation.
+_ENCODERS: dict[str, object] = {}
 
 
-def _get_encoder():
-    global _TIKTOKEN_ENCODER, _TIKTOKEN_AVAILABLE
-    if _TIKTOKEN_AVAILABLE is True:
-        return _TIKTOKEN_ENCODER
-    if _TIKTOKEN_AVAILABLE is False:
-        return None
-    # First call — try to initialize it
+def token_model_name(config) -> str:
+    provider = getattr(config, "provider", "")
+    return str(getattr(config, f"{provider}_model", "") or "") if provider == "openai" else ""
+
+
+def _get_encoder(model_name: str = ""):
+    if model_name in _ENCODERS:
+        return _ENCODERS[model_name]
     try:
         import tiktoken
-        _TIKTOKEN_ENCODER = tiktoken.get_encoding("cl100k_base")
-        _TIKTOKEN_AVAILABLE = True
-        logger.debug("tiktoken encoder initialised (cl100k_base).")
+        try:
+            encoder = tiktoken.encoding_for_model(model_name)
+        except KeyError:
+            encoder = tiktoken.get_encoding("cl100k_base")
     except Exception as exc:
-        _TIKTOKEN_AVAILABLE = False
-        logger.warning(
-            "tiktoken unavailable, falling back to char-based token estimate: %s", exc
-        )
-    return _TIKTOKEN_ENCODER
+        logger.warning("tiktoken unavailable; using character estimate: %s", type(exc).__name__)
+        encoder = None
+    _ENCODERS[model_name] = encoder
+    return encoder
 
 
-# Overhead for each message in the Chat Completions API:
-# role token + separators = ~4 tokens (per the OpenAI tiktoken spec).
 _MESSAGE_OVERHEAD_TOKENS = 4
 
 
-def _count_tokens_tiktoken(text: str) -> int:
-    """Count tokens with tiktoken. Called only when the encoder is available."""
-    enc = _get_encoder()
-    if enc is None:
-        return 0
-    try:
-        return len(enc.encode(text))
-    except Exception:
-        return 0
+def estimate_text_tokens(text: str, model_name: str = "") -> int:
+    encoder = _get_encoder(model_name)
+    if encoder is not None:
+        try:
+            # User/tool text may contain literal special-token spellings.
+            return len(encoder.encode_ordinary(text))
+        except Exception:
+            logger.debug("Tokenization failed; using character estimate.")
+    return _count_tokens_fallback(text)
 
 
 def _count_tokens_fallback(text: str) -> int:
     """Character heuristic: about 3 characters per token.
     3 is more accurate than 2: a compromise between ru (~2 chars/token) and en (~4 chars/token)."""
-    return max(1, len(text) // 3)
+    return (len(text) + 2) // 3
 
 
 # ---------------------------------------------------------------------------
 # Per-message token cache.
 #
-# Messages are immutable after creation (LangChain guarantees this for
-# AIMessage, HumanMessage, ToolMessage).  The cache key combines the message
-# id with a cheap hash of the stringified content + tool_calls, so that even
-# if a message is replaced with a new instance bearing the same id (e.g. after
-# recovery rewriting), the cache will miss and recompute correctly.
+# Include the current content and tokenizer so edits and model switches invalidate
+# cached estimates. LangChain messages can be modified after creation.
 #
 # The cache is bounded to avoid unbounded memory growth in very long sessions.
 # ---------------------------------------------------------------------------
 
-_MESSAGE_TOKEN_CACHE: dict[tuple[str | None, int], int] = {}
+_MESSAGE_TOKEN_CACHE: dict[tuple[str | None, int, str, bool], int] = {}
 _MESSAGE_TOKEN_CACHE_LIMIT = 512
 
 
@@ -92,13 +81,13 @@ def _message_cache_key(message: BaseMessage) -> tuple[str | None, int]:
     return (getattr(message, "id", None), hash(combined))
 
 
-def _count_single_message_tokens(message: BaseMessage, *, use_tiktoken: bool) -> int:
-    key = _message_cache_key(message)
+def _count_single_message_tokens(message: BaseMessage, *, use_tiktoken: bool, model_name: str = "") -> int:
+    key = (*_message_cache_key(message), model_name, use_tiktoken)
     cached = _MESSAGE_TOKEN_CACHE.get(key)
     if cached is not None:
         return cached
 
-    count_fn = _count_tokens_tiktoken if use_tiktoken else _count_tokens_fallback
+    count_fn = (lambda text: estimate_text_tokens(text, model_name)) if use_tiktoken else _count_tokens_fallback
     total = 0
     content = stringify_content(message.content)
     total += count_fn(content)
@@ -107,8 +96,7 @@ def _count_single_message_tokens(message: BaseMessage, *, use_tiktoken: bool) ->
     if tool_calls:
         total += count_fn(str(tool_calls))
 
-    if use_tiktoken:
-        total += _MESSAGE_OVERHEAD_TOKENS
+    total += _MESSAGE_OVERHEAD_TOKENS
 
     if len(_MESSAGE_TOKEN_CACHE) >= _MESSAGE_TOKEN_CACHE_LIMIT:
         # Evict oldest entry (dict preserves insertion order in Python 3.7+).
@@ -117,43 +105,43 @@ def _count_single_message_tokens(message: BaseMessage, *, use_tiktoken: bool) ->
     return total
 
 
-def estimate_tokens(messages: List[BaseMessage]) -> int:
+def estimate_tokens(messages: List[BaseMessage], *, model_name: str = "") -> int:
     """Estimate the total token count for a list of messages.
 
     Algorithm:
-    - If tiktoken is available, use cl100k_base + per-message overhead.
+    - Use the model encoding (cl100k_base for unknown models) + message overhead.
     - Otherwise, use a character heuristic with a divisor of 3.
     - Per-message results are cached to avoid recomputation for unchanged
       messages across turns.
     """
-    use_tiktoken = _get_encoder() is not None
+    use_tiktoken = _get_encoder(model_name) is not None
 
     total = 0
     for message in messages:
-        total += _count_single_message_tokens(message, use_tiktoken=use_tiktoken)
+        total += _count_single_message_tokens(message, use_tiktoken=use_tiktoken, model_name=model_name)
 
     return total
 
 
-def estimate_summary_tokens(summary: str) -> int:
+def estimate_summary_tokens(summary: str, *, model_name: str = "") -> int:
     summary_text = str(summary or "").strip()
     if not summary_text:
         return 0
-    return estimate_tokens([SystemMessage(content=f"<memory>\n{summary_text}\n</memory>")])
+    return estimate_tokens([SystemMessage(content=f"<memory>\n{summary_text}\n</memory>")], model_name=model_name)
 
 
 _MEMORY_TRUNCATION_MARKER = "... [memory truncated]"
 
 
-def _hard_cut_summary(text: str, max_tokens: int) -> str:
+def _hard_cut_summary(text: str, max_tokens: int, *, model_name: str = "") -> str:
     """Shrink a single oversized memory item until it fits the budget."""
     cut = str(text or "").strip()
-    while cut and estimate_summary_tokens(f"{cut} {_MEMORY_TRUNCATION_MARKER}") > max_tokens:
+    while cut and estimate_summary_tokens(f"{cut} {_MEMORY_TRUNCATION_MARKER}", model_name=model_name) > max_tokens:
         cut = cut[: int(len(cut) * 0.8)].rstrip()
     return f"{cut} {_MEMORY_TRUNCATION_MARKER}" if cut else _MEMORY_TRUNCATION_MARKER
 
 
-def truncate_summary_to_token_budget(summary: str, max_tokens: int) -> str:
+def truncate_summary_to_token_budget(summary: str, max_tokens: int, *, model_name: str = "") -> str:
     """Drop trailing memory items until the memory estimate fits ``max_tokens``.
 
     Memory is written as importance-ordered bullets, so cutting from the end keeps the
@@ -162,27 +150,26 @@ def truncate_summary_to_token_budget(summary: str, max_tokens: int) -> str:
     """
     text = str(summary or "").strip()
     budget = int(max_tokens or 0)
-    if not text or budget <= 0 or estimate_summary_tokens(text) <= budget:
+    if not text or budget <= 0 or estimate_summary_tokens(text, model_name=model_name) <= budget:
         return text
 
     kept: List[str] = []
     for line in (line for line in text.splitlines() if line.strip()):
         candidate = "\n".join(kept + [line, _MEMORY_TRUNCATION_MARKER])
-        if estimate_summary_tokens(candidate) > budget:
+        if estimate_summary_tokens(candidate, model_name=model_name) > budget:
             break
         kept.append(line)
     if kept:
         return "\n".join(kept + [_MEMORY_TRUNCATION_MARKER])
     first_line = next((line for line in text.splitlines() if line.strip()), text)
-    return _hard_cut_summary(first_line, budget)
+    return _hard_cut_summary(first_line, budget, model_name=model_name)
 
 
-def estimate_context_tokens(messages: List[BaseMessage], *, reserved_tokens: int = 0) -> int:
-    """Estimate the model context budget used by message history plus fixed runtime overhead.
+def estimate_context_tokens(messages: List[BaseMessage], *, reserved_tokens: int = 0, model_name: str = "") -> int:
+    """Estimate history plus the caller-supplied non-history budget.
 
-    The message list does not include system/developer prompts, tool schemas, and provider
-    wrapper fields. The reserve keeps auto-summary progress closer to provider-reported
-    prompt/input tokens without pretending to know every provider tokenizer exactly.
+    The caller includes locally counted instructions, tool schemas and memory,
+    plus a configurable safety margin for provider-specific formatting.
     """
     try:
         reserve = max(0, int(reserved_tokens or 0))
@@ -190,11 +177,11 @@ def estimate_context_tokens(messages: List[BaseMessage], *, reserved_tokens: int
         reserve = 0
     if not messages:
         return 0
-    return estimate_tokens(messages) + reserve
+    return estimate_tokens(messages, model_name=model_name) + reserve
 
 
 # ---------------------------------------------------------------------------
-# The rest is unchanged
+# Summary trigger and compaction boundaries
 # ---------------------------------------------------------------------------
 
 def _soft_summary_margin(threshold: int, *, has_summary: bool) -> int:
@@ -245,6 +232,26 @@ def summary_remaining_ratio(estimated_tokens: int, *, threshold: int) -> float:
     return max(0.0, min(1.0, 1.0 - (estimated / threshold)))
 
 
+def summary_fill_ratio(estimated_tokens: int, *, threshold: int, baseline_tokens: int = 0) -> float:
+    """Used share of the compactable budget, scaled to the hard summarization threshold.
+
+    ``baseline_tokens`` (fixed prompt/tool overhead plus compressed memory) is excluded
+    from both the used amount and the budget: it survives every compaction, so keeping it
+    out makes the indicator drop right after a compaction and reach ``1.0`` exactly when
+    ``should_summarize`` would fire (``estimated_tokens`` reaches ``threshold``).
+    """
+    threshold = int(threshold or 0)
+    if threshold <= 0:
+        return 0.0
+    baseline = max(0, min(int(baseline_tokens or 0), threshold))
+    span = threshold - baseline
+    if span <= 0:
+        # No room left for history once the fixed overhead is subtracted.
+        return 1.0
+    used = max(0, int(estimated_tokens or 0) - baseline)
+    return max(0.0, min(1.0, used / span))
+
+
 def should_summarize(
     messages: List[BaseMessage],
     *,
@@ -253,12 +260,13 @@ def should_summarize(
     has_summary: bool = False,
     reserved_tokens: int = 0,
     allow_tool_round_boundaries: bool = False,
+    model_name: str = "",
 ) -> bool:
     threshold = int(threshold or 0)
     if threshold <= 0:
         return False
 
-    estimated = estimate_context_tokens(messages, reserved_tokens=reserved_tokens)
+    estimated = estimate_context_tokens(messages, reserved_tokens=reserved_tokens, model_name=model_name)
     if estimated <= threshold:
         return False
 
@@ -268,6 +276,7 @@ def should_summarize(
         threshold=threshold,
         reserved_tokens=reserved_tokens,
         allow_tool_round_boundaries=allow_tool_round_boundaries,
+        model_name=model_name,
     )
     summarizable = messages[:boundary]
     if not summarizable:
@@ -321,6 +330,7 @@ def choose_summary_boundary(
     threshold: int = 0,
     reserved_tokens: int = 0,
     allow_tool_round_boundaries: bool = False,
+    model_name: str = "",
 ) -> int:
     """Pick the compaction cut: ``messages[:boundary]`` is summarized and removed.
 
@@ -368,7 +378,7 @@ def choose_summary_boundary(
     threshold = int(threshold or 0)
     if threshold > 0:
         for index in candidates:
-            retained_tokens = estimate_context_tokens(messages[index:], reserved_tokens=reserved_tokens)
+            retained_tokens = estimate_context_tokens(messages[index:], reserved_tokens=reserved_tokens, model_name=model_name)
             if retained_tokens <= threshold:
                 return index
         return candidates[-1]

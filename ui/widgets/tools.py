@@ -439,6 +439,21 @@ class ToolCardWidget(QFrame):
         return ""
 
     @staticmethod
+    def _strip_signature_wrapper(raw_display: str, tool_name: str) -> str:
+        """Drop the tool name from a technical ``name(args)`` signature.
+
+        Tools without a dedicated argument rule fall back to the raw signature,
+        which already carries the tool name; the label prints the humanized name
+        in front of it, so the wrapper would show the same name twice.
+        """
+        if not tool_name:
+            return raw_display
+        prefix = f"{tool_name}("
+        if raw_display.startswith(prefix) and raw_display.endswith(")"):
+            return raw_display[len(prefix):-1].strip()
+        return raw_display
+
+    @staticmethod
     def _format_duration(duration: Any) -> str:
         try:
             value = float(duration)
@@ -504,7 +519,9 @@ class ToolCardWidget(QFrame):
         if raw_display == tool_name:
             return ""
         display = self._compact_single_line(payload.get("display", ""))
-        return "" if raw_display == display else raw_display
+        if raw_display == display:
+            return ""
+        return self._strip_signature_wrapper(raw_display, tool_name)
 
     def _compact_action_line(self, title: str, argument_text: str) -> str:
         title = self._compact_single_line(title)

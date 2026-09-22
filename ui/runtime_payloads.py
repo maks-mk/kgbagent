@@ -22,9 +22,10 @@ from core.session_store import (
 )
 from core.summarize_policy import (
     estimate_context_tokens,
+    token_model_name,
     estimate_summary_tokens,
     should_summarize,
-    summary_remaining_ratio,
+    summary_fill_ratio,
     summary_trigger_tokens,
 )
 from core.text_utils import build_mcp_tool_ui_labels, build_tool_ui_labels, format_tool_output, prepare_markdown_for_render
@@ -270,14 +271,19 @@ def build_summary_progress_payload(config: AgentConfig, state_values: dict[str, 
     threshold = max(0, _safe_int(getattr(config, "summary_threshold", 0), 0))
     reserved_tokens = max(0, _safe_int(getattr(config, "summary_reserved_tokens", 0), 0))
     summary_text = str(values.get("summary") or "").strip()
-    summary_tokens = estimate_summary_tokens(summary_text)
+    model_name = token_model_name(config)
+    summary_tokens = estimate_summary_tokens(summary_text, model_name=model_name)
+    reserved_tokens += max(0, _safe_int(values.get("summary_context_overhead_tokens"), 0))
     effective_reserved_tokens = reserved_tokens + summary_tokens
-    estimated_tokens = estimate_context_tokens(messages, reserved_tokens=effective_reserved_tokens)
+    estimated_tokens = estimate_context_tokens(messages, reserved_tokens=effective_reserved_tokens, model_name=model_name)
     has_summary = bool(summary_text)
     trigger_tokens = summary_trigger_tokens(threshold, has_summary=has_summary)
-    progress = summary_remaining_ratio(
+    # The ring shows the compactable history filling toward the hard threshold; fixed
+    # overhead and memory are excluded so it drops right after a compaction.
+    progress = 1.0 - summary_fill_ratio(
         estimated_tokens,
         threshold=threshold,
+        baseline_tokens=effective_reserved_tokens,
     )
     keep_last = _safe_int(getattr(config, "summary_keep_last", 0), 0)
     will_summarize = should_summarize(
@@ -286,6 +292,7 @@ def build_summary_progress_payload(config: AgentConfig, state_values: dict[str, 
         keep_last=keep_last,
         has_summary=has_summary,
         reserved_tokens=effective_reserved_tokens,
+        model_name=model_name,
     ) if messages and threshold > 0 else False
     return {
         "estimated_tokens": estimated_tokens,

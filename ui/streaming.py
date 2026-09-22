@@ -1355,13 +1355,13 @@ class StreamProcessor:
                             for tool_call in tool_calls
                         ],
                         index_order=None,
-                        require_args_before_start=(is_last_chunk and not has_arg_fragment),
+                        require_args_before_start=True,
                     )
                 if not processed_any:
                     self._process_tool_calls(
                         list(getattr(message, "tool_calls", []) or []),
                         index_order=None,
-                        require_args_before_start=(is_last_chunk and not has_arg_fragment),
+                        require_args_before_start=True,
                     )
                 if getattr(message, "chunk_position", None) == "last":
                     self._tool_chunk_accumulators.pop(accumulator_key, None)
@@ -1606,7 +1606,7 @@ class StreamProcessor:
         if self._normalize_tool_name(tool_name) == "request_user_input":
             return
         tool_args = self._merge_tool_args(tool_info.get("args", {}), tool_call.get("args", {}))
-        if require_args and not force and not tool_args:
+        if require_args and not force and classify_tool_args_state(tool_name, tool_args) != "complete":
             self.tool_buffer[tool_id] = {"name": tool_name, "args": tool_args}
             return
         self.tool_buffer[tool_id] = {"name": tool_name, "args": tool_args}
