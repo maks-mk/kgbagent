@@ -124,6 +124,7 @@ class AgentRunWorker(QObject):
     session_changed = Signal(object)
     busy_changed = Signal(bool)
     shutdown_complete = Signal()
+    tool_change_rejected = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -521,6 +522,9 @@ class AgentRunWorker(QObject):
 
     def _apply_tool_availability_changes(self, changes: list[dict[str, Any]]) -> None:
         if self._is_busy or self._awaiting_approval or self.tool_registry is None:
+            self.tool_change_rejected.emit(
+                "Tool change ignored: a run is in progress or the agent is waiting for approval."
+            )
             return
 
         normalized: list[dict[str, Any]] = []
@@ -551,9 +555,10 @@ class AgentRunWorker(QObject):
                     registry.set_mcp_server_enabled(item["name"], item["enabled"])
                     requires_reinitialize = True
                 else:
-                    previous_enabled = item["name"] not in registry.disabled_local_tools
+                    previous_enabled = item["name"] in {tool.name for tool in registry.active_tools()}
                     previous.append({**item, "enabled": previous_enabled})
-                    registry.set_tool_enabled(item["name"], item["enabled"])
+                    if registry.set_tool_enabled(item["name"], item["enabled"]):
+                        requires_reinitialize = True
 
             if requires_reinitialize:
                 enabled_servers = [
@@ -1288,6 +1293,7 @@ class AgentRuntimeController(QObject):
     user_choice_requested = Signal(object)
     session_changed = Signal(object)
     busy_changed = Signal(bool)
+    tool_change_rejected = Signal(str)
 
     _initialize_requested = Signal()
     _start_run_requested = Signal(object)
@@ -1346,6 +1352,7 @@ class AgentRuntimeController(QObject):
         self._worker.user_choice_requested.connect(self.user_choice_requested)
         self._worker.session_changed.connect(self.session_changed)
         self._worker.busy_changed.connect(self._on_worker_busy_changed)
+        self._worker.tool_change_rejected.connect(self.tool_change_rejected)
         self._worker.shutdown_complete.connect(self._thread.quit)
         self._thread.finished.connect(self._worker.deleteLater)
 
@@ -1382,6 +1389,7 @@ class AgentRuntimeController(QObject):
             (worker.user_choice_requested, self.user_choice_requested),
             (worker.session_changed, self.session_changed),
             (worker.busy_changed, self._on_worker_busy_changed),
+            (worker.tool_change_rejected, self.tool_change_rejected),
         ):
             try:
                 signal.disconnect(slot)

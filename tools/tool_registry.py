@@ -51,6 +51,7 @@ class ToolRegistry:
         "disabled_mcp_servers",
         "disabled_local_tools",
         "builtin_tools",
+        "builtin_specs",
         "mcp_config",
     )
 
@@ -69,6 +70,7 @@ class ToolRegistry:
         self.disabled_mcp_servers: set[str] = set()
         self.disabled_local_tools: set[str] = set()
         self.builtin_tools: List[BaseTool] = []
+        self.builtin_specs: Dict[str, ToolLoaderSpec] = {}
         self.mcp_config: Dict[str, Any] = {}
 
     async def load_all(self):
@@ -80,20 +82,24 @@ class ToolRegistry:
 
         builtin_defaults: dict[str, bool] = {}
         builtin_by_name: dict[str, BaseTool] = {}
+        builtin_specs: dict[str, ToolLoaderSpec] = {}
         for spec in self._loader_specs():
-            loaded_tools = self._load_local_spec(spec, add_to_runtime=bool(spec.enabled(self.config)))
             spec_enabled = bool(spec.enabled(self.config))
+            loaded_tools = self._load_local_spec(spec, add_to_runtime=spec_enabled)
             for tool in loaded_tools:
                 builtin_by_name.setdefault(tool.name, tool)
+                builtin_specs.setdefault(tool.name, spec)
                 builtin_defaults[tool.name] = builtin_defaults.get(tool.name, False) or spec_enabled
 
         self.builtin_tools = list(builtin_by_name.values())
+        self.builtin_specs = dict(builtin_specs)
         for name, default_enabled in builtin_defaults.items():
-            if not default_enabled:
+            override = builtin_states.get(name)
+            desired = default_enabled if not isinstance(override, bool) else override
+            if desired:
+                self._activate_builtin_tool(builtin_by_name[name])
                 continue
-            if name not in {tool.name for tool in self.tools}:
-                self.tools.append(builtin_by_name[name])
-            if not bool(builtin_states.get(name, default_enabled)):
+            if default_enabled:
                 self.disabled_local_tools.add(name)
 
         if self.config.mcp_config_path.exists():
@@ -118,7 +124,8 @@ class ToolRegistry:
         self.mcp_config = updated_config
         self.disabled_mcp_servers.discard(name) if enabled else self.disabled_mcp_servers.add(name)
 
-    def set_tool_enabled(self, tool_name: str, enabled: bool) -> None:
+    def set_tool_enabled(self, tool_name: str, enabled: bool) -> bool:
+        """Apply a builtin tool override; returns True when the runtime catalog needs a rebuild."""
         name = str(tool_name or "").strip()
         mcp_tool_names = {
             tool_name
@@ -134,12 +141,38 @@ class ToolRegistry:
             or ":" in name
         )
         if not name or tool is None or is_mcp:
-            return
+            return False
+        catalog_changed = False
         if enabled:
             self.disabled_local_tools.discard(name)
+            catalog_changed = self._activate_builtin_tool(tool)
         else:
             self.disabled_local_tools.add(name)
         self._persist_builtin_tool_state(name, bool(enabled))
+        return catalog_changed
+
+    def _activate_builtin_tool(self, tool: BaseTool) -> bool:
+        """Add a catalog-only builtin tool to the runtime catalog.
+
+        The `_builtin_tools` override wins over the feature flag in both directions, so a tool whose
+        loader flag is off in `.env` must still become usable when it is explicitly enabled.
+        """
+        if any(existing.name == tool.name for existing in self.tools):
+            return False
+        spec = self.builtin_specs.get(tool.name)
+        if spec is not None and not spec.enabled(self.config):
+            self._configure_spec_module(spec)
+        self.tools.append(tool)
+        return True
+
+    def _configure_spec_module(self, spec: ToolLoaderSpec) -> None:
+        if not spec.configure:
+            return
+        try:
+            module = importlib.import_module(spec.module_name)
+            spec.configure(module, self.config)
+        except Exception:
+            logger.debug("Failed to configure %s tools on activation.", spec.name, exc_info=True)
 
     def _persist_builtin_tool_state(self, name: str, enabled: bool) -> None:
         config = dict(self.mcp_config)

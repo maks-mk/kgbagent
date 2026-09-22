@@ -82,6 +82,7 @@ class FakeController(QObject):
     user_choice_requested = Signal(object)
     session_changed = Signal(object)
     busy_changed = Signal(bool)
+    tool_change_rejected = Signal(str)
 
     def __init__(self):
         super().__init__()

@@ -281,6 +281,7 @@ class MainWindow(QMainWindow):
         self.controller.user_choice_requested.connect(self._handle_user_choice_request)
         self.controller.session_changed.connect(self._handle_session_changed)
         self.controller.busy_changed.connect(self._handle_busy_changed)
+        self.controller.tool_change_rejected.connect(self._handle_tool_change_rejected)
 
     def _build_event_dispatch(self) -> None:
         self._event_router = StreamEventRouter(
@@ -898,6 +899,10 @@ class MainWindow(QMainWindow):
         self.tools_panel.fail_server_pending(message)
         self._set_status_visual("Initialization failed", error=True)
         QMessageBox.critical(self, "Initialization Failed", message)
+
+    def _handle_tool_change_rejected(self, message: str) -> None:
+        self.tools_panel.fail_server_pending(message)
+        self.status_meta.setText(message)
 
     def _handle_session_changed(self, snapshot: dict) -> None:
         self._apply_runtime_payload(snapshot, restore_transcript="transcript" in snapshot)
