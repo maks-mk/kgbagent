@@ -252,6 +252,24 @@ def summary_fill_ratio(estimated_tokens: int, *, threshold: int, baseline_tokens
     return max(0.0, min(1.0, used / span))
 
 
+def active_turn_anchor_index(messages: List[BaseMessage], boundary: int) -> Optional[int]:
+    """Index of the active user message when a mid-run cut falls inside the active turn.
+
+    The active user message (the last user turn) anchors the retained history: it keeps
+    the model context starting on a user turn and preserves turn/task bookkeeping. When
+    the compaction ``boundary`` is past it, the summarize node keeps it live instead of
+    removing it, and its content survives in compressed memory. Returns ``None`` when the
+    retained region already begins on a user turn (no anchor needs to be preserved).
+    """
+    active_user_index: Optional[int] = None
+    for index, message in enumerate(messages):
+        if is_user_turn_message(message):
+            active_user_index = index
+    if active_user_index is not None and active_user_index < int(boundary or 0):
+        return active_user_index
+    return None
+
+
 def should_summarize(
     messages: List[BaseMessage],
     *,
@@ -282,12 +300,20 @@ def should_summarize(
     if not summarizable:
         return False
 
-    summarizable_human_turns = sum(1 for message in summarizable if isinstance(message, HumanMessage))
+    # Mid-run compaction keeps the active user message live as the retained anchor,
+    # so it is not part of the removable set. Nothing can be reclaimed when the only
+    # summarizable message is that anchor.
+    anchor_index = active_turn_anchor_index(messages, boundary) if allow_tool_round_boundaries else None
+    removable = [message for index, message in enumerate(summarizable) if index != anchor_index]
+    if not removable:
+        return False
+
+    summarizable_human_turns = sum(1 for message in removable if isinstance(message, HumanMessage))
     soft_threshold = summary_trigger_tokens(threshold, has_summary=has_summary)
     min_summarizable_messages = max(6, int(keep_last or 0) + 2)
 
     if estimated < soft_threshold:
-        if len(summarizable) < min_summarizable_messages:
+        if len(removable) < min_summarizable_messages:
             return False
         if summarizable_human_turns < 2:
             return False
@@ -340,9 +366,11 @@ def choose_summary_boundary(
     When ``allow_tool_round_boundaries`` is set (mid-run compaction between tool
     results and the next model comment), the start of a completed tool round — an
     AI message with tool_calls whose results are already present — is also a valid
-    cut point before the active user turn: everything before it is finished, and
-    AI/tool-call pairs stay intact. The active user message remains as the anchor
-    for the final visible transcript.
+    cut point, including rounds inside the active turn: everything before it is
+    finished, and AI/tool-call pairs stay intact. The summarize node keeps the
+    active user message live as the retained-history anchor, so a single long turn
+    that overflows the budget is compacted immediately instead of waiting for the
+    next user request to create a cut point.
 
     Preference order:
     1. the newest user turn that still keeps at least ``keep_last`` messages;
@@ -353,16 +381,13 @@ def choose_summary_boundary(
     user_indexes = [index for index, message in enumerate(messages) if is_user_turn_message(message)]
     boundaries = [index for index in user_indexes if index > 0]
     if allow_tool_round_boundaries:
-        # The latest real user message belongs to the active turn. Removing it
-        # leaves the retained AI/tool messages without a transcript turn, so a
-        # final session refresh appears to erase the whole chat. Mid-run
-        # compaction may only cut before the active user message.
-        active_user_index = user_indexes[-1] if user_indexes else len(messages)
+        # Mid-run compaction may also cut at the start of a completed tool round,
+        # including rounds that belong to the active turn. The active user message
+        # is kept live as the retained-history anchor (see ``summarize_node`` and
+        # ``active_turn_anchor_index``), so removing the finished rounds after it
+        # never orphans a tool result and the model context still starts on a user
+        # turn.
         tool_boundaries = _tool_round_boundaries(messages, user_boundaries=set(boundaries))
-        # A user boundary at ``active_user_index`` removes only older turns and
-        # is therefore safe. Tool-round boundaries at or after that index belong
-        # to the active turn and would remove its user-message anchor.
-        tool_boundaries = [index for index in tool_boundaries if index < active_user_index]
         boundaries = sorted(set(boundaries + tool_boundaries))
     if not boundaries:
         return 0

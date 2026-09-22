@@ -36,6 +36,7 @@ from core.session_store import SessionSnapshot, SessionStore
 from core.state import AgentState, append_transcript_messages
 from core.summarize_policy import (
     _compact_for_summary,
+    active_turn_anchor_index,
     choose_summary_boundary,
     estimate_summary_tokens,
     format_history_for_summary,
@@ -3052,7 +3053,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(choose_summary_boundary(messages, keep_last=4), 0)
 
-    def test_choose_summary_boundary_mid_run_keeps_active_user_turn(self):
+    def test_choose_summary_boundary_mid_run_cuts_inside_active_turn(self):
         messages = [
             HumanMessage(content="Проверь конфиг"),
             AIMessage(content="Читаю файл", tool_calls=[{"id": "tc-1", "name": "read_file", "args": {}}]),
@@ -3062,15 +3063,17 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             AIMessage(content="Готово"),
         ]
 
-        # The current user message anchors the visible transcript turn. The
-        # user boundary at index 0 cannot be selected, while tool boundaries
-        # inside this active turn must not remove its user-message anchor.
+        # A single active turn (no earlier user turn) can now be compacted mid-run:
+        # the start of the completed tool round is a valid cut point. The summarize
+        # node keeps the user message live as the anchor, so removing the finished
+        # rounds after it never orphans a tool result.
         boundary = choose_summary_boundary(
             messages,
             keep_last=4,
             allow_tool_round_boundaries=True,
         )
-        self.assertEqual(boundary, 0)
+        self.assertEqual(boundary, 1)
+        self.assertEqual(messages[boundary].content, "Читаю файл")
 
         # Without the flag, only user turns are valid cut points.
         self.assertEqual(choose_summary_boundary(messages, keep_last=4), 0)
@@ -3084,13 +3087,18 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             ToolMessage(tool_call_id="tc-1", name="read_file", content="ok"),
         ]
 
+        # The completed round inside the active turn is the tightest cut that still
+        # keeps ``keep_last`` messages. The active user message (index 2) is kept
+        # live as the anchor by the summarize node, so the retained history is
+        # [Проверь конфиг, Читаю файл, tool result].
         boundary = choose_summary_boundary(
             messages,
             keep_last=1,
             allow_tool_round_boundaries=True,
         )
-        self.assertEqual(boundary, 2)
-        self.assertEqual(messages[boundary].content, "Проверь конфиг")
+        self.assertEqual(boundary, 3)
+        self.assertEqual(messages[boundary].content, "Читаю файл")
+        self.assertEqual(active_turn_anchor_index(messages, boundary), 2)
 
     def test_choose_summary_boundary_mid_run_skips_unfinished_tool_round(self):
         messages = [
@@ -3106,9 +3114,10 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             keep_last=4,
             allow_tool_round_boundaries=True,
         )
-        # There is no older user turn to remove, and the active user message
-        # must remain as the anchor for the final visible transcript.
-        self.assertEqual(boundary, 0)
+        # Only the completed round (index 1) is a valid cut point; the unfinished
+        # round at index 3 must not be selected.
+        self.assertEqual(boundary, 1)
+        self.assertEqual(messages[boundary].content, "Читаю файл")
 
     def test_choose_summary_boundary_keeps_at_least_keep_last_messages(self):
         messages = [

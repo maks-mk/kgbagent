@@ -570,6 +570,26 @@ class LlmApiModeTests(unittest.TestCase):
         model = create_openai_chat_model(cfg)
         self.assertFalse(model.use_responses_api)
 
+    def test_responses_mode_sets_stateless_store_false(self):
+        """Responses mode replays full history, so persistence must be disabled to
+        avoid resource-bound item IDs breaking after API-key rotation."""
+        cfg = self._make_config("responses")
+        model = create_openai_chat_model(cfg)
+        payload = model._get_request_payload([{"role": "user", "content": "hi"}])
+        self.assertFalse(payload.get("store"))
+
+    def test_chat_mode_does_not_force_store(self):
+        cfg = self._make_config("chat")
+        model = create_openai_chat_model(cfg)
+        self.assertNotIn("store", model.model_kwargs)
+
+    def test_responses_mode_requests_encrypted_reasoning(self):
+        """Stateless reasoning continuity relies on encrypted_content, not on a
+        server-side item ID, so the include list must request it."""
+        cfg = self._make_config("responses")
+        model = create_openai_chat_model(cfg)
+        self.assertIn("reasoning.encrypted_content", list(model.include or []))
+
     def test_chat_mode_flattens_reasoning_dict_to_effort_string(self):
         """In chat mode, the registry's reasoning.effort path must not create a
         top-level 'reasoning' dict that would auto-trigger the Responses API."""
@@ -1387,6 +1407,43 @@ class ResponsesThinkingHistoryTests(unittest.TestCase):
                 expected = "answer" if provider == "openai" else [{"type": "text", "text": "answer"}]
                 self.assertEqual(sanitized.content, expected)
         self.assertEqual(message.content[0], reasoning)
+
+    def test_cross_provider_toolu_ids_remapped_for_responses(self):
+        # A session that ran on Anthropic/Bedrock earlier keeps ``toolu_...`` tool
+        # IDs in history. Replaying that history to the Responses API must not leak
+        # those IDs into ``input[].id`` (the endpoint rejects them with 400).
+        from langchain_core.messages import AIMessage, ToolMessage
+        from langchain_openai import ChatOpenAI
+
+        toolu_id = "toolu_bdrk_01W6ZD9bdj1n6aypssJ8yqhs"
+        history = [
+            AIMessage(
+                content=[
+                    {"type": "text", "text": "checking"},
+                    {"type": "tool_use", "id": toolu_id, "name": "get_weather", "input": {}},
+                ],
+                tool_calls=[{"name": "get_weather", "args": {}, "id": toolu_id}],
+                response_metadata={"model_provider": "anthropic"},
+            ),
+            ToolMessage(content="24C", tool_call_id=toolu_id),
+        ]
+        sanitized = self._builder().sanitize_messages(history)
+
+        model = _build_reasoning_debug_chat_openai(ChatOpenAI)(
+            model="deepseek-v4-flash", api_key="test", use_responses_api=True,
+        )
+        items = model._get_request_payload(sanitized)["input"]
+        # No item/call ID sent to the Responses API may retain the foreign prefix.
+        for item in items:
+            self.assertFalse(str(item.get("id", "")).startswith("toolu_"))
+            self.assertFalse(str(item.get("call_id", "")).startswith("toolu_"))
+        # Function call and its output must still reference the same remapped ID.
+        calls = [x for x in items if x.get("type") == "function_call"]
+        outputs = [x for x in items if x.get("type") == "function_call_output"]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(outputs), 1)
+        self.assertEqual(calls[0]["call_id"], outputs[0]["call_id"])
+        self.assertNotEqual(calls[0]["call_id"], toolu_id)
 
     def test_sdk_streaming_and_nonstreaming_multitool_roundtrip(self):
         import json

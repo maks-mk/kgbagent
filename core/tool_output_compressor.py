@@ -264,13 +264,25 @@ class ToolOutputCompressor:
             return None
 
         routed_result = validate(routed, strategy, lossless=lossless) if routed is not None else None
-        if routed_result is not None and len(routed_result) <= limit:
+        # A non-log structured result (text, JSON, table) is already the router's
+        # best fit, and an explicit lossless fold is optimal and safe regardless of
+        # strategy, so accept either directly once it fits the budget. A lossy
+        # routed log is only the un-deduped baseline: headroom 0.38 routes repeated
+        # warnings to the log strategy without collapsing them, so such a log must
+        # still be probed by the dedupe passes below to fold identical repeats.
+        if (
+            routed_result is not None
+            and len(routed_result) <= limit
+            and (strategy != _LOG_STRATEGY or lossless)
+        ):
             return routed_result
 
-        # The router can stop after a tiny lossless fold, or return a short but
-        # unusable result. Try log condensation in both cases. Warning dedupe can
-        # still normalize values after ':'/'=' in headroom 0.37, so retry without
-        # it only when the first candidate fails validation, not unconditionally.
+        # The router can stop after a tiny lossless fold, return a short but
+        # unusable result, or route to an un-deduped log. Try log condensation in
+        # every case and keep the smallest candidate that still preserves
+        # diagnostics. Warning dedupe can over-collapse warnings that differ only
+        # by an identifier, so it is retried without dedupe when the first
+        # candidate fails validation, not unconditionally.
         for candidate in self._log_candidates(
             content=content, tool_name=tool_name, limit=limit, routed_strategy=strategy
         ):

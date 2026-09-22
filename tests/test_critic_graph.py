@@ -498,6 +498,38 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(event["summary_model_duration_ms"], 0)
         self.assertTrue(all(isinstance(value, (int, float)) for value in event.values()))
 
+    async def test_summary_compacts_mid_run_within_single_active_turn(self):
+        # Regression: a single long turn that overflows the budget must be compacted
+        # mid-run (steps > 0) instead of waiting for the next user request to create a
+        # cut point. The active user message stays live as the retained-history anchor.
+        memory = "- Active task: audit the config; the first read succeeded."
+        llm = FakeLLM([AIMessage(content=memory)])
+        nodes = AgentNodes(
+            config=self._make_config(summary_threshold=200, summary_keep_last=1),
+            llm=llm, tools=[], llm_with_tools=llm,
+        )
+        filler = "деталь " * 400
+        state = self._initial_state("Проведи аудит конфигурации")
+        state["steps"] = 3  # inside an active turn, after completed tool rounds
+        state["messages"] = [
+            HumanMessage(id="h1", content=state["current_task"]),
+            AIMessage(id="a1", content="Читаю файл " + filler, tool_calls=[{"id": "tc-1", "name": "read_file", "args": {}}]),
+            ToolMessage(id="t1", tool_call_id="tc-1", name="read_file", content="ok " + filler),
+            AIMessage(id="a2", content="Правлю файл " + filler, tool_calls=[{"id": "tc-2", "name": "edit_file", "args": {}}]),
+            ToolMessage(id="t2", tool_call_id="tc-2", name="edit_file", content="ok " + filler),
+        ]
+
+        result = await nodes.summarize_node(state)
+
+        # Compaction happened mid-run, without a new user request.
+        self.assertEqual(result["summary"], memory)
+        removed_ids = {message.id for message in result["messages"]}
+        # The active user message is preserved live as the anchor; the older finished
+        # round is removed and folded into memory.
+        self.assertNotIn("h1", removed_ids)
+        self.assertIn("a1", removed_ids)
+        self.assertIn("t1", removed_ids)
+
     async def test_summary_repeated_cycles_keep_prior_memory_and_preserve_history_on_failure(self):
         # These fake responses verify plumbing and budget guarantees, not LLM
         # semantic quality. Include new contrary evidence in the second cycle.
@@ -510,7 +542,17 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
             AIMessage(content="   "), RuntimeError("synthetic provider failure"),
         ])
         nodes = AgentNodes(
-            config=self._make_config(summary_threshold=1, summary_keep_last=1, summary_max_tokens=120),
+            # ``threshold=1`` means "compact immediately", but the policy still enforces an
+            # absolute soft floor (``max(800, 15% of threshold)``) before it compacts a
+            # history that would keep too few messages. Production contexts always carry the
+            # system prompt and tool schemas as reserved tokens, so the test supplies that
+            # fixed overhead instead of relying on a tokenizer-specific history estimate.
+            config=self._make_config(
+                summary_threshold=1,
+                summary_keep_last=1,
+                summary_max_tokens=120,
+                summary_reserved_tokens=2000,
+            ),
             llm=llm, tools=[], llm_with_tools=llm,
         )
         state = self._initial_state("Audit alpha and beta; never delete files")

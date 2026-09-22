@@ -616,8 +616,9 @@ class RefactorServicesTests(unittest.TestCase):
             )
 
         self.assertTrue(compress_spy.called)
-        # headroom passthrough (plain "xxxx" is not compressible) -> truncate fallback
-        self.assertIn("[TRUNCATED from 5000 chars", outcome.content)
+        # headroom 0.38 folds dense machine-generated text itself (head/tail kept)
+        self.assertIn("[COMPRESSED by headroom", outcome.content)
+        self.assertLessEqual(len(outcome.content), 1000)
 
     def test_tool_executor_compresses_real_build_log_through_headroom(self):
         executor = ToolExecutor(
@@ -677,7 +678,8 @@ class RefactorServicesTests(unittest.TestCase):
         self.assertLessEqual(len(outcome.content), 1000)
         self.assertIn("MCP-HEAD", outcome.content)
         self.assertIn("MCP-TAIL", outcome.content)
-        self.assertIn("[OMITTED", outcome.content)
+        # headroom 0.38 compresses the noisy MCP body while keeping its head/tail
+        self.assertIn("[COMPRESSED by headroom", outcome.content)
 
     def test_tool_executor_limits_mcp_output_after_compression(self):
         executor = ToolExecutor(
@@ -1096,7 +1098,7 @@ class RefactorServicesTests(unittest.TestCase):
         self.assertIn("session-token", result)
         self.assertIn("eviction storm", result)
 
-    def test_tool_output_compressor_keeps_routed_result_when_log_pass_deletes_content(self):
+    def test_tool_output_compressor_rejects_content_deleting_log_fold(self):
         compressor = ToolOutputCompressor(enabled=True)
         content = "\n".join(
             f"2026-09-03 12:00:{index % 60:02d} INFO  [sync] processed record {index:04d} status=ok"
@@ -1110,11 +1112,16 @@ class RefactorServicesTests(unittest.TestCase):
             limit=15000,
         )
 
-        # a log without diagnostics collapses to a line-count marker, so the router's
-        # lossless fold must survive instead of being replaced by it
-        self.assertIsNotNone(result)
-        self.assertIn("processed record 0000", result)
-        self.assertNotIn("lines omitted", result)
+        # headroom 0.38 folds a diagnostics-free log to a bare line-count marker
+        # that carries no content, so compression is rejected and the deterministic
+        # reducer keeps verbatim head/tail instead of a useless "lines omitted" note
+        self.assertIsNone(result)
+        reduced = compressor.reduce_to_limit(
+            content=content, tool_name="cli_exec", limit=15000
+        )
+        self.assertLessEqual(len(reduced), 15000)
+        self.assertIn("processed record 0000", reduced)
+        self.assertNotIn("lines omitted", reduced)
 
     def test_tool_output_compressor_leaves_prose_to_the_deterministic_reducer(self):
         compressor = ToolOutputCompressor(enabled=True)

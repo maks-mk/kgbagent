@@ -819,6 +819,13 @@ def create_openai_chat_model(config: AgentConfig, *, api_key_override: str | Non
     api_mode = str(getattr(config, "llm_api_mode", "chat") or "chat").strip().lower()
     if api_mode == "responses":
         openai_kwargs["use_responses_api"] = True
+        # Replay the full conversation on every turn (see ContextBuilder), so
+        # server-side persistence is redundant. Keeping the default ``store=True``
+        # binds reasoning/function_call items to the resource that created them;
+        # after API-key rotation or gateway rerouting the next request lands on a
+        # different resource and fails with 400 "The requested item was created
+        # under a different Azure OpenAI resource". Stateless requests avoid that.
+        openai_kwargs["store"] = False
     registry = ProviderRegistry.from_path(config.provider_registry_path)
     provider_config = registry.match(config.openai_base_url, config.openai_model)
     reasoning_enabled = bool(getattr(config, "enable_model_reasoning", True))
@@ -857,6 +864,15 @@ def create_openai_chat_model(config: AgentConfig, *, api_key_override: str | Non
             normalized_reasoning_effort(getattr(config, "model_reasoning_effort", "medium")),
             enabled=reasoning_enabled,
         )
+
+        # Stateless Responses requests (``store=False``) must carry reasoning
+        # forward via ``encrypted_content`` instead of a server-side item ID.
+        # Ask the provider to emit it so ContextBuilder can replay it next turn.
+        if api_mode == "responses" and reasoning_enabled:
+            include = list(openai_kwargs.get("include") or [])
+            if "reasoning.encrypted_content" not in include:
+                include.append("reasoning.encrypted_content")
+            openai_kwargs["include"] = include
 
         # In chat mode, a top-level "reasoning" dict (set by providers whose registry
         # path is "reasoning.effort") would cause LangChain to auto-switch to the

@@ -10,6 +10,7 @@ from langchain_core.messages import RemoveMessage
 from core.state import AgentState, OpenToolIssue, RecoveryState, transcript_message_delta
 from core.providers.factory import _normalize_tool_for_binding
 from core.summarize_policy import (
+    active_turn_anchor_index,
     choose_summary_boundary,
     estimate_context_tokens,
     estimate_tokens,
@@ -75,7 +76,8 @@ class SummarizeMixin:
         budget = self._memory_token_budget()
         if budget <= 0:
             return summary
-        before_tokens = estimate_summary_tokens(summary, model_name=token_model_name(self.config))
+        model_name = token_model_name(self.config)
+        before_tokens = estimate_summary_tokens(summary, model_name=model_name)
         if before_tokens <= budget:
             return summary
 
@@ -96,9 +98,9 @@ class SummarizeMixin:
                 "🧹 Memory fold failed, truncating memory instead: %s", format_exception_friendly(exc)
             )
 
-        candidate = folded if folded and estimate_summary_tokens(folded, model_name=token_model_name(self.config)) < before_tokens else summary
-        result = truncate_summary_to_token_budget(candidate, budget, model_name=token_model_name(self.config))
-        after_tokens = estimate_summary_tokens(result, model_name=token_model_name(self.config))
+        candidate = folded if folded and estimate_summary_tokens(folded, model_name=model_name) < before_tokens else summary
+        result = truncate_summary_to_token_budget(candidate, budget, model_name=model_name)
+        after_tokens = estimate_summary_tokens(result, model_name=model_name)
         logger.info(
             "🧹 Memory folded: ~%s -> ~%s tokens (budget ~%s).", before_tokens, after_tokens, budget
         )
@@ -196,6 +198,19 @@ class SummarizeMixin:
 
         to_summarize = messages[:idx]
 
+        # Mid-run compaction may cut inside the active turn (between completed tool
+        # rounds). Keep the active user message live as the retained-history anchor so
+        # the model context still starts on a user turn and turn/task bookkeeping holds;
+        # its content survives in compressed memory via the summary.
+        anchor_index = (
+            active_turn_anchor_index(messages, idx)
+            if self._is_mid_run_compaction(state)
+            else None
+        )
+        anchor_message = messages[anchor_index] if anchor_index is not None else None
+        if anchor_message is not None:
+            to_summarize = [message for message in to_summarize if message is not anchor_message]
+
         # SAFEGUARD: If the last N messages alone exceed the limit,
         # we cannot compress anything without losing recent context.
         if not to_summarize:
@@ -250,20 +265,22 @@ class SummarizeMixin:
             delete_msgs = [RemoveMessage(id=m.id) for m in to_summarize if m.id]
             updated_summary = await self._fit_memory_to_budget(state, updated_summary)
             logger.info(f"🧹 Summary: Removed {len(delete_msgs)} messages. Generated new summary.")
+            memory_tokens = estimate_summary_tokens(updated_summary, model_name=model_name)
+            retained_messages = len(messages) - len(to_summarize)
             self._log_run_event(
                 state,
                 "summary_compacted",
-                previous_memory_estimated_tokens=estimate_summary_tokens(summary, model_name=token_model_name(self.config)),
-                history_estimated_tokens=estimate_summary_tokens(history_text, model_name=token_model_name(self.config)),
-                snapshot_estimated_tokens=estimate_summary_tokens(state_snapshot, model_name=token_model_name(self.config)),
-                prompt_estimated_tokens=estimate_summary_tokens(prompt, model_name=token_model_name(self.config)),
+                previous_memory_estimated_tokens=estimate_summary_tokens(summary, model_name=model_name),
+                history_estimated_tokens=estimate_summary_tokens(history_text, model_name=model_name),
+                snapshot_estimated_tokens=estimate_summary_tokens(state_snapshot, model_name=model_name),
+                prompt_estimated_tokens=estimate_summary_tokens(prompt, model_name=model_name),
                 summary_model_calls=1,
                 summary_model_duration_ms=summary_duration_ms,
                 estimated_tokens=estimated_tokens,
                 removed_messages=len(delete_msgs),
                 summarized_messages=len(to_summarize),
-                retained_messages=len(messages) - len(to_summarize),
-                memory_tokens=estimate_summary_tokens(updated_summary, model_name=token_model_name(self.config)),
+                retained_messages=retained_messages,
+                memory_tokens=memory_tokens,
             )
             self._log_node_end(
                 state,
@@ -272,8 +289,8 @@ class SummarizeMixin:
                 outcome="compacted",
                 removed_messages=len(delete_msgs),
                 summarized_messages=len(to_summarize),
-                retained_messages=len(messages) - len(to_summarize),
-                memory_tokens=estimate_summary_tokens(updated_summary, model_name=token_model_name(self.config)),
+                retained_messages=retained_messages,
+                memory_tokens=memory_tokens,
             )
 
             return {

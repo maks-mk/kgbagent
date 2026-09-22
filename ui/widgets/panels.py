@@ -99,6 +99,14 @@ class ToolsPanelWidget(QWidget):
         self._pending_tools: dict[str, bool] = {}
         self._pending_scroll_value: int | None = None
         self._scroll_restore_attempts = 0
+        self._scroll_restore_timer = QTimer(self)
+        self._scroll_restore_timer.setSingleShot(True)
+        self._scroll_restore_timer.setInterval(0)
+        self._scroll_restore_timer.timeout.connect(self._apply_pending_scroll_position)
+        # The rebuilt content recomputes the scroll range asynchronously; re-apply the
+        # pending offset the moment Qt reports a new range so restoration does not race
+        # the fallback timer (which may exhaust its retries before the layout settles).
+        self.scroll.verticalScrollBar().rangeChanged.connect(self._on_scroll_range_changed)
 
         self.scroll.setWidget(self._container)
         root.addWidget(self.scroll)
@@ -283,10 +291,15 @@ class ToolsPanelWidget(QWidget):
 
         The range is stale right after the rebuild, so the offset is re-applied while
         the range settles instead of clamping it against an outdated maximum.
+
+        A single reusable timer drives the retries. If several rebuilds land in the
+        same event-loop turn, restarting the timer collapses them into one restore
+        chain, so the full attempt budget is preserved instead of being split across
+        overlapping chains sharing one counter.
         """
         self._pending_scroll_value = value
         self._scroll_restore_attempts = 0
-        QTimer.singleShot(0, self._apply_pending_scroll_position)
+        self._scroll_restore_timer.start()
 
     def _apply_pending_scroll_position(self) -> None:
         value = self._pending_scroll_value
@@ -297,8 +310,24 @@ class ToolsPanelWidget(QWidget):
         self._scroll_restore_attempts += 1
         settled = scrollbar.maximum() >= value
         if not settled and self._scroll_restore_attempts < _MAX_SCROLL_RESTORE_ATTEMPTS:
-            QTimer.singleShot(0, self._apply_pending_scroll_position)
+            self._scroll_restore_timer.start()
             return
+        if settled:
+            self._pending_scroll_value = None
+
+    def _on_scroll_range_changed(self, _minimum: int, maximum: int) -> None:
+        """Re-apply the pending offset once the rebuilt content settles a usable range.
+
+        ``rangeChanged`` fires both for the transient collapsed range during a rebuild
+        (max 0) and again when Qt finishes recomputing the extent. Acting only once the
+        range can actually hold the target avoids slamming the offset to 0 on the
+        intermediate signal, while still restoring deterministically the moment the
+        real range appears — even if the fallback timer already gave up under load.
+        """
+        value = self._pending_scroll_value
+        if value is None or maximum < value:
+            return
+        self.scroll.verticalScrollBar().setValue(value)
         self._pending_scroll_value = None
 
     @staticmethod

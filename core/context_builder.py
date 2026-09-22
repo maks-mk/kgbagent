@@ -126,6 +126,38 @@ class ContextBuilder:
     def _uses_openai_responses_api(self) -> bool:
         return self.config.provider == "openai" and getattr(self.config, "llm_api_mode", "chat") == "responses"
 
+    @staticmethod
+    def _iter_message_provider_ids(message: BaseMessage):
+        for tool_call in getattr(message, "tool_calls", None) or []:
+            if isinstance(tool_call, dict):
+                yield str(tool_call.get("id") or "")
+        content = getattr(message, "content", None)
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    yield str(block.get("id") or "")
+
+    def _message_is_responses_native(self, message: BaseMessage) -> bool:
+        """True when an assistant message originated from an OpenAI Responses call.
+
+        Only such messages carry item/call IDs the Responses API accepts when the
+        history is replayed. Messages produced by other providers (e.g.
+        Anthropic/Bedrock ``toolu_...`` IDs) must be flattened and their IDs
+        remapped; otherwise the Responses endpoint rejects them with
+        ``Invalid 'input[N].id'`` after the active model is switched mid-session.
+        """
+        metadata = getattr(message, "response_metadata", None)
+        provider = ""
+        if isinstance(metadata, dict):
+            provider = str(metadata.get("model_provider") or "").strip().lower()
+        if provider:
+            return provider == "openai"
+        # No provider tag: infer origin from content-block / tool-call ID shapes.
+        for candidate in self._iter_message_provider_ids(message):
+            if candidate.startswith("toolu_"):
+                return False
+        return True
+
     def sanitize_messages(
         self,
         messages: List[BaseMessage],
@@ -149,6 +181,7 @@ class ContextBuilder:
             normalized_message: BaseMessage = message
 
             if isinstance(message, (AIMessage, AIMessageChunk)):
+                responses_verbatim = self._uses_openai_responses_api() and self._message_is_responses_native(message)
                 raw_tool_calls = list(getattr(message, "tool_calls", []) or [])
                 if raw_tool_calls:
                     normalized_tool_calls: List[Dict[str, Any]] = []
@@ -165,6 +198,7 @@ class ContextBuilder:
                                 mapped_id = self._normalize_tool_call_id_for_provider(
                                     raw_id,
                                     used_ids=used_tool_call_ids,
+                                    responses_verbatim=responses_verbatim,
                                 )
                                 tool_call_id_map[raw_id] = mapped_id
                             if mapped_id != raw_id:
@@ -190,6 +224,7 @@ class ContextBuilder:
                                 mapped_id = self._normalize_tool_call_id_for_provider(
                                     normalized_raw_id,
                                     used_ids=used_tool_call_ids,
+                                    responses_verbatim=responses_verbatim,
                                 )
                                 tool_call_id_map[normalized_raw_id] = mapped_id
                             remapped_signature_map[mapped_id] = signature
@@ -238,8 +273,10 @@ class ContextBuilder:
 
             # Responses assistant blocks carry reasoning, item IDs and tool calls;
             # flattening them loses the protocol state required by the next request.
-            preserve_responses_content = self._uses_openai_responses_api() and isinstance(
-                normalized_message, AIMessage
+            preserve_responses_content = (
+                self._uses_openai_responses_api()
+                and isinstance(normalized_message, AIMessage)
+                and self._message_is_responses_native(normalized_message)
             )
             if self.config.provider == "openai" and not preserve_responses_content and not (
                 isinstance(normalized_message, HumanMessage) and human_message_has_image_content(normalized_message.content)
@@ -502,11 +539,20 @@ class ContextBuilder:
                 role = raw_type.strip().lower()
         return role
 
-    def _normalize_tool_call_id_for_provider(self, raw_id: str, *, used_ids: set[str]) -> str:
+    def _normalize_tool_call_id_for_provider(
+        self,
+        raw_id: str,
+        *,
+        used_ids: set[str],
+        responses_verbatim: bool = False,
+    ) -> str:
         normalized = str(raw_id or "").strip()
         # Responses content blocks retain the provider's call_id. Remapping only
         # tool_calls / ToolMessage would create duplicate or unmatched calls.
-        if self._uses_openai_responses_api() and normalized and normalized not in used_ids:
+        # Only preserve IDs from messages that actually originated from a
+        # Responses call; foreign IDs (e.g. Anthropic/Bedrock ``toolu_...``) left
+        # verbatim are rejected by the Responses API as ``Invalid 'input[N].id'``.
+        if responses_verbatim and normalized and normalized not in used_ids:
             used_ids.add(normalized)
             return normalized
         # Anthropic tool_use IDs are provider-issued opaque values (``toolu_…``).
