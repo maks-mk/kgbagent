@@ -22,7 +22,7 @@ echo [INFO] Building optimized EXE with Nuitka...
     --output-filename=kgb.exe ^
     --windows-icon-from-ico=icon.ico ^
     --file-version=0.67.73.256 ^
-    --product-version=0.67.73.256b ^
+    --product-version=0.67.73.256 ^
     --product-name="kgb" ^
     --file-description="KGB Application" ^
     --low-memory ^
