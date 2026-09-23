@@ -12,6 +12,9 @@
 Запуск из исходников: `python main.py`  
 Сборка в portable `.exe` для Windows: `build.bat`
 
+<div align="center">
+  <img src="./img/agent.webp" alt="KGB|Agent" width="800">
+</div>
 ---
 
 ## Цель проекта
