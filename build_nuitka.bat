@@ -21,12 +21,16 @@ echo [INFO] Building optimized EXE with Nuitka...
     --enable-plugin=pyside6 ^
     --output-filename=kgb.exe ^
     --windows-icon-from-ico=icon.ico ^
+    --file-version=0.67.73.256 ^
+    --product-version=0.67.73.256b ^
+    --product-name="kgb" ^
+    --file-description="KGB Application" ^
+    --low-memory ^
     --include-package=tools ^
     --include-package=ui ^
     --include-package=tiktoken_ext ^
     --include-data-files=icon.ico=icon.ico ^
     --assume-yes-for-downloads ^
-    --show-progress ^
     --nofollow-import-to=pytest ^
     --nofollow-import-to=_pytest ^
     --nofollow-import-to=pluggy ^
