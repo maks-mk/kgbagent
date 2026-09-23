@@ -1,0 +1,36 @@
+name: Build Executable with Nuitka
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-nuitka:
+    runs-on: windows-latest
+
+    steps:
+    - name: Исходный код репозитория
+      uses: actions/checkout@v4
+
+    - name: Установка Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.14' # Укажите версию Python под ваш проект
+        cache: 'pip'
+
+    - name: Установка зависимостей и Nuitka
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install nuitka zstandard
+
+    - name: Запуск сборки Nuitka
+      run: |
+        .\build_nuitka.bat
+
+    - name: Загрузка готового kgb.exe
+      uses: actions/upload-artifact@v4
+      with:
+        name: kgb-nuitka-exe
+        path: kgb.exe
