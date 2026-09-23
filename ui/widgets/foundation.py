@@ -4,6 +4,7 @@ import json
 import os
 import re
 import time
+from functools import lru_cache
 from html import escape
 from datetime import datetime, timezone
 from pathlib import Path
@@ -158,7 +159,7 @@ class CopySafePlainTextEdit(QPlainTextEdit):
         super().keyPressEvent(event)
 
 
-def _fa_icon(name: str, *, color: str = TEXT_MUTED, size: int = 14, **kwargs: Any) -> QIcon:
+def _build_fa_icon(name: str, *, color: str = TEXT_MUTED, size: int = 14, **kwargs: Any) -> QIcon:
     safe_size = max(8, int(size))
     try:
         icon = qta.icon(name, color=color, **kwargs)
@@ -177,6 +178,22 @@ def _fa_icon(name: str, *, color: str = TEXT_MUTED, size: int = 14, **kwargs: An
     if pixmap.isNull():
         return icon
     return QIcon(pixmap)
+
+
+@lru_cache(maxsize=512)
+def _fa_icon_cached(name: str, color: str, size: int) -> QIcon:
+    return _build_fa_icon(name, color=color, size=size)
+
+
+def _fa_icon(name: str, *, color: str = TEXT_MUTED, size: int = 14, **kwargs: Any) -> QIcon:
+    # Font-Awesome glyphs are immutable for a given (name, color, size), so cache
+    # the rasterized QIcon. Bursts of tool cards, chevrons and status icons then
+    # reuse a single instance instead of re-rendering the same SVG every time.
+    # Animated icons (passed through kwargs, e.g. an ``animation`` spinner) always
+    # bypass the cache because they hold per-instance state.
+    if not kwargs:
+        return _fa_icon_cached(name, color, size)
+    return _build_fa_icon(name, color=color, size=size, **kwargs)
 
 
 class SummaryProgressRing(QWidget):

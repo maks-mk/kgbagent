@@ -322,6 +322,11 @@ class StreamProcessor:
 
         self._flush_deferred_assistant_delta()
         self._emit_assistant_commit()
+        # A well-behaved run resolves every announced tool call, but a flaky model or
+        # provider can end the stream with a tool card still in the "preparing"/running
+        # state (announced via tool_started, never followed by a ToolMessage result).
+        # Finalize those orphans so their cards do not hang as if still executing.
+        self._emit_interrupted_tool_results(reason="incomplete")
         duration = self._elapsed_seconds()
         debug_event(
             "stream_timing",

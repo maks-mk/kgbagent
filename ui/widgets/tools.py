@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from PySide6.QtCore import QSize, QTimer, Qt
+from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QPropertyAnimation, QSize, QTimer, Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 from shiboken6 import isValid
@@ -220,10 +220,14 @@ class ToolCardWidget(QFrame):
         self.output_section: CollapsibleSection | None = None
         self.output_view: QPlainTextEdit | None = None
         self.cli_exec_widget: CliExecWidget | None = None
+        self._last_icon_key: tuple[str, str] | None = None
+        self._inline_output_pending: tuple[Any, Any] | None = None
         self._args_expanded = False
         self._is_cli_exec = self._is_cli_exec_name(payload.get("name", ""))
         self._is_mcp = str(payload.get("source_kind", "") or "").strip().lower() == "mcp"
         self._cli_expanded = True
+        self._cli_animation: QPropertyAnimation | None = None
+        self._cli_anim_target_expanded = True
         self._preview_token = 0
 
         layout = QVBoxLayout(self)
@@ -290,20 +294,18 @@ class ToolCardWidget(QFrame):
         self.subtitle_label.setMinimumWidth(0)
         layout.addWidget(self.subtitle_label)
 
-        self.args_view = CopySafePlainTextEdit(self)
-        self.args_view.setObjectName("InlineCodeView")
-        self.args_view.setReadOnly(True)
-        self.args_view.setFont(_make_mono_font())
-        self.args_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self._set_inline_output(payload.get("content", ""), payload.get("summary", ""))
-
+        # The inline output editor is a full QPlainTextEdit; keep the (cheap)
+        # container eager so callers/tests can query visibility, but defer the
+        # editor itself until the row is actually expanded. A burst of collapsed
+        # tool cards then never allocates documents it will not show.
+        self.args_view: QPlainTextEdit | None = None
         self.args_container = QWidget(self)
-        args_layout = QHBoxLayout(self.args_container)
-        args_layout.setContentsMargins(15, 2, 0, 2)
-        args_layout.setSpacing(0)
-        args_layout.addWidget(self.args_view, 1)
+        self._args_layout = QHBoxLayout(self.args_container)
+        self._args_layout.setContentsMargins(15, 2, 0, 2)
+        self._args_layout.setSpacing(0)
         self.args_container.setVisible(False)
         layout.addWidget(self.args_container)
+        self._set_inline_output(payload.get("content", ""), payload.get("summary", ""))
 
         self.diff_section: CollapsibleSection | None = None
 
@@ -670,12 +672,15 @@ class ToolCardWidget(QFrame):
             icon_color = SUCCESS_GREEN
         elif phase_variant == "error":
             icon_color = ERROR_RED
-        self.icon_label.setPixmap(
-            _fa_icon(icon_name, color=icon_color, size=TOOL_ICON_SIZE).pixmap(
-                TOOL_ICON_SIZE,
-                TOOL_ICON_SIZE,
+        icon_key = (icon_name, icon_color)
+        if icon_key != self._last_icon_key:
+            self._last_icon_key = icon_key
+            self.icon_label.setPixmap(
+                _fa_icon(icon_name, color=icon_color, size=TOOL_ICON_SIZE).pixmap(
+                    TOOL_ICON_SIZE,
+                    TOOL_ICON_SIZE,
+                )
             )
-        )
 
         if normalized.get("display_state") == "preview" and not normalized.get("refresh") and not finished:
             self._queue_preview_reveal()
@@ -691,6 +696,10 @@ class ToolCardWidget(QFrame):
             command = self._command_from_args(self._normalize_args(self.payload.get("args", {})))
             self.cli_exec_widget = CliExecWidget(command, parent=self)
             self.layout().addWidget(self.cli_exec_widget)
+            self._cli_animation = QPropertyAnimation(self.cli_exec_widget, b"maximumHeight", self)
+            self._cli_animation.setDuration(180)
+            self._cli_animation.setEasingCurve(QEasingCurve.OutCubic)
+            self._cli_animation.finished.connect(self._finish_cli_animation)
         return self.cli_exec_widget
 
     @staticmethod
@@ -703,7 +712,26 @@ class ToolCardWidget(QFrame):
             return rendered
         return _strip_ansi_for_display(summary)
 
+    def _ensure_args_view(self) -> QPlainTextEdit:
+        if self.args_view is None:
+            self.args_view = CopySafePlainTextEdit(self.args_container)
+            self.args_view.setObjectName("InlineCodeView")
+            self.args_view.setReadOnly(True)
+            self.args_view.setFont(_make_mono_font())
+            self.args_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self._args_layout.addWidget(self.args_view, 1)
+            pending = self._inline_output_pending
+            self._inline_output_pending = None
+            if pending is not None:
+                self._set_inline_output(pending[0], pending[1])
+        return self.args_view
+
     def _set_inline_output(self, content: Any, summary: Any = "") -> None:
+        if self.args_view is None:
+            # Not built yet (row collapsed): remember the latest payload so it is
+            # applied verbatim the first time the editor is created on expand.
+            self._inline_output_pending = (content, summary)
+            return
         rendered = self._render_inline_output(content, summary)
         if self.args_view.toPlainText() != rendered:
             self.args_view.setPlainText(rendered)
@@ -711,6 +739,8 @@ class ToolCardWidget(QFrame):
         _sync_plain_text_height(self.args_view, min_lines=min_lines, max_lines=10, extra_padding=14)
 
     def _set_inline_output_mcp_height(self) -> None:
+        if self.args_view is None:
+            return
         _sync_plain_text_height(self.args_view, min_lines=6, max_lines=10, extra_padding=14)
 
     def _uses_diff_only_output(self) -> bool:
@@ -829,17 +859,67 @@ class ToolCardWidget(QFrame):
         self.tool_button.setIcon(
             _fa_icon("fa5s.chevron-down" if expanded else "fa5s.chevron-right", color=TEXT_MUTED, size=8)
         )
+        if expanded:
+            self._ensure_args_view()
         self.args_container.setVisible(expanded)
 
     def _set_cli_expanded(self, expanded: bool) -> None:
         if not self._is_cli_exec:
             return
+        state_changed = self._cli_expanded != expanded
         self._cli_expanded = expanded
         self.tool_button.setIcon(
             _fa_icon("fa5s.chevron-down" if expanded else "fa5s.chevron-right", color=TEXT_MUTED, size=8)
         )
-        if self.cli_exec_widget is not None:
-            self.cli_exec_widget.setVisible(expanded)
+        if self.cli_exec_widget is None:
+            return
+        if state_changed:
+            self._set_cli_widget_expanded(expanded)
+        elif expanded and (self._cli_animation is None or self._cli_animation.state() == QAbstractAnimation.Stopped):
+            # Already expanded (e.g. new output arrived): drop any leftover height
+            # cap so streamed output is not clipped by a finished animation.
+            self.cli_exec_widget.setMaximumHeight(16777215)
+            self.cli_exec_widget.setVisible(True)
+
+    def _set_cli_widget_expanded(self, expanded: bool, *, animated: bool = True) -> None:
+        widget = self.cli_exec_widget
+        if widget is None:
+            return
+        animation = self._cli_animation
+        target_height = widget.sizeHint().height()
+        if animation is None or target_height <= 0:
+            widget.setMaximumHeight(16777215 if expanded else 0)
+            widget.setVisible(expanded)
+            return
+        if animation.state() != QAbstractAnimation.Stopped:
+            animation.stop()
+        self._cli_anim_target_expanded = expanded
+        if not animated or not self.isVisible():
+            # Offscreen/unshown (e.g. tests, restore): apply the final state at
+            # once so callers observe the exact visibility immediately.
+            widget.setMaximumHeight(16777215 if expanded else 0)
+            widget.setVisible(expanded)
+            return
+        was_visible = widget.isVisible()
+        current_height = widget.height()
+        if expanded:
+            widget.setVisible(True)
+            start_height = max(0, current_height) if was_visible else 0
+            end_height = target_height
+        else:
+            start_height = max(0, current_height)
+            end_height = 0
+        widget.setMaximumHeight(start_height)
+        animation.setStartValue(start_height)
+        animation.setEndValue(end_height)
+        animation.start()
+
+    def _finish_cli_animation(self) -> None:
+        if self.cli_exec_widget is None:
+            return
+        expanded = self._cli_anim_target_expanded
+        self.cli_exec_widget.setMaximumHeight(16777215 if expanded else 0)
+        self.cli_exec_widget.setVisible(expanded)
 
     def _handle_action_label_mouse_press(self, event) -> None:
         if event.button() == Qt.LeftButton:

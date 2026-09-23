@@ -35,7 +35,7 @@
     "batch_web_search": false,
     "fetch_content": false,
     "crawl_site": false,
-    "run_background_process": true,
+    "run_background_process": false,
     "safe_delete_directory": true,
     "write_file": true
   }
