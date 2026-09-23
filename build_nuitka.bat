@@ -59,7 +59,4 @@ if %BUILD_EXIT% neq 0 (
     echo [SUCCESS] Done
 )
 
-rem Пауза сработает только при локальном запуске на ПК
-if "%GITHUB_ACTIONS%"=="" pause
-
 exit /b %BUILD_EXIT%

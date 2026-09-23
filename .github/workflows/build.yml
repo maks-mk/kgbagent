@@ -16,7 +16,7 @@ jobs:
     - name: Установка Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.14' # Укажите версию Python под ваш проект
+        python-version: '3.14'
         cache: 'pip'
 
     - name: Установка зависимостей и Nuitka
@@ -32,5 +32,5 @@ jobs:
     - name: Загрузка готового kgb.exe
       uses: actions/upload-artifact@v4
       with:
-        name: kgb-nuitka-exe
+        name: kgb-v0.67.73.256b-windows
         path: kgb.exe
