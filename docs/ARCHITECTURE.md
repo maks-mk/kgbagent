@@ -36,7 +36,7 @@ START
 - Обычная ошибка одного параллельного вызова превращается в `ToolMessage`, не отменяя соседей. Отмена batch, отмена дочерней задачи и `GraphBubbleUp` (включая `GraphInterrupt`) останавливают запуск очереди; незавершённые задачи отменяются и ожидаются перед выходом. Управляющее исключение передаётся графу без упаковки в ошибку инструмента.
 - Отмена asyncio кооперативна: она не откатывает уже совершённые действия, не гарантирует остановку удалённого MCP-запроса или синхронного кода в executor. Возобновление после interrupt может повторить вызовы из узла; это не гарантия exactly-once.
 
-При анализе использованы официальные документы через Context7: [asyncio tasks](https://docs.python.org/3/library/asyncio-task.html) и [LangGraph interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts). Поведение проверено на локальных Python 3.14.6, LangGraph 1.2.11 и langchain-core 1.6.0.
+При анализе использованы официальные документы через Context7: [asyncio tasks](https://docs.python.org/3/library/asyncio-task.html) и [LangGraph interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts). Поведение проверено на локальных Python 3.14.6, LangGraph 1.2.12 и langchain-core 1.6.4.
 
 ## Runtime Lifecycle
 

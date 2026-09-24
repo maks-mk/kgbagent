@@ -8,19 +8,8 @@ import json
 from core.reasoning_debug import debug_event
 
 MATCH_TYPES = {"exact", "suffix"}
-VALIDATION_MODES = {"strict", "map", "passthrough"}
 MODEL_MATCH_FIELDS = {"exact", "prefix", "contains"}
-
-
-class ProviderValidationError(ValueError):
-    def __init__(self, provider_id: str, given_value: str, allowed_values: list[str]):
-        self.provider_id = provider_id
-        self.given_value = given_value
-        self.allowed_values = allowed_values
-        super().__init__(
-            f'Provider "{provider_id}": invalid reasoning value "{given_value}". '
-            f"Allowed: {', '.join(allowed_values)}"
-        )
+RULE_MODES = {"effort", "toggle"}
 
 
 class PathConflictError(ValueError):
@@ -78,6 +67,28 @@ def set_nested(obj: dict[str, Any], path: str, value: Any) -> None:
     current[parts[-1]] = value
 
 
+def _host_matches(hostname: str, patterns: list[str], match_type: str) -> bool:
+    for pattern in patterns:
+        if match_type == "exact" and hostname == pattern:
+            return True
+        if match_type == "suffix" and (hostname == pattern or hostname.endswith(f".{pattern}")):
+            return True
+    return False
+
+
+def _model_matches(model_name: str | None, models: Mapping[str, Any] | None) -> bool:
+    if models is None:
+        return True
+    normalized = _clean_text(model_name).lower()
+    if not normalized:
+        return False
+    if normalized in models.get("exact", []):
+        return True
+    if any(normalized.startswith(prefix) for prefix in models.get("prefix", [])):
+        return True
+    return any(marker in normalized for marker in models.get("contains", []))
+
+
 class ProviderRegistry:
     def __init__(self, registry: Mapping[str, Any]):
         self._registry = dict(registry)
@@ -97,45 +108,56 @@ class ProviderRegistry:
         return cls(payload)
 
     def match(self, base_url: str | None, model_name: str | None = None) -> dict[str, Any] | None:
+        """Resolve the first rule whose host and model match, or ``None``.
+
+        The first provider whose host matches is committed to (mirroring how the
+        v2 registry keeps one object per host set); the rules inside it are then
+        scanned top-to-bottom and the first one matching the model wins. A host
+        match with no matching rule (or a provider without rules) resolves to
+        ``None`` so no reasoning payload is sent.
+        """
         hostname = _hostname_from_base_url(base_url or "")
         if not hostname:
             debug_event("provider_registry_match_skipped", base_url=base_url, hostname="")
             return None
 
-        providers = sorted(
-            (provider for provider in self._providers if bool(provider.get("enabled", True))),
-            key=lambda provider: int(provider.get("priority", 0)),
-            reverse=True,
-        )
-        for provider in providers:
-            if model_name is not None and not provider_supports_reasoning_for_model(provider, model_name):
+        for provider in self._providers:
+            if not provider.get("enabled", True):
                 continue
-            match_type = provider["match_type"]
-            for pattern in provider["match"]:
-                if match_type == "exact" and hostname == pattern:
-                    debug_event(
-                        "provider_registry_matched",
-                        base_url=base_url,
-                        hostname=hostname,
-                        provider_id=provider.get("id"),
-                        match_type=match_type,
-                        pattern=pattern,
-                        priority=provider.get("priority"),
-                        supports_reasoning=provider.get("supports_reasoning"),
-                    )
-                    return dict(provider)
-                if match_type == "suffix" and (hostname == pattern or hostname.endswith(f".{pattern}")):
-                    debug_event(
-                        "provider_registry_matched",
-                        base_url=base_url,
-                        hostname=hostname,
-                        provider_id=provider.get("id"),
-                        match_type=match_type,
-                        pattern=pattern,
-                        priority=provider.get("priority"),
-                        supports_reasoning=provider.get("supports_reasoning"),
-                    )
-                    return dict(provider)
+            if not _host_matches(hostname, provider["hosts"], provider["match_type"]):
+                continue
+            for rule in provider["rules"]:
+                if not _model_matches(model_name, rule.get("models")):
+                    continue
+                resolved = {
+                    "id": provider["id"],
+                    "mode": rule["mode"],
+                    "param": rule["param"],
+                    "extra": dict(rule.get("extra") or {}),
+                    "notes": _clean_text(rule.get("notes")),
+                }
+                if rule["mode"] == "toggle":
+                    resolved["toggle"] = dict(rule["toggle"])
+                else:
+                    resolved["values"] = dict(rule["values"])
+                debug_event(
+                    "provider_registry_matched",
+                    base_url=base_url,
+                    hostname=hostname,
+                    provider_id=provider["id"],
+                    match_type=provider["match_type"],
+                    mode=rule["mode"],
+                    param=rule["param"],
+                )
+                return resolved
+            debug_event(
+                "provider_registry_no_rule",
+                base_url=base_url,
+                hostname=hostname,
+                provider_id=provider["id"],
+                model=model_name,
+            )
+            return None
         debug_event("provider_registry_no_match", base_url=base_url, hostname=hostname)
         return None
 
@@ -163,101 +185,78 @@ class ProviderRegistry:
             seen_ids.add(provider_id)
             provider["id"] = provider_id
             provider["enabled"] = bool(provider.get("enabled", True))
-            try:
-                provider["priority"] = int(provider.get("priority", 0))
-            except (TypeError, ValueError) as exc:
-                raise RegistryValidationError(f'priority must be an integer for provider "{provider_id}"') from exc
-            provider["match"] = _ensure_str_list(provider.get("match"), field="match", provider_id=provider_id)
-            match_type = _clean_text(provider.get("match_type"))
+            provider["hosts"] = _ensure_str_list(provider.get("hosts"), field="hosts", provider_id=provider_id)
+            match_type = _clean_text(provider.get("match_type")) or "exact"
             if match_type not in MATCH_TYPES:
                 raise RegistryValidationError(f'invalid match_type for provider "{provider_id}"')
             provider["match_type"] = match_type
-            provider["supports_reasoning"] = bool(provider.get("supports_reasoning", False))
-            validation = _clean_text(provider.get("validation"))
-            if validation not in VALIDATION_MODES:
-                raise RegistryValidationError(f'invalid validation for provider "{provider_id}"')
-            provider["validation"] = validation
-            if provider["supports_reasoning"]:
-                _validate_reasoning_config(provider_id, provider)
-                _validate_model_match_config(provider_id, provider)
+            provider["rules"] = _validate_rules(provider_id, provider.get("rules"))
             providers.append(provider)
         return providers
 
 
-def _validate_model_match_config(provider_id: str, provider: dict[str, Any]) -> None:
-    model_match = provider.get("model_match")
-    if model_match is None:
-        return
-    if not isinstance(model_match, dict):
-        raise RegistryValidationError(f'model_match must be an object for provider "{provider_id}"')
-    unknown_fields = set(model_match) - MODEL_MATCH_FIELDS
+def _validate_models(provider_id: str, models: Any) -> dict[str, list[str]]:
+    if not isinstance(models, dict):
+        raise RegistryValidationError(f'rule.models must be an object for provider "{provider_id}"')
+    unknown_fields = set(models) - MODEL_MATCH_FIELDS
     if unknown_fields:
         raise RegistryValidationError(
-            f'unsupported model_match field(s) for provider "{provider_id}": {", ".join(sorted(unknown_fields))}'
+            f'unsupported rule.models field(s) for provider "{provider_id}": {", ".join(sorted(unknown_fields))}'
         )
-    if not any(field in model_match for field in MODEL_MATCH_FIELDS):
-        raise RegistryValidationError(f'model_match must define at least one rule for provider "{provider_id}"')
+    if not any(field in models for field in MODEL_MATCH_FIELDS):
+        raise RegistryValidationError(f'rule.models must define at least one matcher for provider "{provider_id}"')
+    normalized: dict[str, list[str]] = {}
     for field in MODEL_MATCH_FIELDS:
-        if field in model_match:
-            _ensure_str_list(model_match.get(field), field=f"model_match.{field}", provider_id=provider_id)
+        if field in models:
+            normalized[field] = _ensure_str_list(models.get(field), field=f"models.{field}", provider_id=provider_id)
+    return normalized
 
 
-def _validate_reasoning_config(provider_id: str, provider: dict[str, Any]) -> None:
-    reasoning = provider.get("reasoning")
-    if not isinstance(reasoning, dict):
-        raise RegistryValidationError(f'reasoning is required for provider "{provider_id}"')
-    path = _clean_text(reasoning.get("path"))
-    if not path or path.startswith(".") or path.endswith("."):
-        raise RegistryValidationError(f'invalid reasoning.path for provider "{provider_id}"')
+def _validate_rules(provider_id: str, raw_rules: Any) -> list[dict[str, Any]]:
+    if raw_rules is None:
+        return []
+    if not isinstance(raw_rules, list):
+        raise RegistryValidationError(f'rules must be an array for provider "{provider_id}"')
 
-    validation = provider["validation"]
-    if validation in {"strict", "map"}:
-        _ensure_str_list(reasoning.get("allowed_values"), field="reasoning.allowed_values", provider_id=provider_id)
-    if validation == "map" and not isinstance(reasoning.get("value_map"), dict):
-        raise RegistryValidationError(f'reasoning.value_map is required for provider "{provider_id}"')
-    extra_fields = reasoning.get("extra_fields", {})
-    if extra_fields is not None and not isinstance(extra_fields, dict):
-        raise RegistryValidationError(f'reasoning.extra_fields must be an object for provider "{provider_id}"')
+    rules: list[dict[str, Any]] = []
+    for raw in raw_rules:
+        if not isinstance(raw, dict):
+            raise RegistryValidationError(f'rule entries must be objects for provider "{provider_id}"')
+        rule = dict(raw)
+        param = _clean_text(rule.get("param"))
+        if not param or param.startswith(".") or param.endswith("."):
+            raise RegistryValidationError(f'invalid rule.param for provider "{provider_id}"')
+        rule["param"] = param
+        mode = _clean_text(rule.get("mode")) or "effort"
+        if mode not in RULE_MODES:
+            raise RegistryValidationError(f'invalid rule.mode "{mode}" for provider "{provider_id}"')
+        rule["mode"] = mode
 
+        models = rule.get("models")
+        if models is not None:
+            rule["models"] = _validate_models(provider_id, models)
 
-def _resolve_reasoning_value(config: Mapping[str, Any], effort_value: str) -> Any:
-    provider_id = _clean_text(config.get("id"))
-    reasoning = config.get("reasoning") if isinstance(config.get("reasoning"), dict) else {}
-    validation = _clean_text(config.get("validation"))
-    value: Any = _clean_text(effort_value).lower()
+        if mode == "toggle":
+            toggle = rule.get("toggle")
+            if not isinstance(toggle, dict) or "on" not in toggle or "off" not in toggle:
+                raise RegistryValidationError(f'rule.toggle must define "on" and "off" for provider "{provider_id}"')
+            rule["toggle"] = {"on": toggle["on"], "off": toggle["off"]}
+        else:
+            values = rule.get("values")
+            if not isinstance(values, dict) or not values:
+                raise RegistryValidationError(f'rule.values must be a non-empty object for provider "{provider_id}"')
+            normalized_values = {_clean_text(key).lower(): value for key, value in values.items() if _clean_text(key)}
+            if not normalized_values:
+                raise RegistryValidationError(f'rule.values must define at least one effort for provider "{provider_id}"')
+            rule["values"] = normalized_values
 
-    if validation == "map":
-        value_map = reasoning.get("value_map") if isinstance(reasoning, dict) else {}
-        if isinstance(value_map, dict):
-            value = value_map.get(value, value)
-        validation = "strict"
-    if validation == "strict":
-        allowed_values = _ensure_str_list(reasoning.get("allowed_values"), field="reasoning.allowed_values", provider_id=provider_id)
-        if _clean_text(value).lower() not in allowed_values:
-            raise ProviderValidationError(provider_id, effort_value, allowed_values)
-    return value
+        extra = rule.get("extra")
+        if extra is not None and not isinstance(extra, dict):
+            raise RegistryValidationError(f'rule.extra must be an object for provider "{provider_id}"')
+        rule["extra"] = dict(extra) if isinstance(extra, dict) else {}
 
-
-def provider_supports_reasoning_for_model(config: Mapping[str, Any] | None, model_name: str | None) -> bool:
-    if config is None or not bool(config.get("supports_reasoning", False)):
-        return False
-    model_match = config.get("model_match")
-    if model_match is None:
-        return True
-    if not isinstance(model_match, Mapping):
-        return False
-
-    normalized = _clean_text(model_name).lower()
-    if not normalized:
-        return False
-    exact = [_clean_text(value).lower() for value in model_match.get("exact", []) if _clean_text(value)]
-    if normalized in exact:
-        return True
-    prefixes = [_clean_text(value).lower() for value in model_match.get("prefix", []) if _clean_text(value)]
-    if any(normalized.startswith(prefix) for prefix in prefixes):
-        return True
-    markers = [_clean_text(value).lower() for value in model_match.get("contains", []) if _clean_text(value)]
-    return any(marker in normalized for marker in markers)
+        rules.append(rule)
+    return rules
 
 
 def build_reasoning_kwargs(
@@ -267,64 +266,72 @@ def build_reasoning_kwargs(
     *,
     enabled: bool = True,
 ) -> dict[str, Any]:
-    if config is None or not bool(config.get("supports_reasoning", False)):
+    """Apply the resolved reasoning rule to *kwargs* in place.
+
+    ``config`` is the object returned by :meth:`ProviderRegistry.match`. Effort
+    rules add the payload only when *effort_value* is one of the rule's declared
+    ``values`` keys; anything else (including ``none`` when not declared) is
+    silently skipped. Toggle rules send ``toggle.on`` when *enabled* and
+    ``toggle.off`` otherwise.
+    """
+    if not isinstance(config, Mapping) or not _clean_text(config.get("param")):
         debug_event(
             "reasoning_kwargs_skipped",
             provider_id=config.get("id") if isinstance(config, Mapping) else None,
-            supports_reasoning=config.get("supports_reasoning") if isinstance(config, Mapping) else None,
-            reason="no_provider_or_unsupported",
+            reason="no_provider",
         )
         return kwargs
 
-    reasoning = config.get("reasoning") if isinstance(config.get("reasoning"), dict) else {}
+    provider_id = config.get("id")
+    param = _clean_text(config.get("param"))
+    mode = _clean_text(config.get("mode")) or "effort"
+    extra = config.get("extra") if isinstance(config.get("extra"), Mapping) else {}
+
+    if mode == "toggle":
+        toggle = config.get("toggle") if isinstance(config.get("toggle"), Mapping) else {}
+        key = "on" if enabled else "off"
+        if key not in toggle:
+            debug_event("reasoning_kwargs_skipped", provider_id=provider_id, reason=f"toggle_{key}_missing")
+            return kwargs
+        resolved_value = toggle[key]
+        set_nested(kwargs, param, resolved_value)
+        applied_paths = [param]
+        if enabled:
+            for extra_path, extra_value in extra.items():
+                set_nested(kwargs, str(extra_path), extra_value)
+                applied_paths.append(str(extra_path))
+        debug_event(
+            "reasoning_kwargs_applied",
+            provider_id=provider_id,
+            input_effort=effort_value,
+            resolved_effort=resolved_value,
+            paths=applied_paths,
+        )
+        return kwargs
+
+    # Effort mode.
     if not enabled:
-        if "disabled_value" not in reasoning:
-            debug_event("reasoning_kwargs_skipped", provider_id=config.get("id"), reason="effort_disabled")
-            return kwargs
-        resolved_value = reasoning["disabled_value"]
-        path = _clean_text(reasoning.get("path"))
-        set_nested(kwargs, path, resolved_value)
+        debug_event("reasoning_kwargs_skipped", provider_id=provider_id, reason="effort_disabled")
+        return kwargs
+    values = config.get("values") if isinstance(config.get("values"), Mapping) else {}
+    key = _clean_text(effort_value).lower()
+    if key not in values:
         debug_event(
-            "reasoning_kwargs_applied",
-            provider_id=config.get("id"),
+            "reasoning_kwargs_skipped",
+            provider_id=provider_id,
+            reason="effort_not_supported",
             input_effort=effort_value,
-            resolved_effort=resolved_value,
-            paths=[path],
         )
         return kwargs
-
-    value = _clean_text(effort_value).lower()
-    if value == "none":
-        if "none_value" not in reasoning:
-            debug_event("reasoning_kwargs_skipped", provider_id=config.get("id"), reason="effort_none")
-            return kwargs
-        path = _clean_text(reasoning.get("path"))
-        resolved_value = reasoning["none_value"]
-        set_nested(kwargs, path, resolved_value)
-        debug_event(
-            "reasoning_kwargs_applied",
-            provider_id=config.get("id"),
-            input_effort=effort_value,
-            resolved_effort=resolved_value,
-            paths=[path],
-        )
-        return kwargs
-
-    path = _clean_text(reasoning.get("path"))
-    if "enabled_value" in reasoning:
-        resolved_value = reasoning["enabled_value"]
-    else:
-        resolved_value = _resolve_reasoning_value(config, value)
-    set_nested(kwargs, path, resolved_value)
-    applied_paths = [path]
-    extra_fields = reasoning.get("extra_fields", {})
-    if isinstance(extra_fields, dict):
-        for extra_path, extra_value in extra_fields.items():
-            set_nested(kwargs, str(extra_path), extra_value)
-            applied_paths.append(str(extra_path))
+    resolved_value = values[key]
+    set_nested(kwargs, param, resolved_value)
+    applied_paths = [param]
+    for extra_path, extra_value in extra.items():
+        set_nested(kwargs, str(extra_path), extra_value)
+        applied_paths.append(str(extra_path))
     debug_event(
         "reasoning_kwargs_applied",
-        provider_id=config.get("id"),
+        provider_id=provider_id,
         input_effort=effort_value,
         resolved_effort=resolved_value,
         paths=applied_paths,

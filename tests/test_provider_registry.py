@@ -4,32 +4,33 @@ from pathlib import Path
 from core.provider_registry import (
     PathConflictError,
     ProviderRegistry,
-    ProviderValidationError,
     RegistryValidationError,
     build_reasoning_kwargs,
-    provider_supports_reasoning_for_model,
     set_nested,
 )
 
 
 def _registry(*providers):
-    return {"schema_version": 1, "data_version": 1, "providers": list(providers)}
+    return {"schema_version": 2, "data_version": 1, "providers": list(providers)}
 
 
 def _provider(**overrides):
     payload = {
         "id": "openrouter",
-        "enabled": True,
-        "priority": 90,
-        "match": ["openrouter.ai"],
+        "hosts": ["openrouter.ai"],
         "match_type": "suffix",
-        "supports_reasoning": True,
-        "validation": "map",
-        "reasoning": {
-            "path": "extra_body.reasoning.effort",
-            "allowed_values": ["low", "medium", "high"],
-            "value_map": {"minimal": "low", "xhigh": "high"},
-        },
+        "rules": [
+            {
+                "param": "extra_body.reasoning.effort",
+                "values": {
+                    "minimal": "low",
+                    "low": "low",
+                    "medium": "medium",
+                    "high": "high",
+                    "xhigh": "high",
+                },
+            }
+        ],
     }
     payload.update(overrides)
     return payload
@@ -41,9 +42,9 @@ class ProviderRegistryTests(unittest.TestCase):
             _registry(
                 _provider(
                     id="openai",
-                    match=["api.openai.com"],
+                    hosts=["api.openai.com"],
                     match_type="exact",
-                    reasoning={"path": "reasoning.effort", "allowed_values": ["low"], "value_map": {}},
+                    rules=[{"param": "reasoning.effort", "values": {"low": "low"}}],
                 )
             )
         )
@@ -56,59 +57,92 @@ class ProviderRegistryTests(unittest.TestCase):
         self.assertEqual(registry.match("https://api.openrouter.ai/api/v1")["id"], "openrouter")
         self.assertIsNone(registry.match("https://api.evil-openrouter.ai/v1"))
 
-    def test_higher_priority_wins_and_disabled_provider_is_skipped(self):
+    def test_disabled_provider_is_skipped_and_first_host_match_wins(self):
         registry = ProviderRegistry(
             _registry(
-                _provider(id="disabled", priority=1000, enabled=False, match=["openrouter.ai"]),
-                _provider(id="low", priority=10, match=["api.openrouter.ai"]),
-                _provider(id="high", priority=20, match=["openrouter.ai"]),
+                _provider(id="disabled", enabled=False, hosts=["openrouter.ai"]),
+                _provider(id="active", hosts=["openrouter.ai"]),
             )
         )
 
-        self.assertEqual(registry.match("https://api.openrouter.ai/v1")["id"], "high")
+        self.assertEqual(registry.match("https://api.openrouter.ai/v1")["id"], "active")
 
-    def test_match_uses_model_name_to_select_provider_variant(self):
+    def test_match_uses_model_name_to_select_rule(self):
         registry = ProviderRegistry(
             _registry(
-                _provider(id="generic", priority=10, model_match={"contains": ["qwen3"]}),
-                _provider(id="gpt_oss", priority=20, model_match={"contains": ["gpt-oss"]}),
+                _provider(
+                    id="multi",
+                    hosts=["openrouter.ai"],
+                    match_type="suffix",
+                    rules=[
+                        {"models": {"contains": ["gpt-oss"]}, "param": "reasoning_effort", "values": {"high": "oss"}},
+                        {"models": {"contains": ["qwen3"]}, "param": "reasoning_effort", "values": {"high": "qwen"}},
+                    ],
+                )
             )
         )
 
-        self.assertEqual(registry.match("https://openrouter.ai/v1", "openai/gpt-oss-120b")["id"], "gpt_oss")
-        self.assertEqual(registry.match("https://openrouter.ai/v1", "qwen/qwen3-235b")["id"], "generic")
+        self.assertEqual(registry.match("https://openrouter.ai/v1", "openai/gpt-oss-120b")["values"]["high"], "oss")
+        self.assertEqual(registry.match("https://openrouter.ai/v1", "qwen/qwen3-235b")["values"]["high"], "qwen")
         self.assertIsNone(registry.match("https://openrouter.ai/v1", "meta/llama-3.3"))
 
-    def test_unknown_provider_returns_none_and_payload_is_unchanged(self):
+    def test_unknown_host_returns_none_and_payload_is_unchanged(self):
         payload = {"model": "x"}
 
         self.assertIsNone(ProviderRegistry(_registry(_provider())).match("https://unknown.example/v1"))
         self.assertIs(build_reasoning_kwargs(payload, None, "high"), payload)
         self.assertEqual(payload, {"model": "x"})
 
-    def test_provider_without_model_match_supports_reasoning_for_any_model(self):
-        config = ProviderRegistry(_registry(_provider())).match("https://openrouter.ai/api/v1")
-
-        self.assertTrue(provider_supports_reasoning_for_model(config, "any-new-provider-model"))
-
-    def test_provider_model_match_limits_strict_provider_models(self):
+    def test_provider_without_rules_resolves_to_none(self):
         config = ProviderRegistry(
+            _registry(_provider(id="gateway", hosts=["gw.example"], match_type="exact", rules=[]))
+        ).match("https://gw.example/v1", "any-model")
+
+        self.assertIsNone(config)
+
+    def test_rule_without_models_matches_any_model(self):
+        config = ProviderRegistry(_registry(_provider())).match("https://openrouter.ai/api/v1", "any-new-model")
+
+        self.assertIsNotNone(config)
+        self.assertEqual(config["id"], "openrouter")
+
+    def test_rule_models_limit_matching(self):
+        registry = ProviderRegistry(
             _registry(
                 _provider(
                     id="openai",
-                    match=["api.openai.com"],
+                    hosts=["api.openai.com"],
                     match_type="exact",
-                    model_match={"prefix": ["gpt-5", "o1", "o3", "o4"]},
-                    reasoning={"path": "reasoning.effort", "allowed_values": ["medium"], "value_map": {}},
+                    rules=[
+                        {
+                            "models": {"prefix": ["gpt-5", "o1", "o3", "o4"]},
+                            "param": "reasoning.effort",
+                            "values": {"medium": "medium"},
+                        }
+                    ],
                 )
             )
-        ).match("https://api.openai.com/v1")
+        )
 
-        self.assertTrue(provider_supports_reasoning_for_model(config, "gpt-5-mini"))
-        self.assertFalse(provider_supports_reasoning_for_model(config, "gpt-4o"))
+        self.assertIsNotNone(registry.match("https://api.openai.com/v1", "gpt-5-mini"))
+        self.assertIsNone(registry.match("https://api.openai.com/v1", "gpt-4o"))
+
+    def test_registry_validation_applies_match_type_and_mode_defaults(self):
+        config = ProviderRegistry(
+            _registry(
+                {
+                    "id": "defaults",
+                    "hosts": ["api.openai.com"],
+                    "rules": [{"param": "reasoning.effort", "values": {"low": "low"}}],
+                }
+            )
+        ).match("https://api.openai.com/v1", "gpt-5")
+
+        self.assertIsNotNone(config)
+        self.assertEqual(config["mode"], "effort")
 
     def test_build_reasoning_kwargs_maps_value_and_sets_nested_path(self):
-        config = ProviderRegistry(_registry(_provider())).match("https://openrouter.ai/api/v1")
+        config = ProviderRegistry(_registry(_provider())).match("https://openrouter.ai/api/v1", "x")
         payload = {"model": "x"}
 
         build_reasoning_kwargs(payload, config, "xhigh")
@@ -119,8 +153,8 @@ class ProviderRegistryTests(unittest.TestCase):
         registry = ProviderRegistry.from_path(Path(__file__).parents[1] / "provider_registry.json")
 
         config = registry.match("https://agentrouter.org/v1", "zai-org/glm-5.1")
-        self.assertEqual(config["id"], "agentrouter_glm5")
-        self.assertEqual(config["reasoning"]["allowed_values"], ["low", "high", "max"])
+        self.assertEqual(config["id"], "agentrouter_org")
+        self.assertEqual(config["param"], "reasoning_effort")
 
         for effort, expected in (("low", "low"), ("high", "high"), ("max", "max"), ("medium", "high")):
             payload = {"model": "zai-org/glm-5.1"}
@@ -134,8 +168,8 @@ class ProviderRegistryTests(unittest.TestCase):
             "https://integrate.api.nvidia.com/v1",
             "deepseek-ai/deepseek-v4-flash-0731",
         )
-        self.assertEqual(config["id"], "nvidia_nim_deepseek_v4")
-        self.assertEqual(config["reasoning"]["allowed_values"], ["none", "high", "max"])
+        self.assertEqual(config["id"], "nvidia_nim")
+        self.assertEqual(config["param"], "reasoning_effort")
 
         for effort in ("none", "high", "max"):
             payload = {"model": "deepseek-ai/deepseek-v4-flash-0731"}
@@ -143,41 +177,30 @@ class ProviderRegistryTests(unittest.TestCase):
             self.assertEqual(payload["reasoning_effort"], effort)
         self.assertNotIn("extra_body", payload)
 
-    def test_baai_registry_entry_uses_top_level_reasoning_effort(self):
+    def test_deepseek_registry_enables_thinking_via_extra(self):
+        registry = ProviderRegistry.from_path(Path(__file__).parents[1] / "provider_registry.json")
+
+        config = registry.match("https://api.deepseek.com/v1", "deepseek-v4-flash")
+        payload = {"model": "deepseek-v4-flash"}
+        build_reasoning_kwargs(payload, config, "medium")
+
+        self.assertEqual(payload["reasoning_effort"], "high")
+        self.assertEqual(payload["extra_body"]["thinking"]["type"], "enabled")
+
+    def test_build_reasoning_kwargs_toggle_preserves_typed_values(self):
         config = ProviderRegistry(
             _registry(
                 _provider(
-                    id="baai",
-                    priority=70,
-                    match=["api.b.ai"],
-                    match_type="exact",
-                    reasoning={
-                        "path": "reasoning_effort",
-                        "allowed_values": ["low", "medium", "high"],
-                        "value_map": {"minimal": "low", "xhigh": "high"},
-                    },
+                    rules=[
+                        {
+                            "mode": "toggle",
+                            "param": "extra_body.chat_template_kwargs.enable_thinking",
+                            "toggle": {"on": True, "off": False},
+                        }
+                    ]
                 )
             )
-        ).match("https://api.b.ai/v1")
-        payload = {"model": "minimax-m3"}
-
-        build_reasoning_kwargs(payload, config, "xhigh")
-
-        self.assertEqual(payload, {"model": "minimax-m3", "reasoning_effort": "high"})
-
-    def test_build_reasoning_kwargs_preserves_typed_mapped_values(self):
-        config = ProviderRegistry(
-            _registry(
-                _provider(
-                    reasoning={
-                        "path": "extra_body.chat_template_kwargs.enable_thinking",
-                        "allowed_values": ["true"],
-                        "value_map": {"high": True},
-                        "disabled_value": False,
-                    }
-                )
-            )
-        ).match("https://openrouter.ai/v1")
+        ).match("https://openrouter.ai/v1", "x")
         enabled_payload = {}
         disabled_payload = {}
 
@@ -191,53 +214,45 @@ class ProviderRegistryTests(unittest.TestCase):
         config = ProviderRegistry(
             _registry(
                 _provider(
-                    reasoning={
-                        "path": "reasoning.effort",
-                        "allowed_values": ["low", "medium", "high"],
-                        "value_map": {"xhigh": "high"},
-                        "extra_fields": {"reasoning.summary": "auto"},
-                    }
+                    rules=[
+                        {
+                            "param": "reasoning.effort",
+                            "values": {"low": "low", "medium": "medium", "high": "high", "xhigh": "high"},
+                            "extra": {"reasoning.summary": "auto"},
+                        }
+                    ]
                 )
             )
-        ).match("https://openrouter.ai/api/v1")
+        ).match("https://openrouter.ai/api/v1", "x")
         payload = {}
 
         build_reasoning_kwargs(payload, config, "medium")
 
         self.assertEqual(payload, {"reasoning": {"effort": "medium", "summary": "auto"}})
 
-    def test_strict_validation_rejects_invalid_value(self):
-        config = _provider(
-            validation="strict",
-            reasoning={"path": "reasoning_effort", "allowed_values": ["low", "medium", "high"]},
-        )
-
-        with self.assertRaises(ProviderValidationError):
-            build_reasoning_kwargs({}, config, "xhigh")
-
-    def test_map_validation_rejects_unmapped_invalid_value(self):
-        config = _provider()
-
-        with self.assertRaises(ProviderValidationError):
-            build_reasoning_kwargs({}, config, "extreme")
-
-    def test_passthrough_validation_accepts_any_value(self):
-        config = _provider(
-            validation="passthrough",
-            reasoning={"path": "reasoning_effort"},
-        )
-        payload = {}
+    def test_effort_not_in_values_skips_payload(self):
+        config = ProviderRegistry(_registry(_provider())).match("https://openrouter.ai/v1", "x")
+        payload = {"model": "x"}
 
         build_reasoning_kwargs(payload, config, "extreme")
 
-        self.assertEqual(payload, {"reasoning_effort": "extreme"})
+        self.assertEqual(payload, {"model": "x"})
 
-    def test_effort_none_skips_reasoning_payload(self):
+    def test_effort_none_without_key_skips_payload(self):
+        config = ProviderRegistry(_registry(_provider())).match("https://openrouter.ai/v1", "x")
         payload = {"model": "x"}
 
-        build_reasoning_kwargs(payload, _provider(), "none")
+        build_reasoning_kwargs(payload, config, "none")
 
         self.assertEqual(payload, {"model": "x"})
+
+    def test_effort_disabled_skips_for_effort_mode(self):
+        config = ProviderRegistry(_registry(_provider())).match("https://openrouter.ai/v1", "x")
+        payload = {}
+
+        build_reasoning_kwargs(payload, config, "high", enabled=False)
+
+        self.assertEqual(payload, {})
 
     def test_set_nested_extends_existing_objects(self):
         payload = {"reasoning": {"tokens": 1000}}
@@ -250,14 +265,7 @@ class ProviderRegistryTests(unittest.TestCase):
         with self.assertRaises(PathConflictError):
             set_nested({"reasoning": "bad"}, "reasoning.effort", "high")
 
-    def test_registry_validation_accepts_typed_reasoning_values(self):
-        config = _provider(
-            validation="passthrough",
-            reasoning={"path": "extra_body.thinking", "enabled_value": True, "disabled_value": False},
-        )
-
-        self.assertEqual(ProviderRegistry(_registry(config)).match("https://openrouter.ai/v1")["id"], "openrouter")
-
+    def test_registry_validation_requires_versions_and_providers(self):
         with self.assertRaises(RegistryValidationError):
             ProviderRegistry({"providers": []})
 
@@ -267,22 +275,29 @@ class ProviderRegistryTests(unittest.TestCase):
 
     def test_registry_validation_rejects_invalid_provider_shapes(self):
         invalid_cases = [
-            _provider(match=[]),
+            _provider(hosts=[]),
             _provider(match_type="contains"),
-            _provider(supports_reasoning=True, reasoning=None),
-            _provider(reasoning={"path": ".bad", "allowed_values": ["low"], "value_map": {}}),
-            _provider(validation="bad"),
-            _provider(validation="strict", reasoning={"path": "reasoning_effort", "allowed_values": []}),
-            _provider(validation="map", reasoning={"path": "reasoning_effort", "allowed_values": ["low"]}),
-            _provider(model_match={}),
-            _provider(model_match={"regex": ["bad"]}),
-            _provider(model_match={"prefix": []}),
+            _provider(rules="not-a-list"),
+            _provider(rules=[{"param": ".bad", "values": {"low": "low"}}]),
+            _provider(rules=[{"param": "reasoning_effort"}]),
+            _provider(rules=[{"param": "reasoning_effort", "values": {}}]),
+            _provider(rules=[{"mode": "bad", "param": "reasoning_effort", "values": {"low": "low"}}]),
+            _provider(rules=[{"mode": "toggle", "param": "x", "toggle": {"on": True}}]),
+            _provider(rules=[{"param": "x", "values": {"low": "low"}, "models": {}}]),
+            _provider(rules=[{"param": "x", "values": {"low": "low"}, "models": {"regex": ["bad"]}}]),
+            _provider(rules=[{"param": "x", "values": {"low": "low"}, "models": {"prefix": []}}]),
         ]
 
         for provider in invalid_cases:
             with self.subTest(provider=provider):
                 with self.assertRaises(RegistryValidationError):
                     ProviderRegistry(_registry(provider))
+
+    def test_shipped_registry_loads_and_resolves(self):
+        registry = ProviderRegistry.from_path(Path(__file__).parents[1] / "provider_registry.json")
+
+        self.assertIsNotNone(registry.match("https://api.openai.com/v1", "gpt-6-astra"))
+        self.assertIsNone(registry.match("https://not-in-registry.example/v1", "gpt-6-astra"))
 
 
 if __name__ == "__main__":

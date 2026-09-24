@@ -58,7 +58,7 @@ TTL — стандартные 5 минут. Разовые вызовы сум�
 
 Это замеры отдельных фрагментов, не общий процент экономии сессии и не измерение счёта Anthropic. Реальные значения зависят от модели, задач и результатов инструментов. Регрессии проверяются в `tests/test_token_savings.py` без API-вызовов. Сохранность точного содержимого файлов, истории, multimodal и reasoning проверяется отдельно; агрессивное сокращение истории или reasoning ради экономии не включается.
 
-Использованные через Context7 источники: [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching), [LangChain ChatAnthropic](https://docs.langchain.com/oss/python/integrations/chat/anthropic), [Anthropic SDK: cache control](https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/types/cache_control_ephemeral_param.py). Payload проверен с установленными `langchain-anthropic==1.6.1` и `anthropic==0.121.0`; зависимости не менялись.
+Использованные через Context7 источники: [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching), [LangChain ChatAnthropic](https://docs.langchain.com/oss/python/integrations/chat/anthropic), [Anthropic SDK: cache control](https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/types/cache_control_ephemeral_param.py). Payload проверен с установленными `langchain-anthropic==1.7.2` и `anthropic==1.7.0`; зависимости не менялись.
 
 ### Добавление OpenAI-compatible агрегаторов
 

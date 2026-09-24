@@ -1,817 +1,279 @@
 {
-  "schema_version": 1,
-  "data_version": 6,
+  "schema_version": 2,
+  "data_version": 1,
+  "verified_on": "2026-09-12",
+  "verification_basis": "Same provider facts as provider_registry.json (schema_version 1, data_version 6). Only the data structure changed; provider behavior was not re-verified.",
   "providers": [
     {
-      "id": "openai_gpt6",
-      "enabled": true,
-      "priority": 103,
-      "match": [
-        "api.openai.com",
-        "api.ashna.ai"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "model_match": {
-        "prefix": [
-          "gpt-6"
-        ]
-      },
-      "validation": "strict",
-      "reasoning": {
-        "path": "reasoning.effort",
-        "allowed_values": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ]
-      },
-      "notes": "OpenAI Responses API. GPT-6 supports reasoning.effort=low|medium|high|xhigh|max. none and minimal are not supported."
-    },
-    {
-      "id": "openai_gpt56",
-      "enabled": true,
-      "priority": 102,
-      "match": [
-        "api.openai.com",
-        "api.ashna.ai"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "model_match": {
-        "prefix": [
-          "gpt-5.6"
-        ]
-      },
-      "validation": "strict",
-      "reasoning": {
-        "path": "reasoning.effort",
-        "allowed_values": [
-          "none",
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
-        "none_value": "none"
-      },
-      "notes": "OpenAI Responses API. GPT-5.6 (Sol/Terra/Luna) supports reasoning.effort=none|low|medium|high|xhigh|max."
-    },
-    {
-      "id": "openai_gpt5_legacy",
-      "enabled": true,
-      "priority": 100,
-      "match": [
-        "api.openai.com",
-        "api.ashna.ai"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "model_match": {
-        "prefix": [
-          "gpt-5"
-        ]
-      },
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning.effort",
-        "allowed_values": [
-          "minimal",
-          "low",
-          "medium",
-          "high"
-        ],
-        "value_map": {},
-        "none_value": "none",
-        "extra_fields": {
-          "reasoning.summary": "auto"
+      "id": "openai",
+      "hosts": ["api.openai.com", "api.ashna.ai"],
+      "rules": [
+        {
+          "models": { "prefix": ["gpt-6"] },
+          "param": "reasoning.effort",
+          "values": { "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+          "notes": "OpenAI Responses API. GPT-6 supports reasoning.effort=low|medium|high|xhigh|max. none/minimal are not supported and are silently skipped."
+        },
+        {
+          "models": { "prefix": ["gpt-5.6"] },
+          "param": "reasoning.effort",
+          "values": { "none": "none", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+          "notes": "OpenAI Responses API. GPT-5.6 (Sol/Terra/Luna) supports reasoning.effort=none|low|medium|high|xhigh|max."
+        },
+        {
+          "models": { "prefix": ["gpt-5"] },
+          "param": "reasoning.effort",
+          "values": { "none": "none", "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+          "extra": { "reasoning.summary": "auto" },
+          "notes": "OpenAI Responses API. Generic GPT-5-family fallback for models not matched by a more specific rule above (GPT-5.6 is handled separately). xhigh/max are not supported by this rule."
+        },
+        {
+          "models": { "prefix": ["o1", "o3", "o4"] },
+          "param": "reasoning.effort",
+          "values": { "none": "none", "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+          "extra": { "reasoning.summary": "auto" },
+          "notes": "OpenAI Responses API. Generic o-series (o1/o3/o4) fallback retained from the source registry; exact model-level support can differ."
         }
-      },
-      "notes": "OpenAI Responses API. Generic GPT-5-family fallback for models not matched by a more specific rule. Model-specific reasoning support may differ; GPT-5.6 is handled separately."
+      ]
     },
     {
-      "id": "openai_o_series",
-      "enabled": true,
-      "priority": 90,
-      "match": [
-        "api.openai.com",
-        "api.ashna.ai"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "model_match": {
-        "prefix": [
-          "o1",
-          "o3",
-          "o4"
-        ]
-      },
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning.effort",
-        "allowed_values": [
-          "none",
-          "minimal",
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
-        "value_map": {},
-        "none_value": "none",
-        "extra_fields": {
-          "reasoning.summary": "auto"
+      "id": "agentrouter_org",
+      "hosts": ["agentrouter.org"],
+      "rules": [
+        {
+          "models": { "prefix": ["gpt-6"] },
+          "param": "reasoning.effort",
+          "values": { "none": "low", "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+          "notes": "AgentRouter /v1/responses for GPT-6 models. Uses Responses API reasoning.effort with low|medium|high|xhigh|max. none/minimal are normalized to low."
+        },
+        {
+          "models": { "contains": ["glm-5", "deepseek-v4"] },
+          "param": "reasoning_effort",
+          "values": { "minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max" },
+          "notes": "AgentRouter Chat Completions for GLM-5 and DeepSeek-V4 models on agentrouter.org. Uses top-level reasoning_effort=low|high|max."
         }
-      },
-      "notes": "OpenAI Responses API. Generic o-series fallback retained from the source registry; exact model-level support can differ."
+      ]
     },
     {
-      "id": "agentrouter_gpt6",
-      "enabled": true,
-      "priority": 101,
-      "match": [
-        "agentrouter.org"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "model_match": {
-        "prefix": [
-          "gpt-6"
-        ]
-      },
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning.effort",
-        "allowed_values": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
-        "value_map": {
-          "minimal": "low",
-          "none": "low"
+      "id": "agentrouter_compatible",
+      "hosts": ["apimaster.ai", "true-sota.com", "tokenbom.com"],
+      "rules": [
+        {
+          "param": "reasoning_effort",
+          "values": { "low": "low", "medium": "medium", "high": "high", "xhigh": "high" },
+          "notes": "AgentRouter-compatible Chat Completions provider rule for apimaster.ai, true-sota.com and tokenbom.com — a different host set from agentrouter.org above, despite the similar name. Uses top-level reasoning_effort."
         }
-      },
-      "notes": "AgentRouter /v1/responses for GPT-6 models. Uses Responses API reasoning.effort with low|medium|high|xhigh|max. none/minimal are normalized to low by this registry."
+      ]
     },
     {
       "id": "deepseek",
-      "enabled": true,
-      "priority": 99,
-      "match": [
-        "api.deepseek.com",
-        "tokenharbor.ai"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "model_match": {
-        "contains": [
-          "deepseek-v4-flash",
-          "deepseek-v4-pro",
-          "deepseek-v4-flash-vision-exp"
-        ]
-      },
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning_effort",
-        "allowed_values": [
-          "low",
-          "high",
-          "max"
-        ],
-        "value_map": {
-          "minimal": "low",
-          "medium": "high",
-          "xhigh": "high"
+      "hosts": ["api.deepseek.com", "tokenharbor.ai"],
+      "rules": [
+        {
+          "models": { "contains": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"] },
+          "param": "reasoning_effort",
+          "values": { "minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "high", "max": "max" },
+          "extra": { "extra_body.thinking.type": "enabled" },
+          "notes": "DeepSeek V4 official API. Chat Completions uses reasoning_effort=low|high|max; medium and xhigh are normalized to high. Thinking is enabled via extra_body.thinking.type."
+        }
+      ]
+    },
+    {
+      "id": "moonshot",
+      "hosts": ["api.moonshot.ai", "api.moonshot.cn"],
+      "rules": [
+        {
+          "models": { "prefix": ["kimi-k3"] },
+          "param": "reasoning_effort",
+          "values": { "minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max" },
+          "notes": "Moonshot Kimi K3. Thinking is always enabled; reasoning_effort accepts low|high|max."
         },
-        "extra_fields": {
-          "extra_body.thinking.type": "enabled"
+        {
+          "models": { "prefix": ["kimi-k2.6", "kimi-k2.5"] },
+          "mode": "toggle",
+          "param": "extra_body.thinking.type",
+          "toggle": { "on": "enabled", "off": "disabled" },
+          "notes": "Moonshot Kimi K2.6/K2.5 native thinking toggle via extra_body.thinking.type=enabled|disabled. These models do not use reasoning_effort."
         }
-      },
-      "notes": "DeepSeek V4 official API. Chat Completions uses reasoning_effort=low|high|max; medium and xhigh map to high. Thinking can be enabled/disabled with extra_body.thinking.type."
+      ]
     },
     {
-      "id": "kimi",
-      "enabled": true,
-      "priority": 99,
-      "match": [
-        "api.moonshot.ai",
-        "api.moonshot.cn"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "model_match": {
-        "prefix": [
-          "kimi-k3"
-        ]
-      },
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning_effort",
-        "allowed_values": [
-          "low",
-          "high",
-          "max"
-        ],
-        "value_map": {
-          "minimal": "low",
-          "medium": "high",
-          "xhigh": "max"
-        }
-      },
-      "notes": "Moonshot Kimi K3. Thinking is always enabled; reasoning_effort accepts low|high|max."
-    },
-    {
-      "id": "kimi_k2_thinking",
-      "enabled": true,
-      "priority": 98,
-      "match": [
-        "api.moonshot.ai",
-        "api.moonshot.cn"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "model_match": {
-        "prefix": [
-          "kimi-k2.6",
-          "kimi-k2.5"
-        ]
-      },
-      "validation": "strict",
-      "reasoning": {
-        "path": "extra_body.thinking.type",
-        "allowed_values": [
-          "enabled",
-          "disabled"
-        ],
-        "enabled_value": "enabled",
-        "disabled_value": "disabled"
-      },
-      "notes": "Moonshot Kimi K2.6/K2.5 native thinking toggle. Uses extra_body.thinking.type=enabled|disabled. These models do not use reasoning_effort."
-    },
-    {
-      "id": "qwen_38_effort",
-      "enabled": true,
-      "priority": 100,
-      "match": [
-        "dashscope.aliyuncs.com",
-        "dashscope-intl.aliyuncs.com",
-        "dashscope-us.aliyuncs.com"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "model_match": {
-        "contains": [
-          "qwen3.8-max",
-          "qwen3.8-max-0902",
-          "qwen3.8-flash"
-        ]
-      },
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning_effort",
-        "allowed_values": [
-          "low",
-          "medium",
-          "xhigh"
-        ],
-        "value_map": {
-          "minimal": "low",
-          "high": "xhigh",
-          "max": "xhigh"
+      "id": "dashscope",
+      "hosts": ["dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com", "dashscope-us.aliyuncs.com"],
+      "rules": [
+        {
+          "models": { "contains": ["qwen3.8-max", "qwen3.8-max-0902", "qwen3.8-flash"] },
+          "param": "reasoning_effort",
+          "values": { "minimal": "low", "low": "low", "medium": "medium", "high": "xhigh", "xhigh": "xhigh", "max": "xhigh" },
+          "extra": { "extra_body.enable_thinking": true },
+          "notes": "Alibaba Cloud DashScope Qwen3.8 reasoning rule. reasoning_effort supports low|medium|xhigh; enable_thinking must be enabled. Official docs also support thinking_budget as an alternative, not represented here."
         },
-        "extra_fields": {
-          "extra_body.enable_thinking": true
+        {
+          "models": { "contains": ["qwen3", "qwen-plus", "qwen-turbo", "qwen-max"] },
+          "mode": "toggle",
+          "param": "extra_body.enable_thinking",
+          "toggle": { "on": true, "off": false },
+          "notes": "Alibaba Cloud DashScope generic hybrid-thinking Qwen models. Uses extra_body.enable_thinking as a boolean toggle. Do not assume reasoning_effort except for the explicitly listed Qwen3.8 models above."
         }
-      },
-      "notes": "Alibaba Cloud DashScope Qwen3.8 reasoning rule. reasoning_effort supports low|medium|xhigh; enable_thinking must be enabled. Official docs also support thinking_budget as an alternative, not represented here."
+      ]
     },
     {
-      "id": "qwen",
-      "enabled": true,
-      "priority": 99,
-      "match": [
-        "dashscope.aliyuncs.com",
-        "dashscope-intl.aliyuncs.com",
-        "dashscope-us.aliyuncs.com"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "model_match": {
-        "contains": [
-          "qwen3",
-          "qwen-plus",
-          "qwen-turbo",
-          "qwen-max"
-        ]
-      },
-      "validation": "strict",
-      "reasoning": {
-        "path": "extra_body.enable_thinking",
-        "allowed_values": [
-          "enabled"
-        ],
-        "enabled_value": true,
-        "disabled_value": false
-      },
-      "notes": "Alibaba Cloud DashScope Qwen provider rule. Generic hybrid-thinking Qwen models use extra_body.enable_thinking=true|false. Do not assume reasoning_effort except for explicitly supported Qwen3.8 models."
-    },
-    {
-      "id": "glm_5_3",
-      "enabled": true,
-      "priority": 102,
-      "match": [
-        "open.bigmodel.cn",
-        "api.z.ai"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "model_match": {
-        "contains": [
-          "glm-5.3",
-          "glm-5.3-flash"
-        ]
-      },
-      "validation": "strict",
-      "reasoning": {
-        "path": "reasoning_effort",
-        "allowed_values": [
-          "low",
-          "high",
-          "max"
-        ],
-        "value_map": {},
-        "extra_fields": {
-          "extra_body.thinking.type": "enabled"
-        }
-      },
-      "notes": "Z.AI official GLM-5.3/GLM-5.3-FLASH rule. reasoning_effort accepts only low|high|max; thinking must remain enabled; disabled is rejected."
-    },
-    {
-      "id": "glm_5_2",
-      "enabled": true,
-      "priority": 101,
-      "match": [
-        "open.bigmodel.cn",
-        "api.z.ai"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "model_match": {
-        "prefix": [
-          "glm-5.2"
-        ]
-      },
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning_effort",
-        "allowed_values": [
-          "none",
-          "minimal",
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
-        "value_map": {
-          "none": "none",
-          "minimal": "none",
-          "low": "high",
-          "medium": "high",
-          "high": "high",
-          "xhigh": "max",
-          "max": "max"
+      "id": "zhipu",
+      "hosts": ["open.bigmodel.cn", "api.z.ai"],
+      "rules": [
+        {
+          "models": { "contains": ["glm-5.3", "glm-5.3-flash"] },
+          "param": "reasoning_effort",
+          "values": { "low": "low", "high": "high", "max": "max" },
+          "extra": { "extra_body.thinking.type": "enabled" },
+          "notes": "Z.AI official GLM-5.3/GLM-5.3-FLASH rule. reasoning_effort accepts only low|high|max; thinking must remain enabled (disabled is rejected)."
         },
-        "extra_fields": {
-          "extra_body.thinking.type": "enabled"
+        {
+          "models": { "prefix": ["glm-5.2"] },
+          "param": "reasoning_effort",
+          "values": { "none": "none", "minimal": "none", "low": "high", "medium": "high", "high": "high", "xhigh": "max", "max": "max" },
+          "extra": { "extra_body.thinking.type": "enabled" },
+          "notes": "Z.AI official GLM-5.2 rule. none/minimal stop thinking, low/medium/high are normalized to high, xhigh is normalized to max."
+        },
+        {
+          "models": { "contains": ["glm-5.1", "glm-5", "glm-4.7", "glm-4.6", "glm-4.5", "glm-4.5v"] },
+          "mode": "toggle",
+          "param": "extra_body.thinking.type",
+          "toggle": { "on": "enabled", "off": "disabled" },
+          "notes": "Z.AI official GLM thinking-family toggle for GLM-5.1/5/4.7/4.6/4.5 and GLM-4.5V. reasoning_effort is not assumed for these models."
         }
-      },
-      "notes": "Z.AI official GLM-5.2 rule. reasoning_effort supports none|minimal|low|medium|high|xhigh|max; none/minimal stop thinking, low/medium map to high, xhigh maps to max."
-    },
-    {
-      "id": "glm_thinking",
-      "enabled": true,
-      "priority": 99,
-      "match": [
-        "open.bigmodel.cn",
-        "api.z.ai"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "model_match": {
-        "contains": [
-          "glm-5.1",
-          "glm-5",
-          "glm-4.7",
-          "glm-4.6",
-          "glm-4.5",
-          "glm-4.5v"
-        ]
-      },
-      "validation": "strict",
-      "reasoning": {
-        "path": "extra_body.thinking.type",
-        "allowed_values": [
-          "enabled",
-          "disabled"
-        ],
-        "enabled_value": "enabled",
-        "disabled_value": "disabled"
-      },
-      "notes": "Z.AI official GLM thinking-family rule. GLM-5.1/5/4.7/4.6/4.5 and GLM-4.5V support thinking.type=enabled|disabled. reasoning_effort is not assumed for these models."
+      ]
     },
     {
       "id": "openrouter",
-      "enabled": true,
-      "priority": 90,
-      "match": [
-        "openrouter.ai"
-      ],
+      "hosts": ["openrouter.ai"],
       "match_type": "suffix",
-      "supports_reasoning": true,
-      "validation": "map",
-      "reasoning": {
-        "path": "extra_body.reasoning.effort",
-        "allowed_values": [
-          "minimal",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ],
-        "value_map": {
-          "none": "none"
+      "rules": [
+        {
+          "param": "extra_body.reasoning.effort",
+          "values": { "none": "none", "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+          "notes": "OpenRouter provider rule. Uses extra_body.reasoning.effort for the OpenAI-compatible Chat Completions interface."
         }
-      },
-      "notes": "OpenRouter provider rule. Uses extra_body.reasoning.effort for the OpenAI-compatible Chat Completions interface."
+      ]
     },
     {
-      "id": "ollama_cloud",
-      "enabled": true,
-      "priority": 85,
-      "match": [
-        "ollama.com",
-        "api.fireworks.ai"
-      ],
+      "id": "ollama_fireworks",
+      "hosts": ["ollama.com", "api.fireworks.ai"],
       "match_type": "suffix",
-      "supports_reasoning": true,
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning_effort",
-        "allowed_values": [
-          "low",
-          "medium",
-          "high"
-        ],
-        "value_map": {
-          "minimal": "low",
-          "xhigh": "high"
+      "rules": [
+        {
+          "param": "reasoning_effort",
+          "values": { "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high" },
+          "notes": "Ollama Cloud and Fireworks AI. Both use top-level reasoning_effort=low|medium|high with the same normalization (minimal→low, xhigh→high)."
         }
-      },
-      "notes": "Ollama Cloud and Fireworks AI provider rules. Both use top-level reasoning_effort=low|medium|high with the same normalization map (minimal->low, xhigh->high)."
-    },
-    {
-      "id": "nvidia_nim_gpt_oss",
-      "enabled": true,
-      "priority": 71,
-      "match": [
-        "integrate.api.nvidia.com",
-        "api.nvidia.com"
-      ],
-      "match_type": "suffix",
-      "supports_reasoning": true,
-      "validation": "map",
-      "model_match": {
-        "contains": [
-          "gpt-oss"
-        ]
-      },
-      "reasoning": {
-        "path": "reasoning_effort",
-        "allowed_values": [
-          "low",
-          "medium",
-          "high"
-        ],
-        "value_map": {
-          "minimal": "low",
-          "xhigh": "high",
-          "max": "high"
-        }
-      },
-      "notes": "NVIDIA NIM GPT-OSS-specific provider rule. Uses top-level reasoning_effort=low|medium|high."
-    },
-    {
-      "id": "nvidia_nim_deepseek_v4",
-      "enabled": true,
-      "priority": 72,
-      "match": [
-        "integrate.api.nvidia.com",
-        "api.nvidia.com"
-      ],
-      "match_type": "suffix",
-      "supports_reasoning": true,
-      "validation": "strict",
-      "model_match": {
-        "contains": [
-          "deepseek-v4"
-        ]
-      },
-      "reasoning": {
-        "path": "reasoning_effort",
-        "allowed_values": [
-          "none",
-          "high",
-          "max"
-        ],
-        "none_value": "none"
-      },
-      "notes": "NVIDIA NIM DeepSeek-V4-specific provider rule. Uses top-level reasoning_effort=none|high|max."
+      ]
     },
     {
       "id": "nvidia_nim",
-      "enabled": true,
-      "priority": 70,
-      "match": [
-        "integrate.api.nvidia.com",
-        "api.nvidia.com"
-      ],
+      "hosts": ["integrate.api.nvidia.com", "api.nvidia.com"],
       "match_type": "suffix",
-      "supports_reasoning": true,
-      "validation": "passthrough",
-      "model_match": {
-        "contains": [
-          "deepseek-r1",
-          "deepseek-v3",
-          "deepseek-prover",
-          "glm-5",
-          "glm-4.7",
-          "kimi-k2",
-          "qwen3",
-          "gemma-4"
-        ]
-      },
-      "reasoning": {
-        "path": "extra_body.chat_template_kwargs.enable_thinking",
-        "enabled_value": true,
-        "disabled_value": false
-      },
-      "notes": "Generic NVIDIA NIM thinking-model provider rule for the listed DeepSeek, GLM, Kimi, Qwen and Gemma models. Uses extra_body.chat_template_kwargs.enable_thinking as a boolean toggle; model-specific reasoning_effort is not assumed universally."
+      "rules": [
+        {
+          "models": { "contains": ["deepseek-v4"] },
+          "param": "reasoning_effort",
+          "values": { "none": "none", "high": "high", "max": "max" },
+          "notes": "NVIDIA NIM DeepSeek-V4-specific rule. Uses top-level reasoning_effort=none|high|max."
+        },
+        {
+          "models": { "contains": ["gpt-oss"] },
+          "param": "reasoning_effort",
+          "values": { "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "high" },
+          "notes": "NVIDIA NIM GPT-OSS-specific rule. Uses top-level reasoning_effort=low|medium|high."
+        },
+        {
+          "models": { "contains": ["deepseek-r1", "deepseek-v3", "deepseek-prover", "glm-5", "glm-4.7", "kimi-k2", "qwen3", "gemma-4"] },
+          "mode": "toggle",
+          "param": "extra_body.chat_template_kwargs.enable_thinking",
+          "toggle": { "on": true, "off": false },
+          "notes": "Generic NVIDIA NIM thinking-model rule for the listed DeepSeek, GLM, Kimi, Qwen and Gemma models. Uses extra_body.chat_template_kwargs.enable_thinking as a boolean toggle; a universal clear_thinking field is not sent since NVIDIA does not document one."
+        }
+      ]
     },
     {
       "id": "aihubmix",
-      "enabled": true,
-      "priority": 70,
-      "match": [
-        "aihubmix.com"
-      ],
+      "hosts": ["aihubmix.com"],
       "match_type": "suffix",
-      "supports_reasoning": true,
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning_effort",
-        "allowed_values": [
-          "minimal",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ],
-        "value_map": {
-          "none": "none"
+      "rules": [
+        {
+          "param": "reasoning_effort",
+          "values": { "none": "none", "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+          "notes": "AIHubMix provider rule. Uses top-level reasoning_effort for its OpenAI-compatible Chat Completions interface."
         }
-      },
-      "notes": "AIHubMix provider rule. Uses top-level reasoning_effort for its OpenAI-compatible Chat Completions interface."
+      ]
     },
     {
-      "id": "baai",
-      "enabled": true,
-      "priority": 70,
-      "match": [
-        "api.b.ai",
-        "api.tokenbay.com"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning_effort",
-        "allowed_values": [
-          "low",
-          "medium",
-          "high"
-        ],
-        "value_map": {
-          "minimal": "low",
-          "xhigh": "high"
+      "id": "baai_tokenbay",
+      "hosts": ["api.b.ai", "api.tokenbay.com"],
+      "rules": [
+        {
+          "param": "reasoning_effort",
+          "values": { "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high" },
+          "notes": "B.AI (api.b.ai) and TokenBay (api.tokenbay.com). Both use top-level reasoning_effort=low|medium|high with the same normalization (minimal→low, xhigh→high)."
         }
-      },
-      "notes": "B.AI (api.b.ai) and TokenBay (api.tokenbay.com) provider rules. Both use top-level reasoning_effort=low|medium|high with the same normalization map (minimal->low, xhigh->high); Chat Completions interface."
+      ]
     },
     {
       "id": "mistral",
-      "enabled": true,
-      "priority": 60,
-      "match": [
-        "api.mistral.ai"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning_effort",
-        "allowed_values": [
-          "none",
-          "high"
-        ],
-        "value_map": {
-          "minimal": "none",
-          "low": "none",
-          "medium": "high",
-          "xhigh": "high",
-          "max": "high"
+      "hosts": ["api.mistral.ai"],
+      "rules": [
+        {
+          "models": { "prefix": ["mistral-small-latest", "mistral-medium-3-5"] },
+          "param": "reasoning_effort",
+          "values": { "none": "none", "minimal": "none", "low": "none", "medium": "high", "high": "high", "xhigh": "high", "max": "high" },
+          "notes": "Mistral official adjustable reasoning, currently documented only for mistral-small-latest and mistral-medium-3-5. reasoning_effort=high or none."
         }
-      },
-      "notes": "Mistral official adjustable reasoning currently documented for mistral-small-latest and mistral-medium-3-5. reasoning_effort=high or none.",
-      "model_match": {
-        "prefix": [
-          "mistral-small-latest",
-          "mistral-medium-3-5"
-        ]
-      }
+      ]
     },
     {
-      "id": "modelscope_global",
-      "enabled": true,
-      "priority": 60,
-      "match": [
-        "api-inference.modelscope.ai",
-        "api-inference.modelscope.cn"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning_effort",
-        "allowed_values": [
-          "low",
-          "medium",
-          "high"
-        ],
-        "value_map": {
-          "minimal": "low",
-          "xhigh": "high",
-          "max": "high"
+      "id": "modelscope",
+      "hosts": ["api-inference.modelscope.ai", "api-inference.modelscope.cn"],
+      "rules": [
+        {
+          "param": "reasoning_effort",
+          "values": { "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "high" },
+          "notes": "ModelScope hosted inference. Uses top-level reasoning_effort for supported Qwen3.x and other thinking models."
         }
-      },
-      "notes": "ModelScope hosted inference provider rule. Uses top-level reasoning_effort for supported Qwen3.x and other thinking models."
+      ]
     },
     {
       "id": "freemodel",
-      "enabled": true,
-      "priority": 60,
-      "match": [
-        "api.freemodel.dev",
-        "api.ai-router.dev",
-        "api.freetheai.xyz"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning.effort",
-        "allowed_values": [
-          "minimal",
-          "low",
-          "medium",
-          "high"
-        ],
-        "value_map": {
-          "xhigh": "high"
-        },
-        "extra_fields": {
-          "reasoning.summary": "auto"
+      "hosts": ["api.freemodel.dev", "api.ai-router.dev", "api.freetheai.xyz"],
+      "rules": [
+        {
+          "param": "reasoning.effort",
+          "values": { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "high" },
+          "extra": { "reasoning.summary": "auto" },
+          "notes": "FreeModel/AI Router. Experimental OpenAI-style reasoning configuration for GPT-5 models on these endpoints."
         }
-      },
-      "notes": "FreeModel/AI Router provider rule for the listed compatible endpoints. Experimental OpenAI-style reasoning configuration for GPT-5 models."
+      ]
     },
     {
       "id": "tokenlayer",
-      "enabled": true,
-      "priority": 60,
-      "match": [
-        "api.tokenlayer.net"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning_effort",
-        "allowed_values": [
-          "low",
-          "medium",
-          "high"
-        ],
-        "value_map": {
-          "xhigh": "high"
-        },
-        "extra_fields": {
-          "reasoning.summary": "auto"
+      "hosts": ["api.tokenlayer.net"],
+      "rules": [
+        {
+          "param": "reasoning_effort",
+          "values": { "low": "low", "medium": "medium", "high": "high", "xhigh": "high" },
+          "extra": { "reasoning.summary": "auto" },
+          "notes": "TokenLayer. Experimental OpenAI-style reasoning configuration for supported GPT-5 models."
         }
-      },
-      "notes": "TokenLayer provider rule. Experimental OpenAI-style reasoning configuration for supported GPT-5 models."
-    },
-    {
-      "id": "agentrouter_glm5",
-      "enabled": true,
-      "priority": 61,
-      "match": [
-        "agentrouter.org"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "model_match": {
-        "contains": [
-          "glm-5",
-		  "deepseek-v4"
-        ]
-      },
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning_effort",
-        "allowed_values": [
-          "low",
-          "high",
-          "max"
-        ],
-        "value_map": {
-          "minimal": "low",
-          "medium": "high",
-          "xhigh": "max"
-        }
-      },
-      "notes": "AgentRouter GLM-5-specific rule for agentrouter.org. Uses Chat Completions top-level reasoning_effort=low|high|max."
-    },
-    {
-      "id": "agentrouter",
-      "enabled": true,
-      "priority": 60,
-      "match": [
-        "apimaster.ai",
-        "true-sota.com",
-        "tokenbom.com"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning_effort",
-        "allowed_values": [
-          "low",
-          "medium",
-          "high"
-        ],
-        "value_map": {
-          "xhigh": "high"
-        }
-      },
-      "notes": "AgentRouter-compatible Chat Completions provider rule for apimaster.ai, true-sota.com and tokenbom.com. Uses top-level reasoning_effort. This rule is for Chat Completions, not Responses API reasoning.effort."
+      ]
     },
     {
       "id": "hf_qwen38",
-      "enabled": true,
-      "priority": 65,
-      "match": [
-        "g9hnto0u7lvbu837.us-east-2.aws.endpoints.huggingface.cloud"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning_effort",
-        "allowed_values": [
-          "low",
-          "medium",
-          "xhigh"
-        ],
-        "value_map": {
-          "minimal": "low",
-          "low": "low",
-          "medium": "medium",
-          "high": "xhigh",
-          "xhigh": "xhigh"
+      "hosts": ["g9hnto0u7lvbu837.us-east-2.aws.endpoints.huggingface.cloud"],
+      "rules": [
+        {
+          "param": "reasoning_effort",
+          "values": { "minimal": "low", "low": "low", "medium": "medium", "high": "xhigh", "xhigh": "xhigh" },
+          "notes": "Hugging Face endpoint-specific Qwen3.8-27B rule. OpenAI-compatible Chat Completions uses reasoning_effort=low|medium|xhigh. Scoped to this exact endpoint hostname only, not other Hugging Face endpoints."
         }
-      },
-      "notes": "Hugging Face endpoint-specific Qwen3.8-27B provider rule. OpenAI-compatible Chat Completions uses reasoning_effort=low|medium|xhigh."
+      ]
     }
-  ],
-  "verified_on": "2026-09-12",
-  "verification_basis": "Official provider documentation for known direct providers; unknown/aggregator entries retained without behavioral assumptions."
+  ]
 }

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from core.constants import BASE_DIR
-from core.provider_registry import ProviderRegistry, provider_supports_reasoning_for_model
+from core.provider_registry import ProviderRegistry
 from core.anthropic_capabilities import (
     anthropic_model_reasoning_efforts,
     anthropic_model_requires_thinking,
@@ -66,18 +66,24 @@ def reasoning_options_for_profile(
             provider_config = registry.match(_clean_text(data.get("base_url")), model)
         except Exception:
             return []
-        if not provider_supports_reasoning_for_model(provider_config, model):
+        if not isinstance(provider_config, Mapping):
             return []
-        reasoning = provider_config.get("reasoning", {}) if isinstance(provider_config, Mapping) else {}
-        if "enabled_value" in reasoning:
+        if provider_config.get("mode") == "toggle":
             return [
                 _option("off", "Off", {"enabled": False}),
                 _option("true", "On", {"enabled": True}),
             ]
 
-        values = reasoning.get("allowed_values", []) if isinstance(reasoning, Mapping) else []
-        allowed = [_clean_text(value).lower() for value in values if _clean_text(value)]
-        return [_option(value, _title(value), {"enabled": True, "effort": value}) for value in allowed]
+        # ``values`` maps input effort -> provider value; expose the distinct
+        # provider-side levels (deduplicated, first-occurrence order) as the
+        # selectable reasoning options.
+        values = provider_config.get("values", {}) if isinstance(provider_config, Mapping) else {}
+        levels: list[str] = []
+        for resolved in values.values():
+            label = _clean_text(resolved).lower()
+            if label and label not in levels:
+                levels.append(label)
+        return [_option(value, _title(value), {"enabled": True, "effort": value}) for value in levels]
 
     off = _option("off", "Off", {"enabled": False})
     if provider == "gemini":

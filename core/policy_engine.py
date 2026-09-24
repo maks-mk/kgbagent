@@ -12,11 +12,14 @@ from core.tool_policy import ToolMetadata
 # sequential re.search calls to a single re.search per category.
 # ---------------------------------------------------------------------------
 
-_INSPECT_ONLY_COMMAND_RE = re.compile(
-    r"\b(?:get-process|tasklist|where-object|select-object|findstr|"
-    r"get-childitem|get-content|select-string|dir|type|where|netstat|ss|ps)\b",
-    re.IGNORECASE,
-)
+# Inspect-only commands are matched against the FIRST token of the command only.
+# Substring matching (e.g. "ss" inside "node ss.js") previously let arbitrary
+# executables masquerade as read-only inspection commands.
+_INSPECT_ONLY_COMMAND_NAMES = frozenset({
+    "get-process", "tasklist", "where-object", "select-object", "findstr",
+    "get-childitem", "get-content", "select-string", "dir", "type", "where",
+    "netstat", "ss", "ps",
+})
 _NETWORK_DIAGNOSTIC_COMMAND_RE = re.compile(
     r"\b(?:ping(?:\.exe)?|test-netconnection|resolve-dnsname|"
     r"nslookup(?:\.exe)?|tracert(?:\.exe)?|pathping(?:\.exe)?)\b",
@@ -52,6 +55,14 @@ _HTTP_WRITE_FLAG_RE = re.compile(
     r"|--(?:data(?:-raw|-binary|-ascii|-urlencode)?|form|string|upload-file|json)\b",
     re.IGNORECASE,
 )
+# HTTP clients that write the response body to disk (download-to-file). These are
+# mutating even without an explicit write method (POST/PUT/...).
+_HTTP_OUTPUT_FLAG_RE = re.compile(
+    r"(?:^|[\s;|&])-o(?:[=\s]|$)"
+    r"|(?:^|[\s;|&])--(?:output(?:-dir)?|remote-name)\b"
+    r"|(?:^|[\s;|&])-OutFile\b",
+    re.IGNORECASE,
+)
 _RIPGREP_COMMAND_NAMES = {"rg", "rg.exe"}
 
 
@@ -63,6 +74,8 @@ def _is_http_write_command(command: str) -> bool:
     if not _is_http_probe_command(command):
         return False
     if _HTTP_WRITE_METHOD_RE.search(command):
+        return True
+    if _HTTP_OUTPUT_FLAG_RE.search(command):
         return True
     return bool(_HTTP_WRITE_FLAG_RE.search(command))
 
@@ -92,6 +105,30 @@ def _has_unquoted_shell_operator(command: str) -> bool:
             if stripped_before:
                 return True
         if char == "`":
+            return True
+    return False
+
+
+def _has_unquoted_write_redirect(command: str) -> bool:
+    """True when the command contains an output redirection (``>`` / ``>>``) outside quotes."""
+    quote: str | None = None
+    escaped = False
+    for char in command:
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote == '"':
+            escaped = True
+            continue
+        if char in ("'", '"'):
+            if quote == char:
+                quote = None
+            elif quote is None:
+                quote = char
+            continue
+        if quote is not None:
+            continue
+        if char == ">":
             return True
     return False
 
@@ -133,20 +170,39 @@ def _is_ripgrep_read_only_command(command: str) -> bool:
     return executable in _RIPGREP_COMMAND_NAMES
 
 
+def _leading_command_executable(command: str) -> str:
+    token = _first_command_token(command).strip('"\'')
+    if not token:
+        return ""
+    executable = token.replace("/", "\\").rsplit("\\", 1)[-1].lower()
+    if executable.endswith(".exe"):
+        executable = executable[:-4]
+    return executable
+
+
+def _is_inspect_only_leading_command(command: str) -> bool:
+    return _leading_command_executable(command) in _INSPECT_ONLY_COMMAND_NAMES
+
+
 def classify_shell_command(command: str) -> Dict[str, Any]:
     normalized = str(command or "").strip()
     is_long_running_service = bool(_LONG_RUNNING_SERVICE_RE.search(normalized))
     is_destructive = bool(_DESTRUCTIVE_COMMAND_RE.search(normalized))
     is_http_write = _is_http_write_command(normalized)
-    is_mutating = is_long_running_service or is_destructive or is_http_write or bool(
-        _MUTATING_COMMAND_RE.search(normalized)
+    is_redirect_write = _has_unquoted_write_redirect(normalized)
+    is_mutating = (
+        is_long_running_service
+        or is_destructive
+        or is_http_write
+        or is_redirect_write
+        or bool(_MUTATING_COMMAND_RE.search(normalized))
     )
     is_network_diagnostic = bool(_NETWORK_DIAGNOSTIC_COMMAND_RE.search(normalized))
     is_inspect_only = (
         not is_mutating
         and not is_long_running_service
         and (
-            bool(_INSPECT_ONLY_COMMAND_RE.search(normalized))
+            _is_inspect_only_leading_command(normalized)
             or is_network_diagnostic
             or _is_http_probe_command(normalized)
             or _is_ripgrep_read_only_command(normalized)

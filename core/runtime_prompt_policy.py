@@ -50,20 +50,22 @@ class RuntimePromptPolicyBuilder:
     )
     TOOL_INTENT_REQUIREMENT_TEXT = (
         "TOOL INTENT REQUIREMENT:\n"
-        "Announce each logical group of tool calls ONCE, BEFORE its opening batch, not before every call.\n"
-        "A group consists of consecutive calls serving one immediate objective, even across multiple messages.\n"
-        "In the opening tool-call message, write one short comment in content naming the target and purpose "
-        "in the user's language. Include that batch's structured tool_calls in the SAME assistant message.\n"
-        "Example: 'Tracing database host resolution through configuration and startup code.'\n"
-        "Continue without commentary while the next calls serve the announced objective and introduce no "
-        "unannounced risk. content may be empty for these follow-ups.\n"
-        "Changing a tool, file or command, retrying or fetching more results alone does not start a new group.\n"
-        "Give a new preface before calls serving a different immediate objective, or before a risky action "
-        "not covered by the current preface. For risky actions, briefly explain the intended effect.\n"
-        "Do not narrate individual tool results or repeat the preface. "
-        "Report actionable blockers or summarize verified outcomes when the task is complete.\n"
-        "Keep comments concrete and brief; avoid generic filler and do not expose internal reasoning."
+        "Always start each new group of tool calls with a 2 to 4 sentence comment in content describing what you are doing "
+        "and why, written in the same language as the user's current request. This applies even to single or trivial actions "
+        "such as committing.\n"
+        "Do not comment on every individual call. For a series of calls serving the same objective, one comment at the "
+        "start of the group is enough; add another only when the work reaches a meaningful new stage or an important "
+        "result is discovered.\n"
+        "A logical group consists of consecutive tool calls serving one immediate objective, even across multiple "
+        "messages. The opening comment MUST be in the SAME assistant message as the group's opening tool_calls.\n"
+        "Changing a tool, file or command, retrying, or fetching more results alone does not start a new group.\n"
+        "Write a new comment before calls serving a different immediate objective, or before a risky action not covered "
+        "by the current comment. For risky actions, briefly state the intended effect.\n"
+        "Do not narrate individual tool results or repeat comments unnecessarily. When the task is complete, summarize "
+        "verified outcomes, actionable blockers, decisions, and next steps.\n"
+        "Keep comments concrete and brief. Avoid generic filler and do not expose internal reasoning."
     )
+
     def __init__(self, *, config: AgentConfig) -> None:
         self.config = config
         self._execution_environment = self._detect_execution_environment()

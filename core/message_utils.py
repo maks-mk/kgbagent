@@ -41,7 +41,11 @@ def compact_text(text: str, limit: int) -> str:
     compact = " ".join(str(text).split())
     if len(compact) <= limit:
         return compact
-    return compact[: limit - 15] + "... [truncated]"
+    marker = "... [truncated]"
+    if limit <= len(marker):
+        # Too small to fit the marker; hard-truncate so the result never exceeds the limit.
+        return compact[: max(0, limit)]
+    return compact[: limit - len(marker)] + marker
 
 
 def is_error_text(text: Any) -> bool:

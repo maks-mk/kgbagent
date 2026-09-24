@@ -224,8 +224,16 @@ class AgentMixin:
                             details={"allowed_tool_names": list(allowed_tool_names or [])},
                             response_preview=str(response.content),
                         )
-
-                    response = self._new_ai_message_with_tool_calls(response, t_calls)
+                        response = self._new_ai_message_with_tool_calls(response, t_calls)
+                    else:
+                        # Partial drop: some calls survived the allowed-tool filter. Surface the
+                        # reason in the assistant content so the model learns why the disallowed
+                        # call vanished instead of silently re-issuing it on the next turn.
+                        response = self._new_ai_message_with_content_and_tool_calls(
+                            response,
+                            self._merge_protocol_error_into_content(response.content, dropped_error),
+                            t_calls,
+                        )
 
             response = self._ensure_gemini_tool_call_signatures(response, t_calls)
 

@@ -135,7 +135,7 @@ class RefactorServicesTests(unittest.TestCase):
         self.assertIn("Current task: Проверь задачу", joined)
         self.assertIn("TOOLS:", joined)
         self.assertIn("TOOL INTENT REQUIREMENT:", joined)
-        self.assertIn("Announce each logical group of tool calls ONCE, BEFORE its opening batch", joined)
+        self.assertIn("comment in content", joined)
         self.assertIn("Execution environment: os=windows;", joined)
         self.assertIn("paths=windows.", joined)
         self.assertIn("Workspace:", joined)
