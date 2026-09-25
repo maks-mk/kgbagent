@@ -131,7 +131,9 @@ Provider-адаптеры, вынесенные из `agent.py`. Изолиру�
 
 - `tool_registry.py` - центральный реестр tools, metadata и MCP-интеграции.
 - `filesystem.py` - filesystem tools: `read_file`, `write_file`, `edit_file`, `list_directory`, `safe_delete_file`, `safe_delete_directory`, `download_file`.
-- `local_shell.py` - `cli_exec`, streaming stdout/stderr в реальном времени, exit-code-neutral команды (`grep`/`rg`/`vulture`/`pytest`/`diff` и др. с ненулевым exit code не помечаются как ошибка), управление shell-командами.
+- `local_shell.py` - `cli_exec`, streaming stdout/stderr в реальном времени, разбор команд и семантика кодов возврата (`tools/shell_semantics.py`), политика таймаутов (`CLI_EXEC_MAX_TIMEOUT_MS`, по умолчанию 600 с) и сохранение полного вывода больших команд в `.agent_state/cli_exec`.
+- `shell_semantics.py` - сегментация командной строки (`;`, `&&`, `||`, `|`, кавычки) и интерпретация «протокольных» кодов возврата (`grep`/`rg`/`vulture`/`pytest`/`diff` и др.), чтобы `rg` внутри аргументов не считался shell-командой.
+- `shell_output.py` - ограниченный head+tail-захват stdout/stderr, запись полного вывода в артефакт и форматирование конверта `<persisted-output>`.
 - `process_tools.py` - фоновые процессы: запуск, остановка, поиск по порту.
 - `search_tools.py` - Tavily-инструменты `batch_web_search` и `fetch_content`, кеширование и runtime-конфигурация поиска. `batch_web_search` выполняет до 5 уникальных запросов параллельно; `fetch_content` извлекает содержимое 1–20 HTTP(S)-страниц одним batch-запросом Tavily.
 - `user_input_tool.py` - запрос уточняющего выбора у пользователя.

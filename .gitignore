@@ -63,6 +63,7 @@ mcp_config_secret.json
 .hypothesis/
 .coverage
 htmlcov/
+tiktoken_cache/
 
 # OS specific
 .DS_Store

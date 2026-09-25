@@ -175,6 +175,7 @@ class ContextBuilder:
         filtered_image_block_count = 0
         stripped_reasoning_block_count = 0
         stripped_reasoning_kwarg_count = 0
+        reordered_responses_tool_turn_count = 0
         image_input_supported = bool(self._model_capabilities.get("image_input_supported"))
 
         for message in messages:
@@ -239,6 +240,12 @@ class ContextBuilder:
                     )
                     stripped_reasoning_block_count += block_count
                     stripped_reasoning_kwarg_count += kwarg_count
+
+                    normalized_message, reordered = self._reorder_trailing_responses_function_calls(
+                        normalized_message
+                    )
+                    if reordered:
+                        reordered_responses_tool_turn_count += 1
 
             if isinstance(normalized_message, ToolMessage):
                 raw_tool_id = str(normalized_message.tool_call_id or "").strip()
@@ -327,7 +334,71 @@ class ContextBuilder:
                 stripped_content_block_count=stripped_reasoning_block_count,
                 stripped_additional_kwargs_count=stripped_reasoning_kwarg_count,
             )
+        if reordered_responses_tool_turn_count:
+            self._log_run_event(
+                state,
+                "provider_responses_function_call_reordered",
+                run_id=None if state is None else state.get("run_id", ""),
+                provider=self.config.provider,
+                reordered_tool_turn_count=reordered_responses_tool_turn_count,
+            )
         return sanitized
+
+    def _reorder_trailing_responses_function_calls(
+        self,
+        message: AIMessage | AIMessageChunk,
+    ) -> tuple[AIMessage | AIMessageChunk, bool]:
+        """Move ``function_call`` content blocks to the end of an assistant turn.
+
+        OpenAI Responses replay requires every ``function_call`` item to be
+        immediately followed by its matching ``function_call_output``. When an
+        assistant turn carries text/message blocks *after* a ``function_call``
+        (e.g. a provider that emits a final answer together with the tool call),
+        the replayed ``input`` interposes an assistant ``message`` item between
+        the ``function_call`` and the ``function_call_output`` that follows in the
+        next ``ToolMessage``. Strict backends (e.g. AgentRouter/DeepSeek) reject
+        this with ``No tool output found for tool call ...``; lenient ones accept
+        it, so the malformed shape survives cross-provider replay.
+
+        Stable-partition the content so all non-``function_call`` blocks keep
+        their order first, followed by the ``function_call`` blocks in their
+        original order. Only responses-native assistant messages replayed to a
+        Responses endpoint are affected, and only when a block actually trails a
+        ``function_call``.
+        """
+        if not (self._uses_openai_responses_api() and self._message_is_responses_native(message)):
+            return message, False
+
+        content = getattr(message, "content", None)
+        if not isinstance(content, list) or len(content) < 2:
+            return message, False
+
+        seen_function_call = False
+        needs_reorder = False
+        for block in content:
+            is_function_call = isinstance(block, dict) and block.get("type") == "function_call"
+            if is_function_call:
+                seen_function_call = True
+            elif seen_function_call:
+                # A non-function_call block trails a function_call block.
+                needs_reorder = True
+                break
+
+        if not needs_reorder:
+            return message, False
+
+        non_function_calls = [
+            block
+            for block in content
+            if not (isinstance(block, dict) and block.get("type") == "function_call")
+        ]
+        function_calls = [
+            block
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "function_call"
+        ]
+        reordered_content = [*non_function_calls, *function_calls]
+        return message.model_copy(update={"content": reordered_content}), True
 
     def _strip_cross_provider_reasoning(
         self,

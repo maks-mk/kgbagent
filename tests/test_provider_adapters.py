@@ -1445,6 +1445,52 @@ class ResponsesThinkingHistoryTests(unittest.TestCase):
         self.assertEqual(calls[0]["call_id"], outputs[0]["call_id"])
         self.assertNotEqual(calls[0]["call_id"], toolu_id)
 
+    def test_trailing_text_after_function_call_is_reordered_for_responses(self):
+        # A provider (e.g. gpt-5.6-terra) can emit a final answer *after* the tool
+        # call in one turn, producing content [text, function_call, text]. Replayed
+        # to a Responses endpoint, the trailing assistant message would sit between
+        # the function_call and its function_call_output, and strict backends
+        # (AgentRouter/DeepSeek) reject it with "No tool output found for tool call".
+        from langchain_core.messages import AIMessage, ToolMessage
+        from langchain_openai import ChatOpenAI
+
+        call_id = "call_93eeb298-8662-4264-8dd8-c062f1194ebc"
+        history = [
+            AIMessage(
+                content=[
+                    {"type": "text", "text": "Searching the workspace."},
+                    {"type": "function_call", "id": "fc_test", "call_id": call_id,
+                     "name": "cli_exec", "arguments": "{}"},
+                    {"type": "text", "text": "Here is the final answer."},
+                ],
+                tool_calls=[{"name": "cli_exec", "args": {}, "id": call_id}],
+                response_metadata={"model_provider": "openai"},
+            ),
+            ToolMessage(content="tool result", tool_call_id=call_id),
+        ]
+        sanitized = self._builder().sanitize_messages(history)
+
+        # After sanitize, the function_call must be the last content block.
+        block_types = [
+            block.get("type")
+            for block in sanitized[0].content
+            if isinstance(block, dict)
+        ]
+        self.assertEqual(block_types[-1], "function_call")
+        self.assertEqual(block_types.count("function_call"), 1)
+        self.assertEqual([c["id"] for c in sanitized[0].tool_calls], [call_id])
+
+        model = _build_reasoning_debug_chat_openai(ChatOpenAI)(
+            model="deepseek-v4-flash", api_key="test", use_responses_api=True,
+        )
+        items = model._get_request_payload(sanitized)["input"]
+        types = [item.get("type") for item in items]
+        call_idx = types.index("function_call")
+        # The function_call_output must immediately follow the function_call.
+        self.assertEqual(types[call_idx + 1], "function_call_output")
+        self.assertEqual(items[call_idx]["call_id"], call_id)
+        self.assertEqual(items[call_idx + 1]["call_id"], call_id)
+
     def test_sdk_streaming_and_nonstreaming_multitool_roundtrip(self):
         import json
         import httpx

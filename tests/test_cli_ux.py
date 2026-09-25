@@ -532,6 +532,137 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(group.header_btn.text(), "Completed 3 tools with 2 errors")
         group.deleteLater()
 
+    def test_tool_group_folds_finished_runs_into_subgroups(self):
+        group = ToolGroupWidget(parent=self.window)
+        fold_size = ToolGroupWidget.SUBGROUP_FOLD_SIZE
+
+        # A bare chunk with nothing trailing it must not fold into a redundant
+        # lone sub-group that mirrors the outer header.
+        for index in range(fold_size):
+            card = ToolCardWidget(
+                {"tool_id": f"fold-{index}", "name": "read_file", "phase": "finished"},
+                parent=group.container,
+            )
+            group.add_tool(card)
+        self.assertEqual(group._subgroups, [])
+        self.assertEqual(len(group._loose_cards), fold_size)
+
+        # Two newer finished cards trailing the chunk trigger exactly one fold.
+        for index in range(fold_size, fold_size + 2):
+            card = ToolCardWidget(
+                {"tool_id": f"fold-{index}", "name": "read_file", "phase": "finished"},
+                parent=group.container,
+            )
+            group.add_tool(card)
+        group.refresh_completion()
+
+        self.assertEqual(len(group._subgroups), 1)
+        subgroup = group._subgroups[0]
+        self.assertTrue(subgroup._is_subgroup)
+        self.assertTrue(subgroup._collapsed)
+        self.assertEqual(len(subgroup._tools), fold_size)
+        self.assertEqual(len(group._loose_cards), 2)
+        self.assertEqual(len(group._tools), fold_size + 2)
+        # The outer header still summarizes the whole run, not just the tail.
+        self.assertEqual(group.header_btn.text(), f"Read {fold_size + 2} files")
+        # Folded chunk is pinned ahead of the loose remainder in the layout.
+        self.assertIs(group.inner.itemAt(0).widget(), subgroup)
+        group.deleteLater()
+
+    def test_tool_group_keeps_running_card_out_of_folded_subgroup(self):
+        group = ToolGroupWidget(parent=self.window)
+        fold_size = ToolGroupWidget.SUBGROUP_FOLD_SIZE
+
+        for index in range(fold_size):
+            card = ToolCardWidget(
+                {"tool_id": f"live-{index}", "name": "read_file", "phase": "finished"},
+                parent=group.container,
+            )
+            group.add_tool(card)
+        # A still-running card trailing the finished chunk lets the chunk fold
+        # while the in-flight tool stays visible in the live area.
+        running = ToolCardWidget(
+            {"tool_id": "live-running", "name": "cli_exec", "phase": "running"},
+            parent=group.container,
+        )
+        group.add_tool(running)
+
+        self.assertEqual(len(group._subgroups), 1)
+        self.assertEqual(group._loose_cards, [running])
+        group.deleteLater()
+
+    def test_tool_group_folding_survives_parallel_out_of_order_completion(self):
+        fold_size = ToolGroupWidget.SUBGROUP_FOLD_SIZE
+
+        def announcement_index(card):
+            return int(card.tool_id.rsplit("t", 1)[1])
+
+        def assert_invariants(group, label):
+            # A still-running card must never be hidden inside a folded chunk.
+            for subgroup in group._subgroups:
+                for card in subgroup._tools:
+                    self.assertEqual(
+                        card.payload.get("phase"),
+                        "finished",
+                        f"{label}: a running card was folded",
+                    )
+            # Sub-groups stay ahead of loose cards and announcement order holds.
+            order = []
+            for subgroup in group._subgroups:
+                order.extend(announcement_index(card) for card in subgroup._tools)
+            order.extend(announcement_index(card) for card in group._loose_cards)
+            self.assertEqual(order, sorted(order), f"{label}: card order broken")
+            # Every card is accounted for exactly once.
+            folded = sum(len(subgroup._tools) for subgroup in group._subgroups)
+            self.assertEqual(
+                folded + len(group._loose_cards),
+                len(group._tools),
+                f"{label}: card count mismatch",
+            )
+
+        # A parallel batch is announced up front (every card running), then the
+        # results stream back out of announcement order.
+        turn = ConversationTurnWidget("parallel", parent=self.window)
+        count = fold_size + 3
+        for index in range(count):
+            turn.start_tool({"tool_id": f"t{index}", "name": "read_file", "args": {"path": f"f{index}.py"}})
+        assert_invariants(turn.tool_group, "announced")
+        self.assertEqual(turn.tool_group._subgroups, [])
+        self.assertEqual(len(turn.tool_group._loose_cards), count)
+
+        finish_order = [3, 5, 0, 1, 8, 2, 4, 6, 7]
+        for index in finish_order:
+            turn.finish_tool({"tool_id": f"t{index}", "name": "read_file", "content": f"data {index}"})
+            assert_invariants(turn.tool_group, f"after finishing t{index}")
+
+        group = turn.tool_group
+        self.assertEqual(len(group._subgroups), 1)
+        self.assertEqual(len(group._subgroups[0]._tools), fold_size)
+        self.assertEqual(len(group._loose_cards), count - fold_size)
+        self.assertEqual(group.header_btn.text(), f"Read {count} files")
+
+    def test_tool_group_keeps_slow_head_run_visible_until_it_finishes(self):
+        fold_size = ToolGroupWidget.SUBGROUP_FOLD_SIZE
+        turn = ConversationTurnWidget("slow head", parent=self.window)
+        count = fold_size + 3
+        for index in range(count):
+            turn.start_tool({"tool_id": f"h{index}", "name": "cli_exec", "args": {"command": f"echo {index}"}})
+
+        # Everything except the first-announced tool finishes. The running head
+        # blocks folding, so no finished card is folded ahead of it and the run
+        # stays visible (as compact rows) rather than reordering.
+        for index in range(1, count):
+            turn.finish_tool({"tool_id": f"h{index}", "name": "cli_exec", "content": "ok"})
+        group = turn.tool_group
+        self.assertEqual(group._subgroups, [])
+        self.assertEqual(len(group._loose_cards), count)
+
+        # Once the head finishes, the whole contiguous run collapses at once.
+        turn.finish_tool({"tool_id": "h0", "name": "cli_exec", "content": "ok"})
+        self.assertEqual(len(group._subgroups), 1)
+        self.assertEqual(len(group._subgroups[0]._tools), fold_size)
+        self.assertEqual(len(group._loose_cards), count - fold_size)
+
     def test_transcript_does_not_duplicate_preface_after_tool_group_with_minor_text_drift(self):
         turn = ConversationTurnWidget("user", parent=self.window)
         preface = (

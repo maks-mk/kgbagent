@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import sys
 from typing import Callable, List, Optional
 
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -18,6 +20,38 @@ logger = logging.getLogger("agent")
 # Encoders are cached per model; unknown/non-OpenAI models use an approximation.
 _ENCODERS: dict[str, object] = {}
 
+# Guards the one-time tiktoken cache-dir setup below.
+_TIKTOKEN_CACHE_CONFIGURED = False
+
+
+def _configure_tiktoken_cache() -> None:
+    """Point tiktoken at the BPE cache bundled with the frozen executable.
+
+    A PyInstaller build ships no populated tiktoken cache, so the first token
+    estimate would try to download the encoding over the network. On an offline
+    or firewalled machine that download fails, ``_get_encoder`` returns ``None``
+    and token counting silently degrades to the character heuristic. That fills
+    the auto-summary ring and triggers compaction at a different point than the
+    tiktoken-based development build, which looks like the progress ring being
+    out of sync after compiling to an exe. Reusing the bundled cache keeps token
+    counting identical in the source and frozen builds, online or offline.
+
+    No-op outside a frozen build, when ``TIKTOKEN_CACHE_DIR`` is already set, or
+    when the bundled cache directory is missing (tiktoken then keeps its default
+    temp-dir/network behaviour).
+    """
+    global _TIKTOKEN_CACHE_CONFIGURED
+    if not getattr(sys, "frozen", False) or os.environ.get("TIKTOKEN_CACHE_DIR"):
+        _TIKTOKEN_CACHE_CONFIGURED = True
+        return
+    base = getattr(sys, "_MEIPASS", "") or os.path.dirname(sys.executable)
+    cache_dir = os.path.join(base, "tiktoken_cache")
+    if os.path.isdir(cache_dir):
+        os.environ["TIKTOKEN_CACHE_DIR"] = cache_dir
+    else:
+        logger.warning("Bundled tiktoken cache not found at %s; falling back to default lookup.", cache_dir)
+    _TIKTOKEN_CACHE_CONFIGURED = True
+
 
 def token_model_name(config) -> str:
     provider = getattr(config, "provider", "")
@@ -27,6 +61,8 @@ def token_model_name(config) -> str:
 def _get_encoder(model_name: str = ""):
     if model_name in _ENCODERS:
         return _ENCODERS[model_name]
+    if not _TIKTOKEN_CACHE_CONFIGURED:
+        _configure_tiktoken_cache()
     try:
         import tiktoken
         try:

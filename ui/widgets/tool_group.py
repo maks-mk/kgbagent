@@ -12,11 +12,28 @@ from ui.theme import ERROR_RED, SUCCESS_GREEN, TEXT_MUTED
 
 
 class ToolGroupWidget(QFrame):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    # Once this many consecutive finished tool cards pile up in the live area
+    # (and at least one newer card still trails them), the oldest chunk is
+    # folded into a nested, collapsed sub-group so a long no-comment run does
+    # not render as a flat wall of rows.
+    SUBGROUP_FOLD_SIZE = 6
+
+    def __init__(self, parent: QWidget | None = None, *, is_subgroup: bool = False) -> None:
         super().__init__(parent)
         self.setObjectName("ToolGroupFrame")
         self.setFrameShape(QFrame.NoFrame)
+        self._is_subgroup = bool(is_subgroup)
+        if self._is_subgroup:
+            # Marker for optional QSS targeting; visual hierarchy otherwise
+            # comes from the parent container's left indentation.
+            self.setProperty("subgroup", True)
         self._tools: list[ToolCardWidget] = []
+        # ``_tools`` stays the full, chronological list (drives the header and
+        # completion state). ``_loose_cards`` are the cards still rendered
+        # directly in ``inner``; ``_subgroups`` are folded chunks pinned ahead
+        # of them.
+        self._loose_cards: list[ToolCardWidget] = []
+        self._subgroups: list["ToolGroupWidget"] = []
         self._collapsed = False
         self._completed = False
         self._completion_announced = False
@@ -221,6 +238,7 @@ class ToolGroupWidget(QFrame):
         if card in self._tools:
             return
         self._tools.append(card)
+        self._loose_cards.append(card)
         self.inner.addWidget(card)
         if self._completed:
             self._completed = False
@@ -228,6 +246,37 @@ class ToolGroupWidget(QFrame):
             self.expand()
         else:
             self._sync_header()
+        self._maybe_fold()
+
+    def _maybe_fold(self) -> None:
+        # Nested sub-groups never fold again; only the top-level group manages
+        # the live/folded split.
+        if self._is_subgroup:
+            return
+        while len(self._loose_cards) > self.SUBGROUP_FOLD_SIZE:
+            finished_prefix: list[ToolCardWidget] = []
+            for card in self._loose_cards:
+                if self._tool_is_finished(card):
+                    finished_prefix.append(card)
+                else:
+                    # Stop at the first still-running card so folding never
+                    # reorders cards or hides an in-flight tool.
+                    break
+            if len(finished_prefix) < self.SUBGROUP_FOLD_SIZE:
+                break
+            self._fold_chunk(finished_prefix[: self.SUBGROUP_FOLD_SIZE])
+
+    def _fold_chunk(self, chunk: list[ToolCardWidget]) -> None:
+        subgroup = ToolGroupWidget(parent=self.container, is_subgroup=True)
+        for card in chunk:
+            self.inner.removeWidget(card)
+            self._loose_cards.remove(card)
+            subgroup.add_tool(card)
+        subgroup.refresh_completion(auto_collapse=True)
+        # Sub-groups stay pinned, in order, ahead of the remaining loose cards.
+        self.inner.insertWidget(len(self._subgroups), subgroup)
+        self._subgroups.append(subgroup)
+        subgroup.show()
 
     @staticmethod
     def _tool_is_finished(card: ToolCardWidget) -> bool:
@@ -245,6 +294,10 @@ class ToolGroupWidget(QFrame):
         elif self._completed:
             self._completion_announced = True
         self._sync_header()
+        # A card finishing (without a new one starting) can also push the live
+        # area over the fold threshold, e.g. when every tool was announced up
+        # front and they resolve one by one.
+        self._maybe_fold()
 
     def _set_container_expanded(self, expanded: bool, *, animated: bool = True) -> None:
         target_height = self.container.sizeHint().height()
@@ -321,12 +374,20 @@ class ToolGroupWidget(QFrame):
             self.error_count_label.setText(str(errors) if errors > 0 else "")
             self.error_count_label.setVisible(errors > 0)
             self._set_header_state(state="error" if errors > 0 else "complete")
+            # Folded sub-groups get a distinct "stacked" icon so they never
+            # mimic the top-level group's check-circle, but keep the green
+            # success color so the icon still reads as "done" rather than
+            # pending/running.
+            if self._is_subgroup:
+                done_icon = _fa_icon("fa5s.layer-group", color=SUCCESS_GREEN, size=9)
+            else:
+                done_icon = _fa_icon("fa5s.check-circle", color=SUCCESS_GREEN, size=9)
             if errors > 0:
-                self.header_btn.setIcon(_fa_icon("fa5s.check-circle", color=SUCCESS_GREEN, size=9))
+                self.header_btn.setIcon(done_icon)
                 error_title = self._error_header_text(errors)
                 self.header_btn.setText(error_title)
             else:
-                self.header_btn.setIcon(_fa_icon("fa5s.check-circle", color=SUCCESS_GREEN, size=9))
+                self.header_btn.setIcon(done_icon)
                 self.header_btn.setText(self._header_text(completed=True))
             return
         self.error_icon_label.setVisible(False)

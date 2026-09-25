@@ -1981,6 +1981,25 @@ def build_stylesheet() -> str:
         border: none;
     }}
 
+    /* Folded sub-groups keep a muted, tool-row gray for their caption so that
+       "Completed N tools" never brightens to the near-white the top-level
+       group header uses when expanded. This keeps the two levels visually
+       distinct even after a sub-group is opened. */
+    QFrame#ToolGroupFrame[subgroup="true"] QPushButton#ToolGroupHeaderButton,
+    QFrame#ToolGroupFrame[subgroup="true"] QPushButton#ToolGroupHeaderButton[state="active"],
+    QFrame#ToolGroupFrame[subgroup="true"] QPushButton#ToolGroupHeaderButton[state="complete"],
+    QFrame#ToolGroupFrame[subgroup="true"] QPushButton#ToolGroupHeaderButton:checked {{
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
+    }}
+
+    QFrame#ToolGroupFrame[subgroup="true"] QPushButton#ToolGroupHeaderButton[state="error"] {{
+        color: {blend_hex(ERROR_RED, TEXT_PRIMARY, 0.22)};
+    }}
+
+    QFrame#ToolGroupFrame[subgroup="true"] QPushButton#ToolGroupHeaderButton:hover {{
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.58)};
+    }}
+
     QPlainTextEdit#CodeView,
     QPlainTextEdit#InlineCodeView {{
         background: {tool_code_bg};

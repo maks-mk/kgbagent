@@ -15,9 +15,21 @@ from core.utils import truncate_output
 from core.errors import format_error, ErrorType
 from core.safety_policy import SafetyPolicy
 from core.policy_engine import classify_shell_command
+from tools.shell_output import (
+    ShellOutputCapture,
+    build_persisted_output_envelope,
+    format_persisted_output_pointer,
+    resolve_artifact_directory,
+    resolve_max_persisted_chars,
+)
+from tools.shell_semantics import interpret_non_error_exit
 
 # Constants
 DEFAULT_TIMEOUT = 120
+# Upper bound parity with the reference Bash tool (bash-timeout-policy.ts:
+# default 120000 ms, max 600000 ms), overridable through the env var below.
+BASH_TOOL_MAX_TIMEOUT_MS = 600_000
+MAX_TIMEOUT_ENV = "CLI_EXEC_MAX_TIMEOUT_MS"
 
 # Global settings
 _SAFETY_POLICY: Optional[SafetyPolicy] = None
@@ -107,14 +119,9 @@ _DESTRUCTIVE_COMMAND_PATTERNS = (
     re.compile(r"\brmdir\b"),
 )
 # Commands that use a non-zero exit code as part of their normal protocol
-# (e.g. grep/rg return 1 when no matches found, vulture returns 1 when dead
-# code is found, pytest returns 1 on test failures).  For these, a non-zero
-# exit code does NOT indicate an execution error — the output itself is the
-# result the agent needs.
-_EXIT_CODE_NEUTRAL_COMMAND_RE = re.compile(
-    r"(?:^|[;&|()\s])(?:vulture|grep|rg|findstr|select-string|diff|pytest)(?=$|[;&|()\s])",
-    re.IGNORECASE,
-)
+# (grep/rg → 1 = no matches, vulture → 1 = dead code found, pytest → 1 = test
+# failures, diff → 1 = files differ) are interpreted by tools.shell_semantics,
+# which matches real executable segments instead of words inside arguments.
 
 _LONG_RUNNING_SERVICE_PATTERNS = (
     re.compile(r"\bpython(?:3(?:\.\d+)?)?\s+-m\s+http\.server\b"),
@@ -391,35 +398,53 @@ def set_safety_policy(policy: SafetyPolicy):
     _SAFETY_POLICY = policy
 
 
-def _limit_raw_output(content: str) -> str:
+def _limit_raw_output(content: str, capture: Optional[ShellOutputCapture] = None) -> str:
     limit = _SAFETY_POLICY.max_raw_tool_output if _SAFETY_POLICY else 100000
-    return truncate_output(content, limit, source="shell-raw")
+    limited = truncate_output(content, limit, source="shell-raw")
+    if capture is None or not capture.persisted_path:
+        return limited
+    # Only success/neutral results may be wrapped: error results must keep the
+    # leading ERROR[TYPE]: marker that core/tool_results.py parses.
+    return build_persisted_output_envelope(
+        body=limited,
+        original_chars=capture.total_chars,
+        persisted_path=capture.persisted_path,
+        artifact_truncated=capture.artifact_truncated,
+    )
 
 
-class _OutputBuffer:
-    """Bound memory while retaining the beginning and the diagnostic tail."""
+def _append_persisted_pointer(content: str, capture: ShellOutputCapture) -> str:
+    if not capture.persisted_path:
+        return content
+    pointer = format_persisted_output_pointer(
+        original_chars=capture.total_chars,
+        persisted_path=capture.persisted_path,
+        artifact_truncated=capture.artifact_truncated,
+    )
+    return f"{content}\n\n{pointer}"
 
-    def __init__(self, limit: int):
-        self.head_limit = max(0, limit // 2)
-        self.tail_limit = max(0, limit - self.head_limit)
-        self.head = ""
-        self.tail = ""
-        self.total = 0
 
-    def append(self, text: str) -> None:
-        self.total += len(text)
-        needed = self.head_limit - len(self.head)
-        if needed > 0:
-            self.head += text[:needed]
-            text = text[needed:]
-        if self.tail_limit:
-            self.tail = (self.tail + text)[-self.tail_limit:]
+def _max_timeout_seconds() -> int:
+    raw = (os.environ.get(MAX_TIMEOUT_ENV) or "").strip()
+    try:
+        configured_ms = int(raw, 10) if raw else 0
+    except ValueError:
+        configured_ms = 0
+    limit_ms = configured_ms if configured_ms > 0 else BASH_TOOL_MAX_TIMEOUT_MS
+    return max(1, limit_ms // 1000)
 
-    def getvalue(self) -> str:
-        omitted = self.total - len(self.head) - len(self.tail)
-        if omitted > 0:
-            return self.head + f"\n[TRUNCATED: {omitted} characters omitted]\n" + self.tail
-        return self.head + self.tail
+
+def _resolve_timeout(requested: int) -> tuple[int, bool]:
+    """Clamp one tool-call timeout to the configured policy.
+
+    Returns the effective timeout in seconds and whether it was clamped.
+    """
+
+    limit = _max_timeout_seconds()
+    value = max(1, int(requested))
+    if value > limit:
+        return limit, True
+    return value, False
 
 
 def set_working_directory(cwd: str):
@@ -465,7 +490,13 @@ async def cli_exec(
     command: str,
     timeout: Annotated[
         int,
-        Field(gt=0, description="Maximum execution time in seconds."),
+        Field(
+            gt=0,
+            description=(
+                "Maximum execution time in seconds. Values above the "
+                f"{MAX_TIMEOUT_ENV} limit (600 seconds by default) are clamped."
+            ),
+        ),
     ] = DEFAULT_TIMEOUT,
 ) -> str:
     """Run one non-interactive shell command in the workspace. Stateless: include cd/chains in the same command. Supports pipes, redirects, &&. Use run_background_process for servers/watchers; avoid prompts and interactive TUI commands."""
@@ -474,6 +505,8 @@ async def cli_exec(
 
     if not command.strip():
         return format_error(ErrorType.VALIDATION, "Command cannot be empty.")
+
+    timeout_seconds, timeout_clamped = _resolve_timeout(timeout)
 
     normalized_command = _normalize_windows_python_heredoc(command)
     normalized_command = _strip_nested_windows_powershell_wrapper(normalized_command)
@@ -512,13 +545,17 @@ async def cli_exec(
                 env=command_env,
             )
         # Bound memory per stream while keeping head+tail diagnostics.
-        # The buffer limit sits above max_raw_tool_output so that _limit_raw_output
-        # stays the single canonical truncation point in the normal range; the
-        # buffer only kicks in for runaway multi-megabyte output.
+        # The capture limit sits at max_raw_tool_output so _limit_raw_output
+        # stays the single canonical truncation point of the inline text; any
+        # output beyond it is mirrored into a workspace artifact instead of
+        # being lost.
         raw_limit = _SAFETY_POLICY.max_raw_tool_output if _SAFETY_POLICY else 100000
-        buffer_limit = max(raw_limit * 2, raw_limit + 1024)
-        stdout_buffer = _OutputBuffer(buffer_limit)
-        stderr_buffer = _OutputBuffer(buffer_limit)
+        capture = ShellOutputCapture(
+            inline_limit=raw_limit,
+            artifact_directory=resolve_artifact_directory(_WORKING_DIRECTORY),
+            max_persisted_chars=resolve_max_persisted_chars(),
+        )
+
         chunk_queue: asyncio.Queue[tuple[str, str | None]] = asyncio.Queue()
         interactive_prompt: str = ""
         interactive_prompt_sample: str = ""
@@ -556,9 +593,9 @@ async def cli_exec(
                     completed_readers += 1
                     continue
                 if stream_name == "stdout":
-                    stdout_buffer.append(chunk)
+                    capture.append("stdout", chunk)
                 else:
-                    stderr_buffer.append(chunk)
+                    capture.append("stderr", chunk)
                 _emit_cli_output(chunk, stream_name)
 
                 if detect_interactive_prompts and not interactive_prompt:
@@ -575,7 +612,7 @@ async def cli_exec(
 
         timed_out = False
         try:
-            await asyncio.wait_for(process.wait(), timeout=timeout)
+            await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
         except asyncio.TimeoutError:
             timed_out = True
             await _terminate_process_tree(process)
@@ -586,8 +623,9 @@ async def cli_exec(
             await asyncio.gather(stdout_reader_task, stderr_reader_task, return_exceptions=True)
             await collector_task
 
-        stdout = stdout_buffer.getvalue().strip()
-        stderr = stderr_buffer.getvalue().strip()
+        capture.close()
+        stdout = capture.stdout.strip()
+        stderr = capture.stderr.strip()
 
         output_parts =[]
         if stdout:
@@ -599,35 +637,47 @@ async def cli_exec(
 
         if interactive_prompt:
             details = f"\nOutput tail:\n{interactive_prompt_sample}" if interactive_prompt_sample else ""
-            return format_error(
-                ErrorType.EXECUTION,
-                "Interactive prompt detected in cli_exec output "
-                f"('{interactive_prompt}'). Run command in non-interactive mode "
-                "(for npm/npx add -y/--yes)."
-                f"{details}",
+            return _append_persisted_pointer(
+                format_error(
+                    ErrorType.EXECUTION,
+                    "Interactive prompt detected in cli_exec output "
+                    f"('{interactive_prompt}'). Run command in non-interactive mode "
+                    "(for npm/npx add -y/--yes)."
+                    f"{details}",
+                ),
+                capture,
             )
 
         if timed_out:
             details = f"\nPartial output:\n{output}" if output else ""
-            return _limit_raw_output(
-                format_error(
-                    ErrorType.TIMEOUT,
-                    f"Command timed out after {timeout} seconds. Did you run an interactive command (like nano/vim) or a blocking server?{details}",
+            timeout_reason = f"Command timed out after {timeout_seconds} seconds."
+            if timeout_clamped:
+                timeout_reason += (
+                    f" The requested timeout ({timeout} seconds) was clamped by"
+                    f" {MAX_TIMEOUT_ENV} to {timeout_seconds} seconds."
                 )
+            return _append_persisted_pointer(
+                _limit_raw_output(
+                    format_error(
+                        ErrorType.TIMEOUT,
+                        f"{timeout_reason} Did you run an interactive command (like nano/vim) or a blocking server?{details}",
+                    )
+                ),
+                capture,
             )
 
-        
         if process.returncode != 0:
             # Some commands use a non-zero exit code as part of their normal
             # protocol (grep/rg → 1 = no matches, vulture → 1 = dead code found,
             # pytest → 1 = test failures, diff → 1 = files differ).  For these,
             # the output is the result — do NOT mark it as an error.
-            if _EXIT_CODE_NEUTRAL_COMMAND_RE.search(normalized_command):
-                neutral_parts = [f"Exit Code: {process.returncode}"]
+            interpretation = interpret_non_error_exit(normalized_command, process.returncode)
+            if interpretation:
+                neutral_parts = [f"Exit Code: {process.returncode} ({interpretation})"]
                 if output:
                     neutral_parts.append(output)
                 result = "\n".join(neutral_parts)
-                return _limit_raw_output(result)
+                return _limit_raw_output(result, capture)
 
             error_msg = f"Command failed with Exit Code {process.returncode}."
             cmd_hint = _get_windows_command_hint(command, stderr)
@@ -642,12 +692,15 @@ async def cli_exec(
                 error_msg += " (No output)"
             if cmd_hint:
                 error_msg += cmd_hint
-            return _limit_raw_output(format_error(ErrorType.EXECUTION, error_msg))
+            return _append_persisted_pointer(
+                _limit_raw_output(format_error(ErrorType.EXECUTION, error_msg)),
+                capture,
+            )
 
         if not output:
             output = "Command executed successfully (no output)."
-        
-        return _limit_raw_output(output)
+
+        return _limit_raw_output(output, capture)
 
     except Exception as e:
         return format_error(ErrorType.EXECUTION, f"Error executing command: {str(e)}")

@@ -12,6 +12,14 @@ if not exist "venv\Scripts\python.exe" (
     exit /b 1
 )
 
+echo [INFO] Priming tiktoken cache for offline token counting...
+set "TIKTOKEN_CACHE_DIR=%CD%\tiktoken_cache"
+if not exist "%TIKTOKEN_CACHE_DIR%" mkdir "%TIKTOKEN_CACHE_DIR%"
+venv\Scripts\python.exe -c "import tiktoken; [tiktoken.get_encoding(name) for name in ('cl100k_base','o200k_base')]"
+if %ERRORLEVEL% neq 0 (
+    echo [WARN] Failed to prime tiktoken cache; the exe may fall back to the character heuristic when offline.
+)
+
 echo [INFO] Building optimized EXE with PyInstaller...
 
 venv\Scripts\python.exe -m PyInstaller ^
@@ -59,6 +67,7 @@ venv\Scripts\python.exe -m PyInstaller ^
     --exclude-module PySide6.QtPdf ^
     --icon=icon.ico ^
     --add-data "icon.ico;." ^
+    --add-data "tiktoken_cache;tiktoken_cache" ^
     main.py
 
 set "BUILD_EXIT=%ERRORLEVEL%"
