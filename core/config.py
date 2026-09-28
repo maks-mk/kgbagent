@@ -136,6 +136,11 @@ class AgentConfig(BaseSettings):
     )
     run_log_dir: Path = Field(default=BASE_DIR / "logs" / "runs", alias="RUN_LOG_DIR")
     log_file: Path = Field(default=BASE_DIR / "logs" / "agent.log", alias="LOG_FILE")
+    # Skills directory. Kept relative by default; a relative value is resolved
+    # against the agent installation root in tools/skills.py so bundled skills
+    # are found regardless of the user's working directory. Use an absolute
+    # SKILLS_DIR to point at skills outside the agent folder.
+    skills_dir: Path = Field(default=Path("skills"), alias="SKILLS_DIR")
 
     # Provider Settings
     provider: Literal["gemini", "openai", "anthropic"] = Field(default="gemini", alias="PROVIDER")
@@ -183,6 +188,7 @@ class AgentConfig(BaseSettings):
     enable_search_tools: bool = Field(default=True, alias="ENABLE_SEARCH_TOOLS")
     model_supports_tools: bool = Field(default=True, alias="MODEL_SUPPORTS_TOOLS")
     enable_filesystem_tools: bool = Field(default=True, alias="ENABLE_FILESYSTEM_TOOLS")
+    enable_skills_tool: bool = Field(default=True, alias="ENABLE_SKILLS_TOOL")
     enable_process_tools: bool = Field(default=False, alias="ENABLE_PROCESS_TOOLS")
     enable_shell_tool: bool = Field(default=False, alias="ENABLE_SHELL_TOOL")
     enable_approvals: bool = Field(default=True, alias="ENABLE_APPROVALS")

@@ -310,6 +310,13 @@ class RuntimeSessionCoordinator:
                 overrides["summary_threshold"] = int(float(session_size))
             except (TypeError, ValueError):
                 pass
+        # Apply the UI-saved LLM_API_MODE override from config.json so toggling
+        # the Test-tab checkbox takes effect at runtime without a restart.
+        llm_api_mode = model_profiles.get("llm_api_mode") if isinstance(model_profiles, dict) else None
+        if llm_api_mode is not None:
+            mode = str(llm_api_mode).strip().lower()
+            if mode in {"chat", "responses"}:
+                overrides["llm_api_mode"] = mode
         base_values.update(overrides)
         return base.__class__(**base_values)
 

@@ -47,11 +47,18 @@
 - Stream-interruption recovery с классификацией ошибок (`rate_limit` / `timeout` / `server_error` / `network`) и экспоненциальным backoff с джиттером перед авто-продолжением
 - Инструменты: filesystem (включая `download_file`), shell, Tavily web search/fetch, process management, MCP
 - Approval-паузы перед мутирующими и деструктивными действиями
+- Поддержка Agent Skills: возможность расширения функционала агента через внешние инструкции в папке `skills/` (индексируются автоматически, подгружаются по требованию)
 - Автосуммаризация контекста при длинных сессиях
 - Настраиваемые HTTP-заголовки для OpenAI-compatible и Anthropic LLM через `headers.json` (эмуляция совместимых клиентов и прокси)
 - Несколько профилей моделей с переключением прямо в GUI
 - Durable checkpoints — сессии сохраняются между запусками
 - Опциональный image input, если модель его поддерживает
+
+---
+
+## Agent Skills (Расширяемые навыки)
+
+Система Agent Skills позволяет расширять возможности агента без изменения кода. В папке `skills/` можно создавать подпапки с файлами `SKILL.md`, содержащими инструкции по выполнению специфических задач. Агент автоматически индексирует эти навыки и видит их краткие описания в системном промпте. Когда задача соответствует описанию навыка, агент вызывает инструмент `read_skills` для подгрузки полных инструкций. Это позволяет добавлять новые компетенции, стандарты оформления кода или сложные алгоритмы действий, просто добавляя новые Markdown-файлы в проект.
 
 ---
 
@@ -120,6 +127,7 @@ START
 │   ├── nodes/             # Узлы LangGraph: context, llm, agent, tools, approval, recovery
 │   └── providers/         # Provider-адаптеры (Anthropic, Gemini, OpenAI-compatible)
 ├── tools/                 # Filesystem/download, shell, search, process, user input, MCP registry
+├── skills/                 # Agent Skills (внешние инструкции)
 ├── ui/                    # PySide6 GUI, runtime worker, streaming/status handling
 ├── docs/                  # Документация
 ├── tests/                 # Runtime, UI, tools, provider registry, logging, policies

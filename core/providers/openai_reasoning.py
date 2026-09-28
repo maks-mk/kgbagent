@@ -227,6 +227,34 @@ def _is_deepseek_chat_model(model: Any) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def strip_stateless_responses_item_ids(payload: dict[str, Any]) -> int:
+    """Drop server-side item IDs from stateless Responses ``input`` items.
+
+    ``langchain_openai`` keeps provider-issued IDs on replayed reasoning,
+    function_call and message items even when ``store=false`` (see
+    ``_construct_responses_api_input``).  Those IDs reference server-side items and
+    are bound to the OpenAI/Azure resource that created them, so after an API-key
+    rotation or a gateway rerouting the request to another resource the endpoint
+    rejects it with 400 "The requested item was created under a different ...
+    resource".
+
+    The agent replays the full conversation on every turn, so the IDs are
+    redundant for stateless requests; the item content (``encrypted_content``,
+    ``call_id``, arguments) is preserved.  Returns the number of removed IDs.
+    """
+    if payload.get("store") is True:
+        return 0
+    input_items = payload.get("input")
+    if not isinstance(input_items, list):
+        return 0
+    stripped = 0
+    for item in input_items:
+        if isinstance(item, dict) and "id" in item:
+            item.pop("id")
+            stripped += 1
+    return stripped
+
+
 def _build_reasoning_debug_chat_openai(base_cls: type) -> type:
     """Return a subclass of ``ChatOpenAI`` with reasoning-debug instrumentation."""
 
@@ -251,6 +279,13 @@ def _build_reasoning_debug_chat_openai(base_cls: type) -> type:
                     # DeepSeek V4 requires non-null content for tool-call messages.
                     if serialized.get("tool_calls") and serialized.get("content") is None:
                         serialized["content"] = ""
+            stripped_ids = strip_stateless_responses_item_ids(payload)
+            if stripped_ids:
+                debug_event(
+                    "responses_item_ids_stripped",
+                    provider="openai",
+                    count=stripped_ids,
+                )
             debug_event(
                 "final_payload",
                 provider="openai",
@@ -774,8 +809,9 @@ def _build_reasoning_debug_chat_openai(base_cls: type) -> type:
 
 
 # Models that reject the ``temperature`` parameter: reasoning-only models with
-# fixed sampling. Sending it causes a 400 from the API.
-_FIXED_SAMPLING_OPENAI_MODELS = frozenset({"gpt-6-astra"})
+# fixed sampling. Sending it causes a 400 from the API (e.g. kimi-k3 returns
+# "field Temperature invalid, only 1 is allowed for this model").
+_FIXED_SAMPLING_OPENAI_MODELS = frozenset({"gpt-6-astra", "kimi-k3"})
 
 
 def _openai_uses_fixed_sampling(model_name: str | None) -> bool:

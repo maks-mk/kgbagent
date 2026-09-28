@@ -112,6 +112,31 @@ class ImageSupportCheckBox(QCheckBox):
         painter.drawLine(middle, last)
 
 
+class LlmApiModeCheckBox(QCheckBox):
+    """Checkbox with a qtawesome-drawn checkmark inside the indicator."""
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if not self.isChecked():
+            return
+
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        indicator_rect = self.style().subElementRect(
+            QStyle.SubElement.SE_CheckBoxIndicator,
+            option,
+            self,
+        )
+        # Inset a little so the glyph does not touch the indicator border.
+        icon_rect = indicator_rect.adjusted(2, 2, -2, -2)
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        icon = _fa_icon("fa5s.check", color=TEXT_PRIMARY if self.isEnabled() else TEXT_MUTED, size=11)
+        icon.paint(painter, icon_rect, Qt.AlignmentFlag.AlignCenter)
+        painter.end()
+
+
 def _fetch_error_message(error: FetchError) -> str:
     if isinstance(error, AuthError):
         return "Invalid API key. Check the key and try again."
@@ -818,10 +843,35 @@ class ModelSettingsDialog(QDialog):
         )
         layout.addWidget(self.session_size_scale)
 
+        # --- LLM_API_MODE toggle ---
+        mode_title = QLabel("LLM API mode")
+        mode_title.setObjectName("ModelSettingsSectionTitle")
+        layout.addWidget(mode_title)
+
+        mode_description = QLabel(
+            "LLM_API_MODE — switch between the chat completions API (unchecked) and the "
+            "responses API (checked) for OpenAI-compatible providers."
+        )
+        mode_description.setObjectName("ModelSettingsMeta")
+        mode_description.setWordWrap(True)
+        layout.addWidget(mode_description)
+
+        self.llm_api_mode_checkbox = LlmApiModeCheckBox("Use responses API (LLM_API_MODE=responses)")
+        self.llm_api_mode_checkbox.setObjectName("LlmApiModeCheckbox")
+        self.llm_api_mode_checkbox.setAccessibleName("LLM API mode")
+        self.llm_api_mode_checkbox.setAccessibleDescription(
+            "Enable the responses API; disable to use the chat completions API"
+        )
+        self.llm_api_mode_checkbox.toggled.connect(self._on_llm_api_mode_toggled)
+        layout.addWidget(self.llm_api_mode_checkbox)
+
         layout.addStretch(1)
 
         self._session_size = self._initial_session_size()
         self._sync_session_size_slider()
+
+        self._llm_api_mode = self._initial_llm_api_mode()
+        self.llm_api_mode_checkbox.setChecked(self._llm_api_mode == "responses")
 
     def _initial_session_size(self) -> int:
         """Resolve SESSION_SIZE: config.json first, then .env, then the model default."""
@@ -856,6 +906,26 @@ class ModelSettingsDialog(QDialog):
     def _on_session_size_changed(self, slider_value: int) -> None:
         self._session_size = slider_value * self.SESSION_SIZE_STEP
         self._update_session_size_label()
+
+    def _initial_llm_api_mode(self) -> str:
+        """Resolve LLM_API_MODE: config.json first, then .env, then the model default."""
+        raw = self._result_payload.get("llm_api_mode") if isinstance(self._result_payload, dict) else None
+        if raw is not None:
+            mode = str(raw).strip().lower()
+            if mode in {"chat", "responses"}:
+                return mode
+        from core.config import AgentConfig
+
+        try:
+            # AgentConfig resolves config.json first, then .env (see
+            # settings_customise_sources), which is exactly the startup order.
+            resolved = AgentConfig()
+            return str(resolved.llm_api_mode)
+        except Exception:
+            return str(AgentConfig.model_fields["llm_api_mode"].default or "chat")
+
+    def _on_llm_api_mode_toggled(self, checked: bool) -> None:
+        self._llm_api_mode = "responses" if checked else "chat"
 
     def refresh_active_selection(self, payload: dict[str, Any]) -> None:
         """Select the currently active profile when the panel is (re)shown."""
@@ -2100,6 +2170,11 @@ class ModelSettingsDialog(QDialog):
         session_size = getattr(self, "_session_size", None)
         if session_size is not None:
             payload["session_size"] = int(session_size)
+        # Carry the Test-tab LLM_API_MODE override through normalization so it
+        # is persisted alongside the profiles in .agent_state/config.json.
+        llm_api_mode = getattr(self, "_llm_api_mode", None)
+        if llm_api_mode is not None:
+            payload["llm_api_mode"] = str(llm_api_mode)
         return payload
 
     def _persist_profiles(self, message: str) -> bool:

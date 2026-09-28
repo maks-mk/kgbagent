@@ -1382,17 +1382,61 @@ class ResponsesThinkingHistoryTests(unittest.TestCase):
                     sanitized = self._builder().sanitize_messages(history)
                     self.assertEqual(sanitized, original)
                     self.assertEqual(history, original)
+                    # Stateless replay (store=False): provider-issued item IDs are
+                    # dropped; block content and call IDs must round-trip unchanged.
                     model = _build_reasoning_debug_chat_openai(ChatOpenAI)(
                         model="deepseek-v4-flash", api_key="test", use_responses_api=True,
+                        store=False,
                     )
                     payload = model._get_request_payload(sanitized)
                     items = payload["input"]
-                    self.assertEqual([x for x in items if x.get("type") == "reasoning"], [reasoning])
+                    expected_reasoning = {k: v for k, v in reasoning.items() if k != "id"}
+                    self.assertEqual([x for x in items if x.get("type") == "reasoning"], [expected_reasoning])
                     calls = [x for x in items if x.get("type") == "function_call"]
                     outputs = [x for x in items if x.get("type") == "function_call_output"]
                     self.assertEqual(len(calls), 1)
+                    self.assertNotIn("id", calls[0])
                     self.assertEqual(calls[0]["call_id"], call_id)
                     self.assertEqual(outputs[0]["call_id"], call_id)
+
+    def test_stateless_responses_ids_are_stripped_unless_store_keeps_items(self):
+        # Item IDs are bound to the OpenAI/Azure resource that created them, so a
+        # stateless replay after key rotation or a gateway reroute is rejected with
+        # 400 "created under a different ... resource". With store=True the IDs are
+        # valid server-side references and must be preserved.
+        from langchain_core.messages import AIMessage, ToolMessage
+        from langchain_openai import ChatOpenAI
+
+        call_id = "call_00_provider_generated_id"
+        reasoning = {"type": "reasoning", "id": "rs_test", "summary": [],
+                     "encrypted_content": "opaque-test-reasoning"}
+        call = {"type": "function_call", "id": "fc_test", "call_id": call_id,
+                "name": "get_weather", "arguments": "{}"}
+        history = [
+            AIMessage(content=[reasoning, call],
+                      tool_calls=[{"name": "get_weather", "args": {}, "id": call_id}]),
+            ToolMessage(content="24C", tool_call_id=call_id),
+        ]
+        sanitized = self._builder().sanitize_messages(history)
+        builder = _build_reasoning_debug_chat_openai(ChatOpenAI)
+
+        stateless = builder(model="deepseek-v4-flash", api_key="test",
+                            use_responses_api=True, store=False)
+        items = stateless._get_request_payload(sanitized)["input"]
+        reasoning_items = [x for x in items if x.get("type") == "reasoning"]
+        calls = [x for x in items if x.get("type") == "function_call"]
+        outputs = [x for x in items if x.get("type") == "function_call_output"]
+        self.assertEqual(reasoning_items, [{k: v for k, v in reasoning.items() if k != "id"}])
+        self.assertNotIn("id", calls[0])
+        self.assertEqual(calls[0]["call_id"], call_id)
+        self.assertEqual(outputs[0]["call_id"], call_id)
+
+        stored = builder(model="deepseek-v4-flash", api_key="test",
+                         use_responses_api=True, store=True)
+        stored_items = stored._get_request_payload(sanitized)["input"]
+        self.assertEqual([x for x in stored_items if x.get("type") == "reasoning"], [reasoning])
+        stored_calls = [x for x in stored_items if x.get("type") == "function_call"]
+        self.assertEqual(stored_calls[0].get("id"), "fc_test")
 
     def test_other_api_modes_still_strip_responses_reasoning(self):
         from langchain_core.messages import AIMessage

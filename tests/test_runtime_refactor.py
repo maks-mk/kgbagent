@@ -1256,8 +1256,10 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                 OPENAI_MODEL="openai/gpt-oss-120b",
                 OPENAI_BASE_URL="https://openrouter.ai/api/v1",
                 MODEL_REASONING_EFFORT="xhigh",
-                # Hermetic: a local .env with LLM_API_MODE=responses must not
-                # leak into this test of the default (chat) API mode.
+                # Hermetic: a local .env or .agent_state/config.json with
+                # LLM_API_MODE=responses must not leak into this test of the
+                # default (chat) API mode.
+                LLM_API_MODE="chat",
                 _env_file=None,
             )
         )
@@ -1594,8 +1596,10 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                     OPENAI_MODEL="gpt-5-mini",
                     OPENAI_BASE_URL="https://api.openai.com/v1",
                     MODEL_REASONING_EFFORT="none",
-                    # Hermetic: a local .env with LLM_API_MODE=responses would
-                    # add a `reasoning` kwarg and break the chat-mode expectation.
+                    # Hermetic: a local .env or .agent_state/config.json with
+                    # LLM_API_MODE=responses would add a `reasoning` kwarg and
+                    # break the chat-mode expectation.
+                    LLM_API_MODE="chat",
                     _env_file=None,
                 )
             )
@@ -2234,9 +2238,16 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(str(response.content), "ok")
         self.assertEqual([call.args[0] for call in sleep_mock.await_args_list], [2, 4, 8])
+        emitted = [call.args[0] for call in writer.call_args_list]
         self.assertEqual(
-            [call.args[0]["label"] for call in writer.call_args_list],
+            [event["label"] for event in emitted if event.get("type") == "status_changed"],
             ["Retrying provider request... 1/3", "Retrying provider request... 2/3", "Retrying provider request... 3/3"],
+        )
+        # Each transient retry also signals the UI to finalize the aborted
+        # attempt's orphan tool cards before the next attempt streams.
+        self.assertEqual(
+            [event["retry_number"] for event in emitted if event.get("type") == "provider_retry"],
+            [1, 2, 3],
         )
 
     async def test_invoke_llm_with_retry_logs_safe_provider_error_details(self):

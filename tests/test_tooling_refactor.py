@@ -156,7 +156,7 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         registry = ToolRegistry(self._make_config(ENABLE_FILESYSTEM_TOOLS=False))
         await registry.load_all()
         names = [tool.name for tool in registry.tools]
-        self.assertEqual(names, ["safe_delete_file", "safe_delete_directory", "request_user_input"])
+        self.assertEqual(names, ["safe_delete_file", "safe_delete_directory", "read_skills", "request_user_input"])
 
     async def test_tool_registry_compacts_descriptions_and_schema_docs(self):
         registry = ToolRegistry(self._make_config(ENABLE_SHELL_TOOL=True))

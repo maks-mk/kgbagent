@@ -47,11 +47,18 @@ The project does not try to compete with AI IDEs by feature count and does not t
 - Stream-interruption recovery with error classification (`rate_limit` / `timeout` / `server_error` / `network`) and exponential backoff with jitter before auto-continue
 - Tools: filesystem (including `download_file`), shell, Tavily web search/fetch, process management, MCP
 - Approval pauses before mutating and destructive actions
+- Agent Skills support: extend agent capabilities via external instructions in the `skills/` folder (automatically indexed, loaded on demand)
 - Automatic context summarization for long sessions
 - Customizable HTTP headers for OpenAI-compatible and Anthropic LLM requests via `headers.json` (client/proxy emulation)
 - Multiple model profiles with switching directly in the GUI
 - Durable checkpoints: sessions persist between launches
 - Optional image input when the selected model supports vision
+
+---
+
+## Agent Skills (Extensible Capabilities)
+
+The Agent Skills system allows extending the agent's capabilities without modifying the code. By creating subfolders with `SKILL.md` files in the `skills/` directory, you can provide the agent with specific instructions for specialized tasks. The agent automatically indexes these skills and sees their brief descriptions in the system prompt. When a task matches a skill's description, the agent uses the `read_skills` tool to load the full instructions. This enables adding new competencies, coding standards, or complex workflows simply by adding Markdown files to the project.
 
 ---
 
@@ -118,6 +125,7 @@ Details: [Runtime Flow, Prompt Layers, Sessions & Checkpoints](./docs/ARCHITECTU
 |   |-- nodes/             # LangGraph nodes: context, llm, agent, tools, approval, recovery
 |   `-- providers/         # Provider adapters (Anthropic, Gemini, OpenAI-compatible)
 |-- tools/                 # Filesystem/download, shell, search, process, user input, MCP registry
+|-- skills/                  # Agent Skills (external instructions)
 |-- ui/                    # PySide6 GUI, runtime worker, streaming/status handling
 |-- docs/                  # Documentation
 |-- tests/                 # Runtime, UI, tools, provider registry, logging, policies

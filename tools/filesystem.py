@@ -72,6 +72,15 @@ def set_working_directory(cwd: str):
     fs_manager.cwd = _WORKING_DIRECTORY
 
 
+def set_read_only_roots(roots):
+    """Register additional roots that read_file/list_files may reach outside the
+    workspace (read-only). Used for the bundled skills folder so a skill's
+    auxiliary files stay readable when the workspace is a different project."""
+    setter = getattr(fs_manager, "set_read_only_roots", None)
+    if callable(setter):
+        setter(tuple(roots))
+
+
 def resolve_workspace_path(path: str) -> Path:
     manager = cast(Any, fs_manager)
     manager.cwd = _sync_backend_working_directory()
@@ -499,6 +508,7 @@ __all__ = [
     "fs_manager",
     "set_safety_policy",
     "set_working_directory",
+    "set_read_only_roots",
     "resolve_workspace_path",
     "max_filesystem_file_size",
     "read_file_tool",

@@ -208,7 +208,7 @@ class ToolRegistry:
     def sync_working_directory(self, cwd: str | Path | None = None) -> None:
         """Propagate runtime cwd to local tool modules that cache workspace roots."""
         target_cwd = str(Path(cwd or Path.cwd()).resolve())
-        for module_name in ("tools.filesystem", "tools.local_shell", "tools.process_tools"):
+        for module_name in ("tools.filesystem", "tools.local_shell", "tools.process_tools", "tools.skills"):
             try:
                 module = importlib.import_module(module_name)
             except Exception:
@@ -357,6 +357,20 @@ class ToolRegistry:
                 },
             ),
             ToolLoaderSpec(
+                name="skills",
+                enabled=lambda config: getattr(config, "enable_skills_tool", True),
+                module_name="tools.skills",
+                tool_names=("read_skills",),
+                configure=self._configure_skills,
+                metadata={
+                    "read_skills": ToolMetadata(
+                        name="read_skills",
+                        read_only=True,
+                        requires_approval=False,
+                    )
+                },
+            ),
+            ToolLoaderSpec(
                 name="user_input",
                 enabled=lambda config: True,
                 module_name="tools.user_input_tool",
@@ -451,6 +465,39 @@ class ToolRegistry:
             module.set_safety_policy(config.safety)
         if hasattr(module, "set_runtime_config"):
             module.set_runtime_config(config)
+
+    @staticmethod
+    def _configure_skills(module: Any, config: AgentConfig) -> None:
+        if hasattr(module, "set_runtime_config"):
+            module.set_runtime_config(config)
+        if hasattr(module, "set_working_directory"):
+            module.set_working_directory(str(Path.cwd()))
+        ToolRegistry._register_skills_read_root(module, config)
+
+    @staticmethod
+    def _register_skills_read_root(module: Any, config: AgentConfig) -> None:
+        """Expose the skills folder as a read-only root for read_file/list_files
+        so a skill's auxiliary files stay readable when it lives outside the
+        workspace (e.g. bundled next to the executable)."""
+        try:
+            import tools.filesystem as filesystem
+        except Exception:
+            return
+        setter = getattr(filesystem, "set_read_only_roots", None)
+        if not callable(setter):
+            return
+        roots: tuple[Any, ...] = ()
+        enabled = getattr(module, "skills_tool_enabled", None)
+        get_dir = getattr(module, "get_skills_dir", None)
+        if callable(get_dir) and (enabled is None or enabled()):
+            try:
+                roots = (get_dir(),)
+            except Exception:
+                roots = ()
+        try:
+            setter(roots)
+        except Exception:
+            logger.debug("Failed to register skills read-only root.", exc_info=True)
 
     @staticmethod
     def _configure_shell(module: Any, config: AgentConfig) -> None:

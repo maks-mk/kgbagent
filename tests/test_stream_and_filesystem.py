@@ -386,6 +386,66 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertEqual(processor.full_text, "")
         self.assertEqual(processor._previous_assistant_section_text, "")
 
+    def test_stream_processor_finalizes_orphan_tool_card_on_provider_retry(self):
+        events = []
+        processor = StreamProcessor(events.append)
+
+        # Partial content from the aborted attempt: some assistant text plus a
+        # tool card rendered from partial tool_use deltas (still "preparing").
+        processor._handle_messages(
+            (AIMessage(content="Начинаю анализ."), {"langgraph_node": "agent"})
+        )
+        processor._remember_tool_call(
+            {"id": "call-orphan", "name": "read_file", "args": {"path": "a.txt"}}
+        )
+        processor._emit_tool_started(
+            {"id": "call-orphan", "name": "read_file", "args": {"path": "a.txt"}}
+        )
+
+        processor._handle_custom(
+            {
+                "type": "provider_retry",
+                "node": "agent",
+                "retry_number": 1,
+                "max_attempts": 3,
+            }
+        )
+
+        # The orphan card must be finalized (interrupted) so it stops hanging.
+        finished = [event.payload for event in events if event.type == "tool_finished"]
+        self.assertEqual(len(finished), 1)
+        self.assertEqual(finished[0]["tool_id"], "call-orphan")
+        self.assertTrue(finished[0]["interrupted"])
+        self.assertEqual(finished[0]["interruption_reason"], "stream_error")
+
+        # The assistant section restarts so the regenerated turn renders clean.
+        boundaries = [event for event in events if event.type == "assistant_boundary"]
+        self.assertEqual(len(boundaries), 1)
+        self.assertEqual(processor.full_text, "")
+        self.assertEqual(processor._previous_assistant_section_text, "")
+
+        # The tool id is no longer tracked as active, so the retry's fresh
+        # tool-call ids start from a clean slate.
+        self.assertFalse(processor._is_active_tool_id("call-orphan"))
+
+    def test_stream_processor_provider_retry_without_tool_is_noop_for_cards(self):
+        events = []
+        processor = StreamProcessor(events.append)
+
+        processor._handle_messages(
+            (AIMessage(content="Частичный ответ."), {"langgraph_node": "agent"})
+        )
+
+        processor._handle_custom(
+            {"type": "provider_retry", "node": "agent", "retry_number": 2, "max_attempts": 3}
+        )
+
+        self.assertEqual([e for e in events if e.type == "tool_finished"], [])
+        boundaries = [event for event in events if event.type == "assistant_boundary"]
+        self.assertEqual(len(boundaries), 1)
+        self.assertEqual(processor.full_text, "")
+        self.assertEqual(processor._previous_assistant_section_text, "")
+
     def test_stream_processor_tool_preview_does_not_claim_execution_started(self):
         events = []
         processor = StreamProcessor(events.append)
@@ -1743,6 +1803,9 @@ class StreamAndFilesystemTests(unittest.TestCase):
             ),
             source="updates_agent",
         )
+        processor._emit_tool_started(
+            {"id": "call-read", "name": "read_file", "args": {"path": "index.html"}}
+        )
 
         event_types = [event.type for event in events]
         deltas = [event.payload for event in events if event.type == "assistant_delta"]
@@ -1761,6 +1824,9 @@ class StreamAndFilesystemTests(unittest.TestCase):
                 tool_calls=[{"id": "call-read", "name": "read_file", "args": {"path": "index.html"}}],
             ),
             source="updates_agent",
+        )
+        processor._emit_tool_started(
+            {"id": "call-read", "name": "read_file", "args": {"path": "index.html"}}
         )
 
         deltas = [event.payload for event in events if event.type == "assistant_delta"]
@@ -1781,6 +1847,9 @@ class StreamAndFilesystemTests(unittest.TestCase):
             ),
             source="updates_agent",
         )
+        processor._emit_tool_started(
+            {"id": "call-fetch", "name": "fetch_content", "args": {"urls": ["https://example.com"]}}
+        )
 
         deltas = [event.payload for event in events if event.type == "assistant_delta"]
         self.assertEqual(len(deltas), 1)
@@ -1799,6 +1868,9 @@ class StreamAndFilesystemTests(unittest.TestCase):
                 tool_calls=[{"id": "call-fetch", "name": "fetch_content", "args": {"urls": ["https://example.com"]}}],
             ),
             source="messages",
+        )
+        processor._emit_tool_started(
+            {"id": "call-fetch", "name": "fetch_content", "args": {"urls": ["https://example.com"]}}
         )
 
         deltas = [event.payload for event in events if event.type == "assistant_delta"]
@@ -2373,12 +2445,23 @@ class StreamAndFilesystemTests(unittest.TestCase):
         )
 
         started = [event.payload for event in events if event.type == "tool_started"]
+        self.assertEqual(started, [])
+        self.assertEqual(processor.tool_buffer["call-stream"]["args"], {"path": "demo.txt"})
+
+        processor._handle_custom(
+            {
+                "type": "tool_batch_started",
+                "tool_calls": [{"id": "call-stream", "name": "read_file", "args": {"path": "demo.txt"}}],
+            }
+        )
+
+        started = [event.payload for event in events if event.type == "tool_started"]
         self.assertEqual(len(started), 1)
         self.assertEqual({payload["tool_id"] for payload in started}, {"call-stream"})
         self.assertEqual(started[0]["args"], {"path": "demo.txt"})
         self.assertFalse(started[0].get("refresh", False))
 
-    def test_stream_processor_waits_until_streamed_args_are_parseable(self):
+    def test_stream_processor_defers_tool_started_until_batch_event(self):
         events = []
         processor = StreamProcessor(
             events.append,
@@ -2405,6 +2488,17 @@ class StreamAndFilesystemTests(unittest.TestCase):
                 chunk_position="last",
             ),
             source="messages",
+        )
+
+        started = [event.payload for event in events if event.type == "tool_started"]
+        self.assertEqual(started, [])
+        self.assertEqual(processor.tool_buffer["call-delayed"]["args"], {"path": "demo.txt"})
+
+        processor._handle_custom(
+            {
+                "type": "tool_batch_started",
+                "tool_calls": [{"id": "call-delayed", "name": "read_file", "args": {"path": "demo.txt"}}],
+            }
         )
 
         started = [event.payload for event in events if event.type == "tool_started"]
@@ -2550,6 +2644,21 @@ class StreamAndFilesystemTests(unittest.TestCase):
         )
 
         started = [event.payload for event in events if event.type == "tool_started"]
+        self.assertEqual(started, [])
+        self.assertEqual(processor.tool_buffer["call-a"]["args"], {"path": "."})
+        self.assertEqual(processor.tool_buffer["call-b"]["args"], {"path": "b.txt"})
+
+        processor._handle_custom(
+            {
+                "type": "tool_batch_started",
+                "tool_calls": [
+                    {"id": "call-a", "name": "list_directory", "args": {"path": "."}},
+                    {"id": "call-b", "name": "read_file", "args": {"path": "b.txt"}},
+                ],
+            }
+        )
+
+        started = [event.payload for event in events if event.type == "tool_started"]
         self.assertEqual(len(started), 2)
         started_by_id = {payload["tool_id"]: payload for payload in started}
         self.assertEqual(set(started_by_id), {"call-a", "call-b"})
@@ -2596,6 +2705,18 @@ class StreamAndFilesystemTests(unittest.TestCase):
                 ],
             ),
             source="messages",
+        )
+
+        started = [event.payload for event in events if event.type == "tool_started"]
+        read_starts = [payload for payload in started if payload["tool_id"] == "call-read"]
+        self.assertEqual(read_starts, [])
+        self.assertEqual(processor.tool_buffer["call-read"]["args"], {"path": "a.py"})
+
+        processor._handle_custom(
+            {
+                "type": "tool_batch_started",
+                "tool_calls": [{"id": "call-read", "name": "read_file", "args": {"path": "a.py"}}],
+            }
         )
 
         started = [event.payload for event in events if event.type == "tool_started"]
@@ -3465,6 +3586,9 @@ class StreamAndFilesystemTests(unittest.TestCase):
                 tool_calls=[{"id": "call-write", "name": "write_file", "args": {"path": "index.html"}}],
             ),
             source="messages",
+        )
+        processor._emit_tool_started(
+            {"id": "call-write", "name": "write_file", "args": {"path": "index.html"}}
         )
 
         deltas = [event.payload for event in events if event.type == "assistant_delta"]

@@ -120,6 +120,13 @@ ENABLE_FILESYSTEM_TOOLS=true
 # Управление процессами (запуск, остановка фоновых задач)
 ENABLE_PROCESS_TOOLS=false
 
+# Agent Skills: регистрировать инструмент read_skills и добавлять блок
+# <available_skills> в системный промпт (по умолчанию true).
+ENABLE_SKILLS_TOOL=true
+# Директория со скиллами (папки с SKILL.md). Относительный путь резолвится
+# от корня рабочей директории.
+SKILLS_DIR=skills
+
 # Shell / Терминал (выполнение команд cmd/bash).
 # ВНИМАНИЕ: Дает модели доступ к выполнению любых команд. Используйте с осторожностью.
 ENABLE_SHELL_TOOL=false

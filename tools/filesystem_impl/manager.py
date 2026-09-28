@@ -21,15 +21,23 @@ from .pathing import (
 
 
 class FilesystemManager:
-    __slots__ = ("cwd", "virtual_mode", "safety_policy")
+    __slots__ = ("cwd", "virtual_mode", "safety_policy", "read_only_roots")
 
     def __init__(self, root_dir: Union[str, Path] = None, virtual_mode: bool = True):
         self.cwd = Path(root_dir).resolve() if root_dir else Path.cwd()
         self.virtual_mode = virtual_mode
         self.safety_policy: Optional[SafetyPolicy] = None
+        # Additional roots that read-only operations (read_file, list_files) may
+        # reach even when they live outside the workspace cwd — e.g. the bundled
+        # skills folder next to the executable. Never consulted for write/edit/
+        # delete, which stay confined to the workspace.
+        self.read_only_roots: tuple[Path, ...] = ()
 
     def set_policy(self, policy: SafetyPolicy):
         self.safety_policy = policy
+
+    def set_read_only_roots(self, roots: tuple[Path, ...]):
+        self.read_only_roots = tuple(Path(root).resolve() for root in roots)
 
     def _is_binary(self, path: Union[str, Path]) -> bool:
         return is_binary_path(str(path))
@@ -37,8 +45,9 @@ class FilesystemManager:
     def _count_lines(self, path: Path) -> int:
         return count_file_lines(path)
 
-    def _resolve_path(self, path_str: str) -> Path:
-        return resolve_path(self.cwd, self.virtual_mode, path_str)
+    def _resolve_path(self, path_str: str, *, for_read: bool = False) -> Path:
+        extra = self.read_only_roots if for_read else ()
+        return resolve_path(self.cwd, self.virtual_mode, path_str, extra)
 
     def _resolve_existing(self, path: str, expected: str, *, follow_final_symlink: bool = True) -> Path:
         return resolve_existing_path(self.cwd, self.virtual_mode, path, expected, follow_final_symlink=follow_final_symlink)
@@ -97,7 +106,7 @@ class FilesystemManager:
     # Callers that explicitly need line numbers can still pass show_line_numbers=True.
     def read_file(self, path: str, offset: int = 0, limit: int = DEFAULT_READ_LIMIT, show_line_numbers: bool = False) -> str:
         try:
-            target = self._resolve_path(path)
+            target = self._resolve_path(path, for_read=True)
             if not target.exists():
                 return format_error(ErrorType.NOT_FOUND, f"File '{path}' not found.")
             if not target.is_file():
@@ -184,7 +193,7 @@ class FilesystemManager:
 
     def list_files(self, path: str, include_hidden: bool = False) -> str:
         try:
-            target = self._resolve_path(path)
+            target = self._resolve_path(path, for_read=True)
             if not target.exists():
                 return format_error(ErrorType.NOT_FOUND, f"Path '{path}' not found.")
             if target.is_file():

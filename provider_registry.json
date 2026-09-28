@@ -70,7 +70,7 @@
       "hosts": ["api.deepseek.com", "tokenharbor.ai"],
       "rules": [
         {
-          "models": { "contains": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"] },
+          "models": { "contains": ["deepseek-v4-flash", "deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"] },
           "param": "reasoning_effort",
           "values": { "minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "high", "max": "max" },
           "extra": { "extra_body.thinking.type": "enabled" },
@@ -80,7 +80,7 @@
     },
     {
       "id": "moonshot",
-      "hosts": ["api.moonshot.ai", "api.moonshot.cn"],
+      "hosts": ["api.moonshot.ai", "api.moonshot.cn", "api.artbloom.tech"],
       "rules": [
         {
           "models": { "prefix": ["kimi-k3"] },

@@ -401,6 +401,9 @@ class StreamProcessor:
         if payload.get("type") == "api_key_rotated":
             self._handle_api_key_rotated(payload)
             return
+        if payload.get("type") == "provider_retry":
+            self._handle_provider_retry(payload)
+            return
         if payload.get("type") == "tool_batch_started":
             tool_calls = payload.get("tool_calls") or []
             if not isinstance(tool_calls, list):
@@ -462,6 +465,25 @@ class StreamProcessor:
         )
         self._begin_assistant_stream_section()
         # The next key regenerates the answer from scratch; its opening may
+        # legitimately match the aborted partial text, so the previous-section
+        # replay guard must not strip it.
+        self._previous_assistant_section_text = ""
+
+    def _handle_provider_retry(self, payload: Dict[str, Any]) -> None:
+        """Reconcile UI state when the LLM node transparently retries a request.
+
+        A transient provider failure (e.g. the upstream peer closing the
+        connection mid-stream) aborts the current attempt after partial content
+        has streamed. That partial content can include tool_use deltas that
+        already rendered a "preparing" tool card. The retry regenerates the
+        whole turn from scratch with fresh tool-call ids, so the aborted
+        attempt's card is never matched to a real result and would hang as if
+        still executing. Finalize those orphan cards as interrupted and start a
+        fresh assistant section so the regenerated turn renders cleanly.
+        """
+        self._emit_interrupted_tool_results(reason="stream_error")
+        self._begin_assistant_stream_section()
+        # The retry regenerates the answer from scratch; its opening may
         # legitimately match the aborted partial text, so the previous-section
         # replay guard must not strip it.
         self._previous_assistant_section_text = ""
@@ -1360,13 +1382,11 @@ class StreamProcessor:
                             for tool_call in tool_calls
                         ],
                         index_order=None,
-                        require_args_before_start=True,
                     )
                 if not processed_any:
                     self._process_tool_calls(
                         list(getattr(message, "tool_calls", []) or []),
                         index_order=None,
-                        require_args_before_start=True,
                     )
                 if getattr(message, "chunk_position", None) == "last":
                     self._tool_chunk_accumulators.pop(accumulator_key, None)
@@ -1412,14 +1432,14 @@ class StreamProcessor:
         tool_calls: list[Dict[str, Any]],
         *,
         index_order: list[int] | None,
-        require_args_before_start: bool = False,
     ) -> None:
+        # Streamed deltas only accumulate call metadata; the card is drawn when the call
+        # reaches execution (tool_batch_started) or its first tool_result arrives.
         for position, tool_call in enumerate(tool_calls):
             normalized = dict(tool_call)
             if index_order is not None and position < len(index_order):
                 normalized["index"] = index_order[position]
             self._remember_tool_call(normalized)
-            self._emit_tool_started(normalized, require_args=require_args_before_start)
 
     def _resolve_tool_id(self, tool_id: Any) -> str:
         current = str(tool_id or "").strip()
@@ -1595,7 +1615,6 @@ class StreamProcessor:
         self,
         tool_call: Dict[str, Any],
         *,
-        require_args: bool = False,
         force: bool = False,
     ) -> None:
         tool_id = self._normalize_tool_call_id(tool_call)
@@ -1611,9 +1630,6 @@ class StreamProcessor:
         if self._normalize_tool_name(tool_name) == "request_user_input":
             return
         tool_args = self._merge_tool_args(tool_info.get("args", {}), tool_call.get("args", {}))
-        if require_args and not force and classify_tool_args_state(tool_name, tool_args) != "complete":
-            self.tool_buffer[tool_id] = {"name": tool_name, "args": tool_args}
-            return
         self.tool_buffer[tool_id] = {"name": tool_name, "args": tool_args}
 
         self.tool_start_times[tool_id] = time.perf_counter()

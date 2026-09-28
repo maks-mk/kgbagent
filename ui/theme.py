@@ -536,7 +536,8 @@ def build_stylesheet() -> str:
         background: {SURFACE_BG};
     }}
     
-    QCheckBox#ModelSupportsImagesCheckbox {{
+    QCheckBox#ModelSupportsImagesCheckbox,
+    QCheckBox#LlmApiModeCheckbox {{
         background: transparent;
         border: none;
         padding: 0px;
@@ -544,7 +545,8 @@ def build_stylesheet() -> str:
         color: {model_dialog_text};
     }}
 
-    QCheckBox#ModelSupportsImagesCheckbox::indicator {{
+    QCheckBox#ModelSupportsImagesCheckbox::indicator,
+    QCheckBox#LlmApiModeCheckbox::indicator {{
         width: 15px;
         height: 15px;
         border-radius: 4px;
@@ -552,21 +554,26 @@ def build_stylesheet() -> str:
         background: {model_dialog_field_bg};
     }}
 
-    QCheckBox#ModelSupportsImagesCheckbox::indicator:hover {{
+    QCheckBox#ModelSupportsImagesCheckbox::indicator:hover,
+    QCheckBox#LlmApiModeCheckbox::indicator:hover {{
         border: 1px solid {blend_hex(model_dialog_selected_border, "#FFFFFF", 0.18)};
         background: {blend_hex(model_dialog_field_bg, "#FFFFFF", 0.08)};
     }}
 
-    QCheckBox#ModelSupportsImagesCheckbox::indicator:checked {{
+    QCheckBox#ModelSupportsImagesCheckbox::indicator:checked,
+    QCheckBox#LlmApiModeCheckbox::indicator:checked {{
         border: 1px solid {model_dialog_selected_border};
-        background: {model_dialog_selected};
+        background: {model_dialog_field_bg};
     }}
 
-    QCheckBox#ModelSupportsImagesCheckbox::indicator:checked:hover {{
-        background: {blend_hex(model_dialog_selected, "#FFFFFF", 0.10)};
+    QCheckBox#ModelSupportsImagesCheckbox::indicator:checked:hover,
+    QCheckBox#LlmApiModeCheckbox::indicator:checked:hover {{
+        border: 1px solid {model_dialog_selected_border};
+        background: {blend_hex(model_dialog_field_bg, "#FFFFFF", 0.08)};
     }}
 
-    QCheckBox#ModelSupportsImagesCheckbox::indicator:disabled {{
+    QCheckBox#ModelSupportsImagesCheckbox::indicator:disabled,
+    QCheckBox#LlmApiModeCheckbox::indicator:disabled {{
         border: 1px solid {blend_hex(model_dialog_field_border, model_dialog_bg, 0.45)};
         background: {model_dialog_soft};
     }}

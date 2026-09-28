@@ -42,6 +42,7 @@ TOOL_ROLE_ICONS = {
     "stop_process": "fa5s.stop",
     "find_process": "fa5s.network-wired",
     "input": "fa5s.comment-dots",
+    "skills": "fa5s.book",
     "tool": "fa5s.tools",
 }
 
@@ -357,6 +358,8 @@ class ToolCardWidget(QFrame):
             return "find_process"
         if normalized == "request_user_input":
             return "input"
+        if normalized == "read_skills":
+            return "skills"
         return "tool"
 
     @classmethod
@@ -388,6 +391,7 @@ class ToolCardWidget(QFrame):
             "stop_process": "Stopping process",
             "find_process": "Finding process",
             "input": "Requesting input",
+            "skills": "Reading Skills",
         }
         completed_titles = {
             "write": "Wrote",
@@ -405,6 +409,7 @@ class ToolCardWidget(QFrame):
             "stop_process": "Stopped process",
             "find_process": "Found process",
             "input": "Requested input",
+            "skills": "Read Skills",
         }
         phase = str(payload.get("phase", "running") or "running")
         titles = action_titles if is_error or phase != "finished" else completed_titles
@@ -539,7 +544,7 @@ class ToolCardWidget(QFrame):
         normalized_args: dict[str, Any],
     ) -> list[tuple[str, str]]:
         role = self._tool_role(payload.get("name", ""))
-        if role not in {"write", "edit", "read", "list", "delete"}:
+        if role not in {"write", "edit", "read", "list", "delete", "skills"}:
             return []
         target = self._compact_single_line(payload.get("subtitle", ""))
         if self._is_argument_placeholder(target):

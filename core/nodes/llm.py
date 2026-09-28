@@ -261,6 +261,20 @@ class LLMMixin:
     def _emit_provider_retry_status(node_name: str, retry_number: int) -> None:
         try:
             writer = get_stream_writer()
+            # A transient failure aborts the current attempt after partial
+            # content — including tool_use deltas that already rendered a
+            # "preparing" tool card — has streamed. The retry regenerates the
+            # whole turn from scratch with fresh tool-call ids, so signal the UI
+            # to finalize the aborted attempt's orphan cards before the next
+            # attempt streams, otherwise those cards hang as if still running.
+            writer(
+                {
+                    "type": "provider_retry",
+                    "node": node_name or "agent",
+                    "retry_number": retry_number,
+                    "max_attempts": len(_TRANSIENT_RETRY_DELAYS),
+                }
+            )
             writer(
                 {
                     "type": "status_changed",

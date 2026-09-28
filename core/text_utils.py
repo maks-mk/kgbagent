@@ -482,6 +482,24 @@ def _format_url_tool(tool_name: str, tool_args: Dict[str, Any]) -> str | None:
     return None
 
 
+def _skill_names_summary(names: Any) -> str:
+    if isinstance(names, str):
+        items = [names]
+    elif isinstance(names, (list, tuple)):
+        items = list(names)
+    else:
+        items = [names] if names not in (None, "") else []
+    cleaned = [str(item).strip() for item in items if str(item).strip()]
+    return truncate_value(", ".join(cleaned), 80) if cleaned else ""
+
+
+def _format_names_tool(tool_name: str, tool_args: Dict[str, Any]) -> str | None:
+    summary = _skill_names_summary(tool_args.get("names"))
+    if summary:
+        return f'{tool_name}("{summary}")'
+    return None
+
+
 DISPLAY_RULES: tuple[tuple[set[str], Callable[[str, Dict[str, Any]], str | None]], ...] = (
     (
         {
@@ -501,6 +519,7 @@ DISPLAY_RULES: tuple[tuple[set[str], Callable[[str, Dict[str, Any]], str | None]
     ({"execute", "RunCommand", "cli_exec"}, _format_command_tool),
     ({"ls", "LS", "list_directory"}, _format_list_tool),
     ({"fetch_url", "WebFetch", "fetch_content", "crawl_site", "download_file"}, _format_url_tool),
+    ({"read_skills"}, _format_names_tool),
 )
 
 
@@ -541,6 +560,8 @@ def classify_tool_args_state(tool_name: str, tool_args: Dict[str, Any]) -> str:
         anchor_keys = ("command",)
     elif tool_name in {"fetch_url", "WebFetch", "fetch_content", "crawl_site", "download_file"}:
         anchor_keys = ("url", "urls")
+    elif tool_name == "read_skills":
+        anchor_keys = ("names",)
 
     if anchor_keys and not any(args.get(key) for key in anchor_keys):
         return "partial"
@@ -640,6 +661,8 @@ def tool_target_summary(tool_name: str, tool_args: Dict[str, Any]) -> str:
     if normalized_name in {"fetch_url", "WebFetch", "fetch_content", "crawl_site", "download_file"}:
         url_text = _first_non_empty_item(args.get("url") or args.get("urls"))
         return truncate_value(_single_line_preview(url_text), 80) if url_text else ""
+    if normalized_name == "read_skills":
+        return _skill_names_summary(args.get("names"))
     return ""
 
 
@@ -680,6 +703,7 @@ def build_tool_ui_labels(
         "execute": "Running command",
         "RunCommand": "Running command",
         "cli_exec": "Running command",
+        "read_skills": "Reading Skills",
     }
     preparing_map = {
         "read_file": "Preparing file read",
@@ -706,6 +730,7 @@ def build_tool_ui_labels(
         "execute": "Preparing command",
         "RunCommand": "Preparing command",
         "cli_exec": "Preparing command",
+        "read_skills": "Preparing skills read",
     }
     base_title = action_map.get(normalized_name, tool_title_case(normalized_name))
 

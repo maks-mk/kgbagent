@@ -139,6 +139,8 @@ class ToolGroupWidget(QFrame):
             return "find_process"
         if name == "request_user_input":
             return "input"
+        if name == "read_skills":
+            return "skills"
         return "tool"
 
     def _group_role(self) -> str:
@@ -182,6 +184,7 @@ class ToolGroupWidget(QFrame):
             "stop_process": "Stopping process",
             "find_process": "Finding process",
             "input": "Requesting input",
+            "skills": "Reading skills",
         }
         completed_titles = {
             "search": "Searched",
@@ -195,6 +198,7 @@ class ToolGroupWidget(QFrame):
             "stop_process": "Stopped process",
             "find_process": "Found process",
             "input": "Requested input",
+            "skills": "Read skills",
         }
         title = (completed_titles if completed else action_titles).get(role)
         if title:
@@ -222,6 +226,7 @@ class ToolGroupWidget(QFrame):
                 "stop_process": "Stopping process failed",
                 "find_process": "Finding process failed",
                 "input": "Requesting input failed",
+                "skills": "Reading skills failed",
             }.get(role, "Tool failed")
         return f"Completed {total} tools with {errors} errors"
 

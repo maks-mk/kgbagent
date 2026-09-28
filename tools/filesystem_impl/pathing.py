@@ -82,7 +82,12 @@ def candidate_path_inputs(path_str: str) -> list[str]:
     return candidates
 
 
-def resolve_path(cwd: Path, virtual_mode: bool, path_str: str) -> Path:
+def resolve_path(
+    cwd: Path,
+    virtual_mode: bool,
+    path_str: str,
+    extra_read_roots: tuple[Path, ...] = (),
+) -> Path:
     if not path_str:
         raise ValueError("Path cannot be empty")
     if "\0" in str(path_str):
@@ -102,8 +107,14 @@ def resolve_path(cwd: Path, virtual_mode: bool, path_str: str) -> Path:
             
             # Check if it's relative to cwd (this handles traversal attempts like ../../etc)
             if not full_path.is_relative_to(cwd):
+                # Read-only roots (e.g. the bundled skills folder) may live outside
+                # the workspace. Allow paths that resolve inside one of them so the
+                # model can read a skill's auxiliary files; traversal is still bounded
+                # because full_path is fully resolved before this check.
+                if any(full_path.is_relative_to(root) for root in extra_read_roots):
+                    pass
                 # Only allow absolute paths if they actually point inside the cwd
-                if is_abs:
+                elif is_abs:
                     raise ValueError(f"ACCESS DENIED: Absolute paths not allowed in virtual mode: {path_str}")
                 else:
                     raise ValueError(f"ACCESS DENIED: Path traversal outside working directory: {full_path}")

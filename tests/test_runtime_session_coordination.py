@@ -160,3 +160,31 @@ class RuntimeSessionCoordinationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.enable_model_reasoning)
         self.assertEqual(result.model_reasoning_effort, "high")
+
+    async def test_build_config_for_active_profile_applies_llm_api_mode_override(self):
+        worker = AgentRunWorker()
+        worker.base_config = AgentConfig(
+            PROVIDER="openai",
+            OPENAI_API_KEY="test-key",
+            OPENAI_MODEL="gpt-4o",
+            LLM_API_MODE="chat",
+        )
+        worker.config = worker.base_config
+        worker.profile_store = None
+        model_profiles = {
+            "active_profile": "gpt-5",
+            "llm_api_mode": "responses",
+            "profiles": [
+                {
+                    "id": "gpt-5",
+                    "provider": "openai",
+                    "model": "gpt-5.6",
+                    "api_key": "sk-profile",
+                    "base_url": "https://api.openai.com/v1",
+                }
+            ],
+        }
+
+        result = worker._build_config_for_active_profile(model_profiles)
+
+        self.assertEqual(result.llm_api_mode, "responses")

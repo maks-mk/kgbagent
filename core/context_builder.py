@@ -105,6 +105,10 @@ class ContextBuilder:
                 )
             )
         )
+        if tools_available and "read_skills" in set(active_tool_names):
+            skills_overlay = self._build_skills_overlay()
+            if skills_overlay:
+                full_context.append(SystemMessage(content=skills_overlay))
         safety_overlay = self._build_safety_overlay(tools_available=tools_available)
         if safety_overlay:
             full_context.append(SystemMessage(content=safety_overlay))
@@ -645,6 +649,21 @@ class ContextBuilder:
                 used_ids.add(candidate)
                 return candidate
             suffix += 1
+
+    def _build_skills_overlay(self) -> str:
+        """Build the ``<available_skills>`` prompt layer from the skills index.
+
+        Injected after the Runtime layer and before Safety. Returns ``""`` when
+        the feature is disabled or no valid skills exist, and never raises into
+        prompt assembly.
+        """
+        try:
+            from tools.skills import build_skills_prompt_block
+
+            return build_skills_prompt_block()
+        except Exception:
+            logger.debug("Skills prompt block unavailable", exc_info=True)
+            return ""
 
     def _build_safety_overlay(self, *, tools_available: bool) -> str:
         if not tools_available:

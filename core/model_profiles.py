@@ -221,6 +221,10 @@ def normalize_profiles_payload(payload: Any) -> dict[str, Any]:
     if raw_session_size is not None:
         normalized["session_size"] = raw_session_size
 
+    raw_llm_api_mode = raw_payload.get("llm_api_mode")
+    if raw_llm_api_mode is not None:
+        normalized["llm_api_mode"] = raw_llm_api_mode
+
     return normalized
 
 
@@ -376,6 +380,8 @@ def merge_profiles_with_env(existing_payload: Any, env_payload: Any) -> dict[str
     # data back into the stored payload.
     if "session_size" in current:
         merged_payload["session_size"] = current["session_size"]
+    if "llm_api_mode" in current:
+        merged_payload["llm_api_mode"] = current["llm_api_mode"]
     return normalize_profiles_payload(merged_payload)
 
 

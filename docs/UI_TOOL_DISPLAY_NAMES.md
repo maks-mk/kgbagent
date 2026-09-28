@@ -30,6 +30,7 @@
 - `stop_background_process` → `Stopping process` → `Stopped process`
 - `find_process_by_port` → `Finding process` → `Found process`
 - `request_user_input` → `Requesting input` → `Requested input`
+- `read_skills` → `Reading Skills` → `Read Skills` (при ошибке `Reading Skills failed`)
 
 ## Дополнительная информация
 
@@ -40,6 +41,7 @@
 - `Editing app.py +3 -1` → `Edited app.py +3 -1`
 - `Running python -m pytest` → `Ran python -m pytest`
 - `Searching Python asyncio` → `Searched Python asyncio`
+- `Reading Skills pdf, design` → `Read Skills pdf, design`
 
 Путь, команда, запрос, URL и статистика изменений не являются частью названия инструмента.
 

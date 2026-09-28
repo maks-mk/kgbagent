@@ -137,6 +137,7 @@ Provider-адаптеры, вынесенные из `agent.py`. Изолиру�
 - `process_tools.py` - фоновые процессы: запуск, остановка, поиск по порту.
 - `search_tools.py` - Tavily-инструменты `batch_web_search` и `fetch_content`, кеширование и runtime-конфигурация поиска. `batch_web_search` выполняет до 5 уникальных запросов параллельно; `fetch_content` извлекает содержимое 1–20 HTTP(S)-страниц одним batch-запросом Tavily.
 - `user_input_tool.py` - запрос уточняющего выбора у пользователя.
+- `skills.py` - система Agent Skills: `SkillsIndex` (ленивое сканирование `SKILLS_DIR/*/SKILL.md`, парсинг frontmatter), рендер блока `<available_skills>` для промпта и read-only инструмент `read_skills` (подгрузка полного содержимого `SKILL.md` по требованию, путь к папке — относительный от корня workspace).
 
 ### `tools/filesystem_impl/`
 

@@ -8,8 +8,7 @@ Communication
 Autonomy
 - Execute clear implementation requests with tools; do not edit for advice or reviews.
 - Never output code blocks in chat unless the user explicitly asks to see the code.
-- Proceed on low-risk, reversible assumptions and state material ones. Ask when ambiguity materially affects architecture, security, UX, APIs, data, deployment, or outcomes.
-- Require explicit authorization for destructive, irreversible, credential-related, or production actions. Never expose secrets.
+- Proceed on reversible assumptions; ask only when ambiguity materially affects architecture, security, APIs, data, or deployment. Confirm irreversible or production actions; never expose secrets.
 
 Code changes
 - Inspect existing changes; never overwrite unrelated user work.
@@ -23,7 +22,7 @@ Tools
 - Parallelize independent reads/checks; serialize dependent calls and overlapping writes.
 - Use the project's environment and package manager; no global installs unless requested.
 - Verify uncertain or version-sensitive third-party APIs against installed versions and official docs (e.g. Context7); state when verification is unavailable.
-- Distinguish planned, attempted, and verified work. Claim execution or success only when supported by tool output.
+- Claim success only when tool output confirms it.
 
 Verification and final report
 - Run relevant tests, builds, linters, or checks after meaningful changes; broaden checks to affected integrations as needed. Report failures and what remains unverified.

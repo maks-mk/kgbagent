@@ -22,7 +22,7 @@ GUI сохраняет общий порог Session size в `.agent_state/confi
 | `ANTHROPIC_MAX_TOKENS` | `8192` | Максимум выходных токенов Anthropic |
 | `ANTHROPIC_THINKING_BUDGET` | `4096` | Fixed-budget thinking для Claude Haiku/Sonnet/Opus 4.5; для Opus 4.5 может использоваться вместе с effort `low`, `medium` или `high` |
 | `ANTHROPIC_REASONING` | — | Управление Anthropic reasoning: `off`/`none`, `adaptive` или effort. Для Opus 4.5 доступны `low`, `medium`, `high`; для Claude 4.6+ и 5 набор зависит от модели, включая `max`, а `xhigh` — только для поддерживаемых моделей 4.7+/5. Для effort runtime передаёт adaptive `thinking` и `output_config.effort`. При включённом thinking sampling-параметр `temperature` не передаётся. |
-| `LLM_API_MODE` | `chat` | Режим API для OpenAI-провайдера: `chat` (по умолчанию) или `responses`. `responses` явно задаёт `use_responses_api=True`; в режиме `chat` адаптер не передаёт этот флаг, поэтому SDK может выбрать endpoint по модели и payload |
+| `LLM_API_MODE` | `chat` | Режим API для OpenAI-провайдера: `chat` (по умолчанию) или `responses`. `responses` явно задаёт `use_responses_api=True` и `store=False` (см. [Responses-режим и stateless replay](#responses-режим-и-stateless-replay)); в режиме `chat` адаптер не передаёт этот флаг, поэтому SDK может выбрать endpoint по модели и payload |
 | `ENABLE_MODEL_REASONING` | `true` | Включает provider-side reasoning/thinking для поддерживаемых моделей |
 | `MODEL_REASONING_EFFORT` | `medium` | Усилие reasoning для OpenAI/OpenAI-compatible моделей (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) |
 | `GEMINI_THINKING_BUDGET` | `4096` | Thinking budget для `gemini-2.5*` / `gemini-3*`; старые Gemini-модели получают запрос без этого параметра |
@@ -31,6 +31,12 @@ GUI сохраняет общий порог Session size в `.agent_state/confi
 | `SHOW_MODEL_THOUGHTS` | `false` | Legacy-флаг отображения reasoning (runtime выставляет false) |
 
 Для модели `gpt-6-astra` OpenAI-адаптер не отправляет `temperature`, поскольку она использует фиксированный sampling.
+
+### Responses-режим и stateless replay
+
+В режиме `responses` адаптер явно задаёт `use_responses_api=True` и `store=False`: агент и так отправляет всю историю разговора заново на каждом ходу, поэтому серверное хранение избыточно. Stateless-запрос не привязывает блоки reasoning и вызовы функций к ресурсу, который их создал. Это важно для агрегаторов (например, `agentrouter.org`): при ротации API-ключей или перемаршрутизации запрос может попасть на другой backend OpenAI/Azure, и сервер отклонит чужой служебный item ID ошибкой `400 "The requested item was created under a different ... resource"`.
+
+Чтобы это не воспроизводилось, перед отправкой из `input` удаляются серверные `id` (reasoning/function_call/message items), если `store` не равен `true`. Содержимое блоков, `encrypted_content` и связка вызова инструмента с результатом (`call_id`) сохраняются; reasoning переносится через `include=["reasoning.encrypted_content"]`. Число удалённых ID видно в debug-событии `responses_item_ids_stripped`.
 
 ### Экономия входных токенов и prompt caching
 
@@ -89,6 +95,7 @@ TTL — стандартные 5 минут. Разовые вызовы сум�
 | `ENABLE_SHELL_TOOL` | Shell-выполнение команд |
 | `ENABLE_SEARCH_TOOLS` | Web search через Tavily |
 | `ENABLE_PROCESS_TOOLS` | Управление процессами |
+| `ENABLE_SKILLS_TOOL` | Регистрировать `read_skills` и добавлять блок `<available_skills>` в промпт (по умолчанию `true`) |
 | `ENABLE_APPROVALS` | Approval-паузы перед рискованными действиями |
 | `ALLOW_EXTERNAL_PROCESS_CONTROL` | Разрешить управление внешними процессами |
 | `TAVILY_API_KEY` | Ключ Tavily для web search и извлечения содержимого |
@@ -196,6 +203,7 @@ TTL — стандартные 5 минут. Разовые вызовы сум�
 | `LOG_FILE` | `logs/agent.log` | Файл лога |
 | `PROMPT_PATH` | `prompt.txt` | Путь к системному промпту |
 | `MCP_CONFIG_PATH` | `mcp.json` | Путь к конфигу MCP |
+| `SKILLS_DIR` | `skills` | Директория скиллов (папки с `SKILL.md`); относительный путь резолвится от корня установки агента (рядом с exe в frozen-сборке), абсолютный — используется как есть. Папка регистрируется как read-only корень для `read_file`/`list_files`, чтобы вспомогательные файлы скилла читались даже когда workspace — другой проект |
 
 ---
 
