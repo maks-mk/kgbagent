@@ -8,7 +8,7 @@ from typing import List
 from langchain_core.messages import RemoveMessage
 
 from core.state import AgentState, OpenToolIssue, RecoveryState, transcript_message_delta
-from core.providers.factory import _normalize_tool_for_binding
+from core.providers.factory import _normalize_tool_for_binding, summary_reasoning_kwargs
 from core.summarize_policy import (
     active_turn_anchor_index,
     choose_summary_boundary,
@@ -89,7 +89,8 @@ class SummarizeMixin:
                 constants.SUMMARY_FOLD_PROMPT_TEMPLATE.format(
                     summary=summary,
                     max_words=self._memory_word_budget(),
-                )
+                ),
+                **summary_reasoning_kwargs(self.config),
             )
             folded = stringify_content(getattr(res, "content", res)).strip()
         except Exception as exc:
@@ -244,7 +245,7 @@ class SummarizeMixin:
 
         summary_started = time.perf_counter()
         try:
-            res = await self.llm.ainvoke(prompt)
+            res = await self.llm.ainvoke(prompt, **summary_reasoning_kwargs(self.config))
             summary_duration_ms = round((time.perf_counter() - summary_started) * 1000, 2)
 
             updated_summary = stringify_content(getattr(res, "content", res)).strip()

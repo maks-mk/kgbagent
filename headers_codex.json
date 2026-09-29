@@ -1,0 +1,13 @@
+{
+  "User-Agent": "codex_cli_rs/0.144.1 (Windows 10.0.26100; x86_64) WindowsTerminal",
+  "x-stainless-lang": "rust",
+  "x-stainless-package-version": "0.144.1",
+  "x-stainless-os": "Windows",
+  "x-stainless-arch": "x64",
+  "x-stainless-runtime": "rust",
+  "x-stainless-runtime-version": "1.0.0",
+  "accept-language": "*",
+  "sec-fetch-mode": "cors",
+  "Originator": "codex_cli_rs",
+  "Version": "0.144.1"
+}

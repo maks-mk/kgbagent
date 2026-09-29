@@ -4,7 +4,7 @@
 
 Текущий registry использует `schema_version: 2`. Matching выполняется по hostname из `OPENAI_BASE_URL`, а внутри провайдера конкретное правило дополнительно выбирается по имени модели.
 
-Registry применяется только к профилям с `provider: openai`. Gemini настраивается отдельно через Google SDK-поля `thinking_budget`, `thinking_level` и `include_thoughts`, а Anthropic — через свои thinking-параметры.
+Registry применяется только к профилям с `provider: openai`. Gemini настраивается отдельно через Google SDK-поля `thinking_budget`, `thinking_level` и `include_thoughts`, а Anthropic — через свои thinking-параметры. Все три провайдера поддерживают автоматическое снижение уровня reasoning до минимального при автосуммаризации памяти.
 
 > Кастомные HTTP-заголовки для OpenAI-compatible запросов (эмуляция QwenCode и др.) настраиваются отдельно через `headers.json` — см. раздел «HTTP-заголовки» в [`CONFIGURATION.md`](./CONFIGURATION.md).
 

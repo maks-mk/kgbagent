@@ -20,7 +20,9 @@ from core.api_key_rotation import RotatingChatModel
 from core.config import AgentConfig
 from core.providers.anthropic import create_anthropic_chat_model
 from core.providers.gemini import create_gemini_chat_model
-from core.providers.openai_reasoning import create_openai_chat_model
+from core.provider_registry import ProviderRegistry, RegistryValidationError
+from core.providers.openai_reasoning import create_openai_chat_model, openai_reasoning_kwargs
+from core.reasoning_controls import reasoning_options_for_profile
 
 logger = logging.getLogger("agent")
 
@@ -51,6 +53,45 @@ def create_runtime_llm(config: AgentConfig) -> BaseChatModel | RotatingChatModel
         profile_store_path=config.model_profile_config_path,
         llm_factory=create_llm,
     )
+
+
+def summary_reasoning_kwargs(config: AgentConfig) -> dict[str, Any]:
+    """Lower reasoning for one summary call; leave toggles/budgets and config intact."""
+    if not config.enable_model_reasoning:
+        return {}
+    if config.provider == "anthropic" and config.anthropic_reasoning in {"off", "none"}:
+        return {}
+
+    # Registry order is not a ranking, and aliases may resolve to the same level.
+    effort_order = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+    if config.provider == "openai":
+        try:
+            registry = ProviderRegistry.from_path(config.provider_registry_path)
+        except RegistryValidationError:
+            logger.warning("Cannot resolve summary reasoning levels; keeping model settings.")
+            return {}
+        rule = registry.match(config.openai_base_url, config.openai_model)
+        if not rule or rule.get("mode") == "toggle":
+            return {}
+        inputs_by_level = {str(value).strip().lower(): key for key, value in rule.get("values", {}).items()}
+        effort = next((inputs_by_level[level] for level in effort_order if level in inputs_by_level), None)
+        if effort is None:
+            return {}
+        return openai_reasoning_kwargs({}, rule, effort, api_mode=config.llm_api_mode)
+
+    options = reasoning_options_for_profile({
+        "provider": config.provider,
+        "model": getattr(config, f"{config.provider}_model", ""),
+    })
+    levels = {option["config"].get("effort") for option in options}
+    effort = next((level for level in effort_order if level in levels), None)
+    if effort is None:
+        return {}
+    if config.provider == "gemini":
+        return {"thinking_level": effort}
+    if config.provider == "anthropic":
+        return {"effort": effort}
+    return {}
 
 
 def _ensure_required_arrays(schema: Any) -> None:

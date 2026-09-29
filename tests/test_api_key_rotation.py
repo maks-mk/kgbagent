@@ -130,6 +130,27 @@ class ApiKeyRotationTests(unittest.TestCase):
         self.assertEqual(calls, ["sk-1", "sk-2"])
         self.assertEqual(store.load()["profiles"][0]["api_key_index"], 1)
 
+    def test_call_overrides_survive_key_rotation_without_affecting_next_call(self):
+        profile_path = self._tmpdir / "config.json"
+        self._store(profile_path)
+        first = mock.Mock()
+        first.ainvoke = mock.AsyncMock(side_effect=_FakeProviderError("429 Too Many Requests", status_code=429))
+        second = mock.Mock()
+        second.ainvoke = mock.AsyncMock(return_value=_FakeResponse("ok"))
+        models = {"sk-seed": first, "sk-1": first, "sk-2": second}
+        model = RotatingChatModel(
+            config=self._config(profile_path),
+            profile_id="gpt-4o",
+            profile_store_path=profile_path,
+            llm_factory=lambda config, *, api_key_override=None: models[api_key_override],
+        )
+
+        asyncio.run(model.ainvoke("summary", reasoning_effort="low"))
+        first.ainvoke.assert_awaited_once_with("summary", reasoning_effort="low")
+        second.ainvoke.assert_awaited_once_with("summary", reasoning_effort="low")
+        asyncio.run(model.ainvoke("regular request"))
+        second.ainvoke.assert_awaited_with("regular request")
+
     def test_rotating_model_rotates_on_auth_error_without_marking_invalid(self):
         profile_path = self._tmpdir / "config.json"
         store = self._store(profile_path)

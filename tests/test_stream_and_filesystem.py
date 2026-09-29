@@ -808,6 +808,43 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertIn("run_finished", event_types)
         self.assertLess(event_types.index("tool_finished"), event_types.index("run_finished"))
 
+    def test_stream_processor_does_not_finalize_request_user_input_as_interrupted(self):
+        events = []
+        processor = StreamProcessor(events.append)
+
+        # Resumed run: the tools node re-announces the batch, then the answered
+        # request_user_input returns its result (suppressed; no tool card).
+        processor._handle_custom(
+            {
+                "type": "tool_batch_started",
+                "tool_calls": [
+                    {
+                        "id": "call-req",
+                        "name": "request_user_input",
+                        "args": {"question": "Continue?", "options": ["yes", "no"]},
+                    }
+                ],
+            }
+        )
+        processor._handle_custom(
+            {
+                "type": "tool_result",
+                "message": {
+                    "content": "yes",
+                    "tool_call_id": "call-req",
+                    "name": "request_user_input",
+                    "additional_kwargs": {},
+                    "status": "success",
+                },
+            }
+        )
+
+        processor._emit_interrupted_tool_results("incomplete")
+
+        self.assertEqual([event for event in events if event.type == "tool_started"], [])
+        self.assertEqual([event.payload for event in events if event.type == "tool_finished"], [])
+        self.assertEqual(processor.tool_buffer, {})
+
     def test_stream_processor_reads_token_usage_from_update_payload(self):
         processor = StreamProcessor()
         processor._handle_updates({"agent": {"token_usage": {"prompt_tokens": 321, "completion_tokens": 8}}})

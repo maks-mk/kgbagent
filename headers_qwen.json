@@ -1,0 +1,11 @@
+{
+  "User-Agent": "QwenCode/0.12.6 (win32; x64)",
+  "x-stainless-lang": "js",
+  "x-stainless-package-version": "5.11.0",
+  "x-stainless-os": "Windows",
+  "x-stainless-arch": "x64",
+  "x-stainless-runtime": "node",
+  "x-stainless-runtime-version": "v24.3.0",
+  "accept-language": "*",
+  "sec-fetch-mode": "cors"
+}

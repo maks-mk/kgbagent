@@ -1755,8 +1755,25 @@ class StreamProcessor:
             return True
         return False
 
+    def _discard_request_user_input_state(self) -> None:
+        """Drop buffered request_user_input calls without finalizing them.
+
+        request_user_input never renders a tool card (the dedicated user-choice
+        dialog does), so a buffered call and its suppressed result must not be
+        finalized as an interrupted tool result. Otherwise a run that resumed
+        and received the user's answer would still surface a phantom
+        "ERROR[INTERRUPTED]" card at the end of the stream.
+        """
+        for tool_id, tool_info in list(self.tool_buffer.items()):
+            if self._normalize_tool_name(tool_info.get("name")) != "request_user_input":
+                continue
+            self.tool_buffer.pop(tool_id, None)
+            self.tool_start_times.pop(tool_id, None)
+            self.printed_tool_ids.discard(tool_id)
+
     def _emit_interrupted_tool_results(self, reason: str) -> list[Dict[str, Any]]:
         interrupted_payloads: list[Dict[str, Any]] = []
+        self._discard_request_user_input_state()
         active_tool_ids = list(self.tool_start_times.keys()) or list(self.tool_buffer.keys())
         for tool_id in active_tool_ids:
             tool_info = self.tool_buffer.get(tool_id, {})

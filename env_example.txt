@@ -44,6 +44,8 @@ GEMINI_THINKING_BUDGET=4096
 # OPENAI_MODEL=gpt-4o
 # OPENAI_BASE_URL=https://api.openai.com/v1
 # HTTP-заголовки для эмуляции QwenCode или кастомных заголовков: файл headers.json в корне проекта.
+# Имя/путь файла можно переопределить (относительно корня проекта или .exe, либо абсолютный путь).
+# HEADERS_FILE=headers.json
 # API mode: chat (/v1/chat/completions) or responses (/v1/responses).
 # "chat" is the default and works with all OpenAI-compatible providers.
 # "responses" enables the OpenAI Responses API (gpt-5, o-series reasoning, etc.).

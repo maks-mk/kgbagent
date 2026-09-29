@@ -822,6 +822,25 @@ def _openai_uses_fixed_sampling(model_name: str | None) -> bool:
     return normalized in _FIXED_SAMPLING_OPENAI_MODELS
 
 
+def openai_reasoning_kwargs(
+    kwargs: dict[str, Any],
+    provider_config: dict[str, Any] | None,
+    effort: str,
+    *,
+    enabled: bool = True,
+    api_mode: str = "chat",
+) -> dict[str, Any]:
+    """Apply registry reasoning parameters without changing the selected API mode."""
+    build_reasoning_kwargs(kwargs, provider_config, effort, enabled=enabled)
+    # A top-level reasoning dict makes LangChain auto-select Responses. In chat
+    # mode use reasoning_effort instead and omit Responses-only reasoning.summary.
+    if api_mode != "responses" and isinstance(kwargs.get("reasoning"), dict):
+        reasoning = kwargs.pop("reasoning")
+        if reasoning.get("effort") and "reasoning_effort" not in kwargs:
+            kwargs["reasoning_effort"] = str(reasoning["effort"])
+    return kwargs
+
+
 def create_openai_chat_model(config: AgentConfig, *, api_key_override: str | None = None) -> BaseChatModel:
     """Build an OpenAI-compatible chat model with reasoning-debug instrumentation."""
     # Lazy import to avoid loading both providers on startup.
@@ -885,11 +904,12 @@ def create_openai_chat_model(config: AgentConfig, *, api_key_override: str | Non
             normalized_reasoning_effort(getattr(config, "model_reasoning_effort", "medium")),
             reasoning_enabled,
         )
-        build_reasoning_kwargs(
+        openai_reasoning_kwargs(
             openai_kwargs,
             provider_config,
             normalized_reasoning_effort(getattr(config, "model_reasoning_effort", "medium")),
             enabled=reasoning_enabled,
+            api_mode=api_mode,
         )
 
         # Stateless Responses requests (``store=False``) must carry reasoning
@@ -901,16 +921,6 @@ def create_openai_chat_model(config: AgentConfig, *, api_key_override: str | Non
                 include.append("reasoning.encrypted_content")
             openai_kwargs["include"] = include
 
-        # In chat mode, a top-level "reasoning" dict (set by providers whose rule
-        # param is "reasoning.effort") would cause LangChain to auto-switch to the
-        # Responses API. Flatten it to the chat-completions "reasoning_effort" string
-        # so the explicit API mode is respected.
-        if api_mode != "responses" and isinstance(openai_kwargs.get("reasoning"), dict):
-            reasoning_dict = openai_kwargs.pop("reasoning")
-            effort = reasoning_dict.get("effort")
-            if effort and "reasoning_effort" not in openai_kwargs:
-                openai_kwargs["reasoning_effort"] = str(effort)
-            # reasoning.summary is Responses-API-only; drop it in chat mode.
         reasoning_logger.debug(
             "openai reasoning kwargs applied model=%s provider_id=%s param=%s has_reasoning_key=%s has_extra_body=%s reasoning_effort=%s extra_body_keys=%s applied_keys=%s",
             config.openai_model,

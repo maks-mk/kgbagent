@@ -23,7 +23,7 @@ class FakeLLM:
         self.responses = list(responses)
         self.invocations = []
 
-    async def ainvoke(self, context):
+    async def ainvoke(self, context, **kwargs):
         self.invocations.append(context)
         if not self.responses:
             return AIMessage(content="Готово.")
@@ -34,14 +34,14 @@ class FakeLLM:
 
 
 class ProviderSafeFakeLLM(FakeLLM):
-    async def ainvoke(self, context):
+    async def ainvoke(self, context, **kwargs):
         last_visible = next(
             (message for message in reversed(context) if not isinstance(message, SystemMessage)),
             None,
         )
         if isinstance(last_visible, AIMessage):
             raise AssertionError("provider-unsafe assistant-last context")
-        return await super().ainvoke(context)
+        return await super().ainvoke(context, **kwargs)
 
 
 class FakeTool:

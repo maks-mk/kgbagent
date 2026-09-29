@@ -502,6 +502,10 @@ class LlmApiModeTests(unittest.TestCase):
 
     def _make_config(self, api_mode: str | None) -> "AgentConfig":
         import os
+        import tempfile
+        from pathlib import Path
+
+        import core.config as config_module
         from core.config import AgentConfig
 
         env = {
@@ -513,14 +517,18 @@ class LlmApiModeTests(unittest.TestCase):
         }
         if api_mode is not None:
             env["LLM_API_MODE"] = api_mode
-        with mock.patch.dict(os.environ, env, clear=False):
-            # Remove LLM_API_MODE if explicitly None to test default
-            if api_mode is None:
-                os.environ.pop("LLM_API_MODE", None)
-            # _env_file=None keeps the test hermetic: without it the local
-            # developer .env (e.g. LLM_API_MODE=responses) leaks in and
-            # breaks the "default is chat" expectation.
-            return AgentConfig(_env_file=None)
+        # Hermetic config: _env_file=None drops the developer .env, and
+        # pointing BASE_DIR at an empty temp dir makes the JsonConfigSettingsSource
+        # look for a non-existent .agent_state/config.json. Without this the local
+        # UI-saved config.json (e.g. llm_api_mode=responses) leaks in and breaks
+        # the "default is chat" expectation.
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with mock.patch.object(config_module, "BASE_DIR", Path(tmp_dir)):
+                with mock.patch.dict(os.environ, env, clear=False):
+                    # Remove LLM_API_MODE if explicitly None to test the default
+                    if api_mode is None:
+                        os.environ.pop("LLM_API_MODE", None)
+                    return AgentConfig(_env_file=None)
 
     def test_default_is_chat(self):
         cfg = self._make_config(None)
