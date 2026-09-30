@@ -142,18 +142,22 @@ class ContextBuilder:
                     yield str(block.get("id") or "")
 
     def _message_is_responses_native(self, message: BaseMessage) -> bool:
-        """True when an assistant message originated from an OpenAI Responses call.
+        """True when an assistant message can replay native state to the active model.
 
-        Only such messages carry item/call IDs the Responses API accepts when the
-        history is replayed. Messages produced by other providers (e.g.
-        Anthropic/Bedrock ``toolu_...`` IDs) must be flattened and their IDs
-        remapped; otherwise the Responses endpoint rejects them with
-        ``Invalid 'input[N].id'`` after the active model is switched mid-session.
+        OpenAI-compatible gateways tag different models as ``openai`` too. Their
+        reasoning and item IDs are not interchangeable: replaying DeepSeek state
+        to another Responses model can fail with ``Unknown parameter: input[N].status``
+        or invalid encrypted content. Known foreign-model messages must use the
+        same text/tool-call normalization as messages from other providers.
         """
         metadata = getattr(message, "response_metadata", None)
         provider = ""
         if isinstance(metadata, dict):
             provider = str(metadata.get("model_provider") or "").strip().lower()
+            source_model = str(metadata.get("model_name") or metadata.get("model") or "").strip().lower()
+            target_model = str(self.config.openai_model or "").strip().lower()
+            if source_model and source_model != target_model:
+                return False
         if provider:
             return provider == "openai"
         # No provider tag: infer origin from content-block / tool-call ID shapes.
@@ -419,13 +423,13 @@ class ContextBuilder:
         ``content_block["reasoning"]``).
 
         Responses reasoning (including opaque ``encrypted_content``) is required
-        when replaying tool turns to a Responses endpoint. Preserve both modern
-        content blocks and the legacy ``additional_kwargs['reasoning']`` form in
-        that mode; remove them for other target APIs.
+        when replaying tool turns to the same Responses model. Preserve both modern
+        content blocks and the legacy ``additional_kwargs['reasoning']`` form only
+        for compatible history; remove them for other models or target APIs.
 
         Returns ``(message, stripped_block_count, stripped_kwarg_count)``.
         """
-        if self._uses_openai_responses_api():
+        if self._uses_openai_responses_api() and self._message_is_responses_native(message):
             return message, 0, 0
 
         block_count = 0

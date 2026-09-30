@@ -1407,6 +1407,76 @@ class ResponsesThinkingHistoryTests(unittest.TestCase):
                     self.assertEqual(calls[0]["call_id"], call_id)
                     self.assertEqual(outputs[0]["call_id"], call_id)
 
+    def test_model_switch_drops_foreign_responses_state_but_keeps_tool_history(self):
+        from copy import deepcopy
+        from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
+        from langchain_openai import ChatOpenAI
+
+        reasoning = {
+            "type": "reasoning", "id": "rs_deepseek", "summary": [],
+            "status": "in_progress", "encrypted_content": "opaque-deepseek-state",
+            "content": [{"type": "reasoning_text", "text": "private provider reasoning"}],
+        }
+        calls = [
+            {"type": "function_call", "id": f"fc_deepseek_{i}", "call_id": f"call_deepseek_{i}",
+             "name": "get_weather", "arguments": "{}", "status": "completed"}
+            for i in range(2)
+        ]
+        text = {"type": "text", "id": "msg_deepseek", "text": "Checking weather."}
+        model = _build_reasoning_debug_chat_openai(ChatOpenAI)(
+            model="gpt-6-astra", api_key="test", use_responses_api=True, store=False,
+        )
+        builder = self._builder(OPENAI_MODEL="gpt-6-astra")
+        for message_cls in (AIMessage, AIMessageChunk):
+            for legacy in (False, True):
+                for model_key in ("model_name", "model"):
+                    with self.subTest(message_cls=message_cls.__name__, legacy=legacy, model_key=model_key):
+                        history = [
+                            SystemMessage(content="Assistant"), HumanMessage(content="Weather?"),
+                            message_cls(
+                                content=[text] if legacy else [reasoning, *calls, text],
+                                additional_kwargs={"reasoning": reasoning} if legacy else {},
+                                response_metadata={"model_provider": "openai", model_key: "deepseek-v4-flash"},
+                                tool_calls=[{"name": "get_weather", "args": {}, "id": call["call_id"]}
+                                            for call in calls],
+                            ),
+                            *[ToolMessage(content="24C", tool_call_id=call["call_id"]) for call in calls],
+                        ]
+                        original = deepcopy(history)
+                        sanitized = builder.sanitize_messages(history)
+                        self.assertNotIn("reasoning", sanitized[2].additional_kwargs)
+                        items = model._get_request_payload(sanitized)["input"]
+                        self.assertFalse(any(item.get("type") == "reasoning" for item in items))
+                        self.assertFalse(any("status" in item or "id" in item for item in items))
+                        self.assertEqual(sanitized[2].content, "Checking weather.")
+                        self.assertIsNone(builder.detect_tool_history_mismatch(sanitized))
+                        serialized_calls = [item for item in items if item.get("type") == "function_call"]
+                        outputs = [item for item in items if item.get("type") == "function_call_output"]
+                        self.assertEqual(len(serialized_calls), 2)
+                        self.assertEqual([item["call_id"] for item in serialized_calls],
+                                         [item["call_id"] for item in outputs])
+                        self.assertEqual([item["output"] for item in outputs], ["24C", "24C"])
+                        self.assertEqual(history, original)
+                        # Switching back reuses the untouched native reasoning/tool state.
+                        restored = self._builder().sanitize_messages(history)
+                        restored_reasoning = (restored[2].additional_kwargs["reasoning"] if legacy
+                                              else restored[2].content[0])
+                        self.assertEqual(restored_reasoning, reasoning)
+
+    def test_same_model_responses_state_is_preserved_with_origin_metadata(self):
+        from langchain_core.messages import AIMessage
+
+        reasoning = {"type": "reasoning", "id": "rs_test", "summary": [],
+                     "status": "in_progress", "encrypted_content": "opaque-test-reasoning"}
+        for model_name in ("deepseek-v4-flash", "gpt-6-astra"):
+            for model_key in ("model_name", "model"):
+                with self.subTest(model_name=model_name, model_key=model_key):
+                    message = AIMessage(
+                        content=[reasoning, {"type": "text", "text": "Answer"}],
+                        response_metadata={"model_provider": "openai", model_key: model_name},
+                    )
+                    self.assertEqual(self._builder(OPENAI_MODEL=model_name).sanitize_messages([message]), [message])
+
     def test_stateless_responses_ids_are_stripped_unless_store_keeps_items(self):
         # Item IDs are bound to the OpenAI/Azure resource that created them, so a
         # stateless replay after key rotation or a gateway reroute is rejected with

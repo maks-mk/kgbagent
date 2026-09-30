@@ -668,9 +668,19 @@ class AgentRunWorker(QObject):
             is_default_title = current_title in {"New Chat", ""} or current_title.startswith("New Chat [")
             if is_default_title:
                 try:
-                    from core.providers.factory import create_runtime_llm
+                    from core.providers.factory import create_runtime_llm, summary_reasoning_kwargs
                     title_llm = create_runtime_llm(self.config)
-                    generated = await generate_chat_title_with_llm(title_llm, request_payload["text"], logger)
+                    # Title generation must not leak model reasoning into the
+                    # title, so ask the provider for its lowest declared
+                    # reasoning level for this one call.
+                    try:
+                        title_kwargs = summary_reasoning_kwargs(self.config)
+                    except Exception:
+                        logger.warning("chat_title_reasoning_kwargs_failed", exc_info=True)
+                        title_kwargs = {}
+                    generated = await generate_chat_title_with_llm(
+                        title_llm, request_payload["text"], logger, extra_kwargs=title_kwargs
+                    )
                     if generated:
                         self.current_session.title = generated
                         self.store.save_active_session(self.current_session, touch=False, set_active=True)

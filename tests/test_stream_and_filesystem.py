@@ -1712,6 +1712,105 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertNotIn("thought_markdown", deltas[0])
         self.assertNotIn("has_thought", deltas[0])
 
+    def test_stream_processor_hides_inline_think_block_split_across_deltas(self):
+        """A thought block spread over several deltas must never reach the UI.
+
+        Providers stream ``<think>`` blocks token by token, so the open tag, the
+        body and the close tag arrive in different chunks. Only the answer that
+        follows the close tag may be rendered, while the Thinking status stays
+        active.
+        """
+        events = []
+        processor = StreamProcessor(events.append)
+        metadata = {"langgraph_node": "agent"}
+
+        for chunk in ("<think>Внутренний план. ", "Продолжаю размышлять. ", "</think>Готово."):
+            processor._handle_messages((AIMessageChunk(content=chunk), metadata))
+
+        deltas = [event.payload for event in events if event.type == "assistant_delta"]
+        statuses = [event.payload["label"] for event in events if event.type == "status_changed"]
+        emitted = "".join(delta.get("text", "") for delta in deltas)
+        rendered = "".join(delta.get("full_text", "") for delta in deltas)
+        self.assertNotIn("Внутренний", emitted)
+        self.assertNotIn("размышлять", emitted)
+        self.assertNotIn("Внутренний", rendered)
+        self.assertNotIn("размышлять", rendered)
+        self.assertEqual(processor.full_text, "Готово.")
+        self.assertIn("Thinking...", statuses)
+
+    def test_stream_processor_hides_inline_think_block_with_split_tag(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        metadata = {"langgraph_node": "agent"}
+
+        for chunk in ("<thi", "nk>Секретная подготовка ", "к ответу. ", "</thi", "nk>Ответ"):
+            processor._handle_messages((AIMessageChunk(content=chunk), metadata))
+
+        deltas = [event.payload for event in events if event.type == "assistant_delta"]
+        statuses = [event.payload["label"] for event in events if event.type == "status_changed"]
+        emitted = "".join(delta.get("text", "") for delta in deltas)
+        self.assertNotIn("Секретная", emitted)
+        self.assertNotIn("<thi", emitted)
+        self.assertEqual(processor.full_text, "Ответ")
+        self.assertIn("Thinking...", statuses)
+
+    def test_stream_processor_hides_unclosed_inline_think_block_at_stream_end(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        metadata = {"langgraph_node": "agent"}
+
+        for chunk in ("<think>Черновик рассуждения ", "без закрывающего тега"):
+            processor._handle_messages((AIMessageChunk(content=chunk), metadata))
+
+        deltas = [event.payload for event in events if event.type == "assistant_delta"]
+        self.assertEqual(deltas, [])
+        self.assertEqual(processor.full_text, "")
+
+    def test_stream_processor_keeps_thinking_status_for_hidden_inline_thought_chunks(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        metadata = {"langgraph_node": "agent"}
+
+        processor._handle_messages((AIMessageChunk(content="<think>Сверяю план. "), metadata))
+        processor._handle_messages((AIMessageChunk(content="Ещё размышляю."), metadata))
+
+        statuses = [event.payload["label"] for event in events if event.type == "status_changed"]
+        deltas = [event.payload for event in events if event.type == "assistant_delta"]
+        self.assertTrue(statuses)
+        self.assertEqual(statuses[-1], "Thinking...")
+        self.assertNotIn("Working...", statuses)
+        self.assertEqual(deltas, [])
+
+    def test_stream_processor_preserves_plain_less_than_sign_between_deltas(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        metadata = {"langgraph_node": "agent"}
+
+        processor._handle_messages((AIMessageChunk(content="Если значение <"), metadata))
+        processor._handle_messages((AIMessageChunk(content="10, то идём дальше."), metadata))
+
+        self.assertEqual(processor.full_text, "Если значение <10, то идём дальше.")
+        statuses = [event.payload["label"] for event in events if event.type == "status_changed"]
+        self.assertNotIn("Thinking...", statuses)
+
+    def test_stream_processor_ignores_reasoning_text_block(self):
+        events = []
+        processor = StreamProcessor(events.append)
+
+        processor._handle_agent_message(
+            AIMessage(
+                content=[
+                    {"type": "reasoning_text", "text": "Скрытый план."},
+                    {"type": "text", "text": "Ответ"},
+                ]
+            )
+        )
+
+        deltas = [event.payload for event in events if event.type == "assistant_delta"]
+        self.assertEqual(len(deltas), 1)
+        self.assertEqual(deltas[0]["full_text"], "Ответ")
+        self.assertNotIn("Скрытый", deltas[0]["full_text"])
+
     def test_stream_processor_suppresses_chunked_textual_tool_call_marker(self):
         events = []
         processor = StreamProcessor(events.append)

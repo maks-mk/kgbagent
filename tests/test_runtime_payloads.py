@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
@@ -165,6 +166,143 @@ class RuntimePayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(validate_chat_title("the"))
         self.assertIsNone(validate_chat_title(""))
         self.assertIsNone(validate_chat_title("This is a test title"))
+
+    def test_validate_chat_title_rejects_leaked_reasoning_prefixes(self):
+        # DeepSeek-compatible gateways can return reasoning as plain text, so the
+        # first words of the leaked plan look like a title.
+        self.assertIsNone(validate_chat_title("We need answer only with a short title"))
+        self.assertIsNone(validate_chat_title("We need answer title for the chat"))
+        self.assertIsNone(validate_chat_title("We should keep it short"))
+        self.assertIsNone(validate_chat_title("I need to produce a title"))
+        self.assertIsNone(validate_chat_title("Let me think about the title"))
+        self.assertIsNone(validate_chat_title("Only answer with the title"))
+        self.assertIsNone(validate_chat_title("Нужно придумать короткий заголовок"))
+        self.assertIsNone(validate_chat_title("Пользователь просит заголовок чата"))
+        # Topical titles must survive the filter.
+        self.assertEqual(validate_chat_title("Настройка Apache на Windows"), "Настройка Apache на Windows")
+        self.assertEqual(validate_chat_title("OnlyOffice документация сервера"), "OnlyOffice документация сервера")
+        self.assertEqual(validate_chat_title("Weneedness анализ термина"), "Weneedness анализ термина")
+
+    def test_validate_chat_title_uses_visible_text_blocks(self):
+        hidden_blocks = [
+            {"type": "reasoning", "text": "Внутренний план"},
+            {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "Внутренний план"}]},
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Внутренний план"}]},
+            {"type": "reasoning.text", "text": "Внутренний план"},
+            {"type": "reasoning_text", "text": "Внутренний план"},
+            {"type": "redacted_thinking", "data": "opaque"},
+            {"type": "thinking", "thinking": "Внутренний план", "signature": "opaque"},
+            {"type": "analysis", "text": "Внутренний план"},
+            {"type": "text", "text": "Внутренний план", "thought": True},
+        ]
+        for hidden in hidden_blocks:
+            with self.subTest(block_type=hidden["type"], fields=list(hidden)):
+                self.assertEqual(
+                    validate_chat_title([
+                        hidden,
+                        {"type": "text", "text": "Возможности "},
+                        {"type": "output_text", "text": "ассистента"},
+                    ]),
+                    "Возможности ассистента",
+                )
+                self.assertIsNone(validate_chat_title([hidden]))
+
+    def test_validate_chat_title_strips_think_tags_across_text_blocks(self):
+        content = [
+            {"type": "text", "text": "<think>Внутренний план. "},
+            {"type": "text", "text": "Продолжение плана."},
+            {"type": "text", "text": "</think>Возможности ассистента"},
+        ]
+        self.assertEqual(validate_chat_title(content), "Возможности ассистента")
+        self.assertIsNone(validate_chat_title(content[:2]))
+        payload = build_transcript_payload({"messages": [
+            HumanMessage(content="Что ты умеешь?"), AIMessage(content=content),
+        ]})
+        self.assertEqual(payload["turns"][0]["blocks"][0]["markdown"], "Возможности ассистента")
+
+    def test_validate_chat_title_rejects_non_answer_blocks(self):
+        for content in (
+            [{"type": "refusal", "refusal": "Невозможно выполнить запрос"}],
+            [{"type": "reasoning", "encrypted_content": "opaque", "summary": []}],
+            [{"type": "image", "url": "https://example.test/image.png"}],
+        ):
+            with self.subTest(content=content):
+                self.assertIsNone(validate_chat_title(content))
+
+    def test_validate_chat_title_handles_nested_and_tuple_content(self):
+        self.assertEqual(
+            validate_chat_title({"content": [
+                {"type": "reasoning", "text": "Внутренний план"},
+                {"type": "text", "text": "Настройка Apache"},
+            ]}),
+            "Настройка Apache",
+        )
+        self.assertEqual(
+            validate_chat_title(({"type": "text", "text": "Настройка Apache"},)),
+            "Настройка Apache",
+        )
+
+    async def test_generate_chat_title_with_llm_ignores_structured_reasoning(self):
+        llm = SimpleNamespace(ainvoke=AsyncMock(return_value=AIMessage(content=[
+            {"type": "reasoning", "content": [
+                {"type": "reasoning_text", "text": "We need answer only title."},
+            ]},
+            {"type": "text", "text": "Возможности ассистента"},
+        ])))
+        title = await generate_chat_title_with_llm(llm, "Какие у тебя инструменты?")
+        self.assertEqual(title, "Возможности ассистента")
+        llm.ainvoke.assert_awaited_once()
+
+    async def test_generate_chat_title_with_llm_retries_with_format_feedback(self):
+        llm = SimpleNamespace(ainvoke=AsyncMock(side_effect=[
+            AIMessage(content="We need answer only title. " + "Internal plan. " * 20),
+            AIMessage(content="Возможности ассистента"),
+        ]))
+        logger = Mock()
+        with patch("ui.runtime_payloads.asyncio.sleep", new_callable=AsyncMock):
+            title = await generate_chat_title_with_llm(llm, "Какие у тебя инструменты?", logger)
+        self.assertEqual(title, "Возможности ассистента")
+        prompts = [call.args[0] for call in llm.ainvoke.await_args_list]
+        self.assertNotEqual(prompts[0], prompts[1])
+        self.assertIn("Какие у тебя инструменты?", prompts[1])
+        self.assertNotIn("Internal plan", prompts[1])
+        warning = logger.warning.call_args
+        diagnostic = warning.args[0] % warning.args[1:]
+        self.assertIn("content_type=str", diagnostic)
+        self.assertIn("preview_truncated=True", diagnostic)
+
+    async def test_generate_chat_title_with_llm_logs_empty_visible_response(self):
+        llm = SimpleNamespace(ainvoke=AsyncMock(return_value=AIMessage(content=[
+            {"type": "reasoning", "text": "Внутренний план", "encrypted_content": "opaque"},
+        ])))
+        logger = Mock()
+        with patch("ui.runtime_payloads.asyncio.sleep", new_callable=AsyncMock):
+            title = await generate_chat_title_with_llm(llm, "Какие у тебя инструменты?", logger)
+        self.assertIsNone(title)
+        self.assertEqual(llm.ainvoke.await_count, 3)
+        warning = logger.warning.call_args
+        diagnostic = warning.args[0] % warning.args[1:]
+        self.assertIn("block_types=['reasoning']", diagnostic)
+        self.assertIn("visible_chars=0", diagnostic)
+        self.assertNotIn("Внутренний план", diagnostic)
+        self.assertNotIn("opaque", diagnostic)
+
+    async def test_generate_chat_title_with_llm_passes_extra_kwargs(self):
+        captured = {}
+
+        class KwargsLLM:
+            async def ainvoke(self, _prompt, **kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(content="Настройка Apache")
+
+        title = await generate_chat_title_with_llm(
+            KwargsLLM(),
+            "Помоги настроить Apache",
+            logger=None,
+            extra_kwargs={"reasoning_effort": "low"},
+        )
+        self.assertEqual(title, "Настройка Apache")
+        self.assertEqual(captured, {"reasoning_effort": "low"})
 
     async def test_generate_chat_title_with_llm_retries_until_valid_title(self):
         class FlakyLLM:

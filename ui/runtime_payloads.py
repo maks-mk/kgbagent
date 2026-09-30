@@ -36,9 +36,10 @@ from ui.visibility import get_internal_ui_notice, is_hidden_internal_message
 
 APPROVAL_MODE_PROMPT = "prompt"
 APPROVAL_MODE_ALWAYS = "always"
-_INLINE_THOUGHT_BLOCK_RE = re.compile(r"<(think|thought)\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
-_INLINE_THOUGHT_CLOSE_PREFIX_RE = re.compile(r"^.*?</(think|thought)>\s*", re.IGNORECASE | re.DOTALL)
-_INLINE_THOUGHT_UNCLOSED_RE = re.compile(r"<(think|thought)\b[^>]*>.*$", re.IGNORECASE | re.DOTALL)
+_THINK_TAG_PATTERN = r"(think|thought|thinking)"
+_INLINE_THOUGHT_BLOCK_RE = re.compile(rf"<{_THINK_TAG_PATTERN}\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
+_INLINE_THOUGHT_CLOSE_PREFIX_RE = re.compile(rf"^.*?</{_THINK_TAG_PATTERN}\s*>\s*", re.IGNORECASE | re.DOTALL)
+_INLINE_THOUGHT_UNCLOSED_RE = re.compile(rf"<{_THINK_TAG_PATTERN}\b[^>]*>.*$", re.IGNORECASE | re.DOTALL)
 CHAT_TITLE_MAX_LENGTH = 50
 CHAT_TITLE_FALLBACK = DEFAULT_CHAT_TITLE
 CHAT_TITLE_LLM_TIMEOUT_SECONDS = 15.0
@@ -54,6 +55,24 @@ TITLE_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 TITLE_STRIP_RE = re.compile(r"^[\s\-\.,:;!?\"'`~()\[\]{}<>/\\]+|[\s\-\.,:;!?\"'`~()\[\]{}<>/\\]+$")
+# Models sometimes emit their reasoning as plain text (no <think> tags, no typed
+# reasoning block), so the first words of a leaked plan end up looking like a
+# title (e.g. "We need answer only"). Reject candidates that start with obvious
+# meta/planning phrasing instead of a topic.
+_TITLE_REJECT_PREFIX_RE = re.compile(
+    r"^(?:"
+    r"this is|here is|the user|the answer|title|"
+    r"we need|we should|we must|we can|we will|we'll|"
+    r"i need|i should|i must|i will|i can|i'll|i have to|need to|"
+    r"let me|let's|lets|"
+    r"answer only|only answer|just answer|final answer|"
+    r"respond only|reply only|respond with|reply with|"
+    r"output only|only output|"
+    r"нужно|надо|нам нужно|мне нужно|следует|"
+    r"пользователь|только ответ|итоговый ответ|отвечать только|нужно ответить|надо ответить"
+    r")\b",
+    re.IGNORECASE,
+)
 DIFF_BLOCK_RE = re.compile(r"```diff\r?\n(.*?)```", re.DOTALL)
 
 
@@ -356,7 +375,7 @@ User request: "расскажи кратко, что такое солверы �
 Title: Что такое солверы
 
 User request: "What is on this image?"
-Title: Анализ изображения
+Title: Image analysis
 
 User request:
 {user_message}
@@ -374,10 +393,7 @@ def _trim_title_words(text: str) -> str:
 
 
 def validate_chat_title(value: object) -> str | None:
-    if isinstance(value, (list, tuple, dict)):
-        value = stringify_content(value)
-    raw_text = str(value or "")
-    text = strip_inline_thought_blocks(raw_text)
+    text = strip_inline_thought_blocks(_extract_visible_text(value))
     text = " ".join(text.replace("\r", " ").replace("\n", " ").split()).strip()
     text = re.sub(r"^title\s*:\s*", "", text, flags=re.IGNORECASE).strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in ('\"', "'"):
@@ -391,28 +407,55 @@ def validate_chat_title(value: object) -> str | None:
     # a real term (e.g. "Солверы", "Docker"); short fragments are rejected.
     if len(words) == 1 and len(words[0]) < 4:
         return None
-    if re.match(r"^(this is|here is|the user|title)\b", text, re.I):
+    if _TITLE_REJECT_PREFIX_RE.match(text):
         return None
     return text[:1].upper() + text[1:]
 
 
-async def generate_chat_title_with_llm(llm: Any, user_text: str, logger: Any = None) -> str | None:
+async def generate_chat_title_with_llm(
+    llm: Any,
+    user_text: str,
+    logger: Any = None,
+    extra_kwargs: dict[str, Any] | None = None,
+) -> str | None:
     if logger:
         logger.info("chat_title_generation_start")
-    prompt = TITLE_GENERATION_PROMPT.format(user_message=user_text)
+    base_prompt = TITLE_GENERATION_PROMPT.format(user_message=user_text)
+    prompt = base_prompt
+    call_kwargs = dict(extra_kwargs or {})
     for attempt in range(1, CHAT_TITLE_LLM_ATTEMPTS + 1):
         try:
             response = await asyncio.wait_for(
-                llm.ainvoke(prompt),
+                llm.ainvoke(prompt, **call_kwargs),
                 timeout=CHAT_TITLE_LLM_TIMEOUT_SECONDS,
             )
             value = getattr(response, "content", response)
-            title = validate_chat_title(value)
+            visible_text = strip_inline_thought_blocks(_extract_visible_text(value))
+            title = validate_chat_title(visible_text)
             if title is None:
-                if logger: logger.warning(
-                    "chat_title_generation_rejected attempt=%s raw_response=%r",
-                    attempt,
-                    stringify_content(value)[:120],
+                if logger:
+                    blocks = value if isinstance(value, (list, tuple)) else [value]
+                    block_types = [
+                        str(block.get("type") or "untyped")
+                        if isinstance(block, dict) else type(block).__name__
+                        for block in blocks
+                    ]
+                    logger.warning(
+                        "chat_title_generation_rejected attempt=%s content_type=%s "
+                        "block_types=%s visible_chars=%s preview=%r preview_truncated=%s",
+                        attempt,
+                        type(value).__name__,
+                        block_types,
+                        len(visible_text),
+                        visible_text[:120],
+                        len(visible_text) > 120,
+                    )
+                # Retry with explicit feedback, without replaying leaked reasoning.
+                prompt = (
+                    base_prompt
+                    + "\n\nThe previous output was not a valid title. "
+                    "Return one line containing only a 2–4 word topic title in the user's language. "
+                    "Do not include instructions, reasoning, or an answer to the request."
                 )
             else:
                 if logger: logger.info("chat_title_generation_success attempt=%s", attempt)
@@ -478,56 +521,60 @@ def strip_inline_thought_blocks(text: str) -> str:
     return _INLINE_THOUGHT_UNCLOSED_RE.sub("", cleaned)
 
 
-def _extract_ai_text(message: AIMessage | AIMessageChunk) -> str:
-    def _extract_visible_text(content: Any) -> str:
-        if isinstance(content, str):
-            return strip_inline_thought_blocks(content)
-        if content is None:
+def _extract_visible_text(content: Any) -> str:
+    """Select non-reasoning blocks; strip inline tags only after joining their text."""
+    if isinstance(content, str):
+        return content
+    if content is None:
+        return ""
+    if isinstance(content, (list, tuple)):
+        return "".join(_extract_visible_text(item) for item in content)
+    if isinstance(content, dict):
+        item_type = str(content.get("type") or "").strip().lower()
+        if bool(content.get("thought")) or item_type in {
+            "thinking",
+            "redacted_thinking",
+            "thought",
+            "reasoning",
+            "reasoning_text",
+            "reasoning_content",
+            "reasoning_summary",
+            "analysis",
+            "analysis_content",
+            "summary_text",
+        } or item_type.startswith(("reasoning.", "thinking.", "thought.", "analysis.")):
             return ""
-        if isinstance(content, list):
-            return "".join(_extract_visible_text(item) for item in content)
-        if isinstance(content, dict):
-            item_type = str(content.get("type") or "").strip().lower()
-            if bool(content.get("thought")) or item_type in {
-                "thinking",
-                "thought",
-                "reasoning",
-                "reasoning_content",
-                "reasoning_summary",
-                "analysis",
-                "analysis_content",
-                "summary_text",
-            } or item_type.startswith(("reasoning.", "thinking.", "thought.", "analysis.")):
-                return ""
-            for key in ("text", "output_text", "content", "answer", "response", "final", "final_text"):
-                if key in content:
-                    text = _extract_visible_text(content.get(key))
-                    if text:
-                        return text
-            return "".join(
-                _extract_visible_text(content.get(key))
-                for key in ("parts", "items", "content_blocks", "message", "messages", "data")
-                if key in content
-            )
-        for key in ("content", "content_blocks", "text"):
-            try:
-                value = getattr(content, key)
-            except Exception:
-                continue
-            if callable(value) or value is None:
-                continue
-            text = _extract_visible_text(value)
-            if text:
-                return text
+        for key in ("text", "output_text", "content", "answer", "response", "final", "final_text"):
+            if key in content:
+                text = _extract_visible_text(content.get(key))
+                if text:
+                    return text
+        return "".join(
+            _extract_visible_text(content.get(key))
+            for key in ("parts", "items", "content_blocks", "message", "messages", "data")
+            if key in content
+        )
+    for key in ("content", "content_blocks", "text"):
         try:
-            additional_kwargs = getattr(content, "additional_kwargs")
+            value = getattr(content, key)
         except Exception:
-            additional_kwargs = None
-        if isinstance(additional_kwargs, dict):
-            return _extract_visible_text(additional_kwargs.get("content_blocks"))
-        return stringify_content(content)
+            continue
+        if callable(value) or value is None:
+            continue
+        text = _extract_visible_text(value)
+        if text:
+            return text
+    try:
+        additional_kwargs = getattr(content, "additional_kwargs")
+    except Exception:
+        additional_kwargs = None
+    if isinstance(additional_kwargs, dict):
+        return _extract_visible_text(additional_kwargs.get("content_blocks"))
+    return stringify_content(content)
 
-    return _extract_visible_text(message.content).strip()
+
+def _extract_ai_text(message: AIMessage | AIMessageChunk) -> str:
+    return strip_inline_thought_blocks(_extract_visible_text(message.content)).strip()
 
 
 def _normalized_visible_text(text: str) -> str:

@@ -26,10 +26,34 @@ from ui.tool_message_utils import extract_tool_args, extract_tool_duration
 from ui.visibility import get_internal_ui_notice, is_hidden_internal_message
 
 DIFF_REGEX = re.compile(r"```diff\r?\n(.*?)```", re.DOTALL)
-_INLINE_THOUGHT_BLOCK_RE = re.compile(r"<(think|thought)\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
-_INLINE_THOUGHT_OPEN_RE = re.compile(r"<(think|thought)\b[^>]*>", re.IGNORECASE)
-_INLINE_THOUGHT_CLOSE_PREFIX_RE = re.compile(r"^.*?</(think|thought)>\s*", re.IGNORECASE | re.DOTALL)
-_INLINE_THOUGHT_UNCLOSED_RE = re.compile(r"<(think|thought)\b[^>]*>.*$", re.IGNORECASE | re.DOTALL)
+_THINK_TAG_PATTERN = r"(think|thought|thinking)"
+_INLINE_THOUGHT_BLOCK_RE = re.compile(rf"<{_THINK_TAG_PATTERN}\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
+_INLINE_THOUGHT_OPEN_RE = re.compile(rf"<{_THINK_TAG_PATTERN}\b[^>]*>", re.IGNORECASE)
+_INLINE_THOUGHT_CLOSE_RE = re.compile(rf"</{_THINK_TAG_PATTERN}\s*>", re.IGNORECASE)
+_INLINE_THOUGHT_CLOSE_PREFIX_RE = re.compile(rf"^.*?</{_THINK_TAG_PATTERN}\s*>\s*", re.IGNORECASE | re.DOTALL)
+_INLINE_THOUGHT_UNCLOSED_RE = re.compile(rf"<{_THINK_TAG_PATTERN}\b[^>]*>.*$", re.IGNORECASE | re.DOTALL)
+# Longest first: a delta may end in the middle of a tag (``<thi`` / ``</think``)
+# and that trailing fragment must be buffered instead of rendered.
+_INLINE_THOUGHT_PARTIAL_PREFIXES = (
+    "<thinking", "</thinking",
+    "<thought", "</thought",
+    "<think", "</think",
+    "<thin", "</thin",
+    "<thi", "</thi",
+    "<th", "</th",
+    "<t", "</t",
+    "<", "</",
+)
+# Partial tag prefixes that already name a recognizable thought tag. They are
+# long enough to treat as a thinking signal while streaming, unlike a bare "<"
+# (or "<t") which is common in ordinary prose such as "5 < 10".
+_INLINE_THOUGHT_PARTIAL_TAG_PREFIXES = (
+    "<thinking", "</thinking",
+    "<thought", "</thought",
+    "<think", "</think",
+    "<thin", "</thin",
+    "<thi", "</thi",
+)
 _TEXT_TOOL_CALL_START_RE = re.compile(r"call:[A-Za-z_][\w.-]*\s*\{", re.DOTALL)
 _TEXT_TOOL_CALL_END = "<tool_call|>"
 _AGENT_WORKING_LABEL = "Working..."
@@ -56,6 +80,71 @@ def _strip_inline_thought_content(text: str) -> str:
     return _INLINE_THOUGHT_UNCLOSED_RE.sub("", cleaned)
 
 
+class _InlineThoughtStreamFilter:
+    """Stateful inline ``<think>`` stripper for incremental text streams.
+
+    ``_strip_inline_thought_content`` can only drop a block that sits entirely
+    inside one chunk. Providers stream those tags token by token, so the open
+    tag, the body and the close tag usually land in different deltas — and the
+    tag itself can be split between two deltas. This filter remembers the
+    "inside a thought" flag and buffers a trailing partial tag between calls so
+    nothing from the block reaches the transcript.
+    """
+
+    __slots__ = ("_inside_thought", "_pending")
+
+    def __init__(self) -> None:
+        self._inside_thought = False
+        self._pending = ""
+
+    def reset(self) -> None:
+        self._inside_thought = False
+        self._pending = ""
+
+    def feed(self, text: str) -> str:
+        data = self._pending + str(text or "")
+        self._pending = ""
+        out: list[str] = []
+        while data:
+            if self._inside_thought:
+                close_match = _INLINE_THOUGHT_CLOSE_RE.search(data)
+                if close_match is None:
+                    self._pending = self._partial_tag_suffix(data)
+                    break
+                data = data[close_match.end() :]
+                self._inside_thought = False
+                continue
+            open_match = _INLINE_THOUGHT_OPEN_RE.search(data)
+            if open_match is not None:
+                out.append(data[: open_match.start()])
+                data = data[open_match.end() :]
+                self._inside_thought = True
+                continue
+            # A close tag without a matching open one means the section resumed
+            # mid-block; drop it (and whatever preceded it) like the stateless
+            # helper does.
+            close_match = _INLINE_THOUGHT_CLOSE_RE.search(data)
+            if close_match is not None:
+                data = data[close_match.end() :]
+                continue
+            suffix = self._partial_tag_suffix(data)
+            if suffix:
+                out.append(data[: len(data) - len(suffix)])
+                self._pending = suffix
+                break
+            out.append(data)
+            data = ""
+        return "".join(out)
+
+    @staticmethod
+    def _partial_tag_suffix(data: str) -> str:
+        lowered = data.lower()
+        for prefix in _INLINE_THOUGHT_PARTIAL_PREFIXES:
+            if lowered.endswith(prefix):
+                return data[len(data) - len(prefix) :]
+        return ""
+
+
 def _clip_debug_text(value: Any, limit: int = 240) -> str:
     text = str(value or "").replace("\r", "\\r").replace("\n", "\\n")
     if len(text) <= limit:
@@ -63,10 +152,22 @@ def _clip_debug_text(value: Any, limit: int = 240) -> str:
     return f"{text[:limit]}…(+{len(text) - limit} chars)"
 
 
+def _ends_with_partial_thought_tag(text: str) -> bool:
+    """True when ``text`` ends with the beginning of a thought tag.
+
+    Providers stream tags token by token, so ``"<thi"`` is the first half of
+    ``"<think>"``. Such a fragment must count as a thinking signal so the status
+    label stays consistent with the text the stream filter already hides.
+    """
+    return text.lower().endswith(_INLINE_THOUGHT_PARTIAL_TAG_PREFIXES)
+
+
 def _describe_thinking_signal(content: Any) -> str:
     if isinstance(content, str):
         if _INLINE_THOUGHT_OPEN_RE.search(content):
             return "inline_thought_tag"
+        if _ends_with_partial_thought_tag(content):
+            return "inline_thought_tag_partial"
         return ""
     if content is None:
         return ""
@@ -80,7 +181,7 @@ def _describe_thinking_signal(content: Any) -> str:
         item_type = str(content.get("type") or "").strip().lower()
         if bool(content.get("thought")):
             return "thought_flag"
-        if item_type in {"thinking", "thought", "reasoning", "reasoning_content", "reasoning_delta", "reasoning_summary", "redacted_thinking"}:
+        if item_type in {"thinking", "thought", "reasoning", "reasoning_text", "reasoning_content", "reasoning_delta", "reasoning_summary", "redacted_thinking"}:
             return f"type:{item_type}"
         if item_type.startswith(("reasoning.", "thinking.", "thought.", "analysis.")):
             return f"type:{item_type}"
@@ -195,6 +296,7 @@ class StreamProcessor:
         "_messages_text_seen",
         "_suppressing_text_tool_call",
         "_visible_full_text",
+        "_thought_filter",
         "_deferred_assistant_delta",
         "_assistant_delta_sequence",
         "_messages_replay_cursor",
@@ -249,6 +351,7 @@ class StreamProcessor:
         self._messages_text_seen = False
         self._suppressing_text_tool_call = False
         self._visible_full_text = ""
+        self._thought_filter = _InlineThoughtStreamFilter()
         self._deferred_assistant_delta = False
         self._assistant_delta_sequence = 0
         self._messages_replay_cursor: int | None = None
@@ -628,9 +731,21 @@ class StreamProcessor:
             )
             self._emit_status()
 
-        chunk = self._extract_text_content(message.content)
-        if not chunk:
-            chunk = self._extract_text_content(message)
+        if source == "messages":
+            # Messages mode yields incremental deltas, so an inline thought tag
+            # and its body can be split across chunks. Filter them with the
+            # stateful stream filter (raw extraction first) so an unclosed
+            # <think> block keeps hiding its body until the close tag arrives.
+            raw_chunk = self._extract_text_content(message.content, strip_inline=False)
+            if not raw_chunk:
+                raw_chunk = self._extract_text_content(message, strip_inline=False)
+            chunk = self._thought_filter.feed(raw_chunk) if raw_chunk else ""
+        else:
+            # updates/cumulative payloads carry the complete message, so the
+            # stateless strip is enough and stays idempotent on replays.
+            chunk = self._extract_text_content(message.content)
+            if not chunk:
+                chunk = self._extract_text_content(message)
         reasoning_logger.debug(
             "thought text extraction source=%s message_type=%s visible_chunk_len=%s thinking_signal=%s",
             source,
@@ -1067,19 +1182,33 @@ class StreamProcessor:
         return before + after
 
     @staticmethod
-    def _extract_text_content(content: Any) -> str:
+    def _extract_text_content(content: Any, *, strip_inline: bool = True) -> str:
+        """Return the visible text carried by *content*.
+
+        ``strip_inline`` removes inline ``<think>`` blocks. Callers that consume
+        incremental deltas disable it and run :class:`_InlineThoughtStreamFilter`
+        instead, because a block can span several chunks.
+        """
+        text = StreamProcessor._extract_text_content_raw(content)
+        if text and strip_inline:
+            return _strip_inline_thought_content(text)
+        return text
+
+    @staticmethod
+    def _extract_text_content_raw(content: Any) -> str:
         if isinstance(content, str):
-            return _strip_inline_thought_content(content)
+            return content
         if content is None:
             return ""
         if isinstance(content, list):
-            return "".join(StreamProcessor._extract_text_content(item) for item in content)
+            return "".join(StreamProcessor._extract_text_content_raw(item) for item in content)
         if isinstance(content, dict):
             item_type = str(content.get("type") or "").strip().lower()
             if bool(content.get("thought")) or item_type in {
                 "thinking",
                 "thought",
                 "reasoning",
+                "reasoning_text",
                 "reasoning_content",
                 "reasoning_delta",
                 "reasoning_summary",
@@ -1091,11 +1220,11 @@ class StreamProcessor:
                 return ""
             for key in ("text", "output_text", "content", "answer", "response", "final", "final_text"):
                 if key in content:
-                    text = StreamProcessor._extract_text_content(content.get(key))
+                    text = StreamProcessor._extract_text_content_raw(content.get(key))
                     if text:
                         return text
             return "".join(
-                StreamProcessor._extract_text_content(content.get(key))
+                StreamProcessor._extract_text_content_raw(content.get(key))
                 for key in ("parts", "items", "content_blocks", "message", "messages", "data")
                 if key in content
             )
@@ -1106,7 +1235,7 @@ class StreamProcessor:
                 continue
             if callable(value) or value is None:
                 continue
-            text = StreamProcessor._extract_text_content(value)
+            text = StreamProcessor._extract_text_content_raw(value)
             if text:
                 return text
         try:
@@ -1114,7 +1243,7 @@ class StreamProcessor:
         except Exception:
             additional_kwargs = None
         if isinstance(additional_kwargs, dict):
-            return StreamProcessor._extract_text_content(additional_kwargs.get("content_blocks"))
+            return StreamProcessor._extract_text_content_raw(additional_kwargs.get("content_blocks"))
         return ""
 
     @staticmethod
@@ -1146,7 +1275,12 @@ class StreamProcessor:
     @staticmethod
     def _has_thinking_content(content: Any) -> bool:
         if isinstance(content, str):
-            return bool(_INLINE_THOUGHT_BLOCK_RE.search(content) or _INLINE_THOUGHT_OPEN_RE.search(content))
+            if _INLINE_THOUGHT_BLOCK_RE.search(content) or _INLINE_THOUGHT_OPEN_RE.search(content):
+                return True
+            # A tag can be split between deltas ("<thi" + "nk>"). The stream
+            # filter already hides such a fragment, so report the thinking
+            # status too instead of showing "Working..." for hidden tokens.
+            return _ends_with_partial_thought_tag(content)
         if content is None:
             return False
         if isinstance(content, list):
@@ -1157,6 +1291,7 @@ class StreamProcessor:
                 "thinking",
                 "thought",
                 "reasoning",
+                "reasoning_text",
                 "reasoning_content",
                 "reasoning_summary",
                 "analysis",
@@ -1211,6 +1346,7 @@ class StreamProcessor:
             self._flush_deferred_assistant_delta()
         previous_text = self.full_text or self._visible_full_text
         self._previous_assistant_section_text = previous_text.strip()
+        self._thought_filter.reset()
         self._emit("assistant_boundary", {})
         self.full_text = ""
         self.clean_full = ""
