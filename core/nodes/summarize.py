@@ -6,19 +6,19 @@ import time
 from typing import List
 
 from langchain_core.messages import RemoveMessage
+from langgraph.config import get_stream_writer
 
 from core.state import AgentState, OpenToolIssue, RecoveryState, transcript_message_delta
 from core.providers.factory import _normalize_tool_for_binding, summary_reasoning_kwargs
 from core.summarize_policy import (
     active_turn_anchor_index,
     choose_summary_boundary,
-    estimate_context_tokens,
     estimate_tokens,
     token_model_name,
     estimate_text_tokens,
     estimate_summary_tokens,
     format_history_for_summary,
-    should_summarize,
+    summary_progress_payload,
     truncate_summary_to_token_budget,
 )
 from core import constants
@@ -119,6 +119,23 @@ class SummarizeMixin:
         )
         return result
 
+    def _emit_summary_progress(self, state: AgentState, messages: List, summary: str, overhead_tokens: int) -> dict:
+        progress = summary_progress_payload(
+            messages,
+            threshold=self.config.summary_threshold,
+            keep_last=self.config.summary_keep_last,
+            summary=summary,
+            reserved_tokens=self._effective_reserved_tokens("", overhead_tokens),
+            allow_tool_round_boundaries=self._is_mid_run_compaction(state),
+            model_name=token_model_name(self.config),
+        )
+        try:
+            get_stream_writer()({"type": "summary_progress", **progress})
+        except RuntimeError:
+            # Direct node calls outside a running graph have no stream writer.
+            pass
+        return progress
+
     async def summarize_node(self, state: AgentState):
         messages = state["messages"]
         summary = state.get("summary", "")
@@ -153,10 +170,11 @@ class SummarizeMixin:
             )
         # Persist the latest local estimate for UI progress, including skipped runs.
         transcript_bootstrap["summary_context_overhead_tokens"] = overhead_tokens
-        reserved_tokens = self._effective_reserved_tokens(summary, overhead_tokens)
-        estimated_tokens = estimate_context_tokens(
-            messages, reserved_tokens=reserved_tokens, model_name=model_name,
-        )
+        # Publish the actual decision before the summarizer starts, not an estimate
+        # reconstructed from UI tool output or a potentially stale checkpoint.
+        progress = self._emit_summary_progress(state, messages, summary, overhead_tokens)
+        reserved_tokens = progress["reserved_tokens"] + progress["summary_tokens"]
+        estimated_tokens = progress["estimated_tokens"]
         node_timer = self._log_node_start(
             state,
             "summarize",
@@ -167,15 +185,7 @@ class SummarizeMixin:
             has_summary=bool(summary),
         )
 
-        if not should_summarize(
-            messages,
-            threshold=self.config.summary_threshold,
-            keep_last=self.config.summary_keep_last,
-            has_summary=bool(summary),
-            reserved_tokens=reserved_tokens,
-            allow_tool_round_boundaries=self._is_mid_run_compaction(state),
-            model_name=model_name,
-        ):
+        if not progress["will_summarize"]:
             self._log_node_end(
                 state,
                 "summarize",
@@ -294,6 +304,13 @@ class SummarizeMixin:
                 memory_tokens=memory_tokens,
             )
 
+            removed_ids = {message.id for message in delete_msgs}
+            self._emit_summary_progress(
+                state,
+                [message for message in messages if message.id not in removed_ids],
+                updated_summary,
+                overhead_tokens,
+            )
             return {
                 **transcript_bootstrap,
                 "summary": updated_summary,

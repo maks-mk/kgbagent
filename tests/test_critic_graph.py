@@ -899,11 +899,12 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["open_tool_issue"])
         self.assertEqual(str(result["messages"][-1].content), "Готово.")
 
-    async def test_non_retryable_mutating_execution_issue_handoffs_without_auto_retry(self):
+    async def test_non_retryable_mutating_execution_issue_returns_to_agent_without_auto_retry(self):
         tool = FakeTool("demo_tool", "ERROR[EXECUTION]: boom")
         app, agent_llm = self._build_app(
             agent_responses=[
                 AIMessage(content="", tool_calls=[{"name": "demo_tool", "args": {"action": "a"}, "id": "tc-a"}]),
+                AIMessage(content="demo_tool упал: boom. Повторять его не буду, предлагаю проверить окружение."),
             ],
             tools=[tool],
             tool_metadata={
@@ -921,7 +922,7 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(len(tool.calls), 1)
-        self.assertGreaterEqual(len(agent_llm.invocations), 1)
+        self.assertGreaterEqual(len(agent_llm.invocations), 2)
         self.assertEqual(result["turn_outcome"], "finish_turn")
         self.assertIsNone(result["open_tool_issue"])
         self.assertGreaterEqual(result["steps"], 2)
@@ -960,7 +961,7 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["open_tool_issue"])
         self.assertIn("остановка подтверждена", str(result["messages"][-1].content).lower())
 
-    async def test_validation_missing_path_handoffs_without_auto_retry(self):
+    async def test_validation_missing_path_returns_to_agent_instead_of_handoff(self):
         tool = FakeTool("edit_file", "ERROR[VALIDATION]: Missing required field: path.")
         app, agent_llm = self._build_app(
             agent_responses=[
@@ -968,6 +969,7 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
                     content="",
                     tool_calls=[{"name": "edit_file", "args": {"old_string": "x", "new_string": "y"}, "id": "tc-v1"}],
                 ),
+                AIMessage(content="Не хватает path — перечитаю задачу и не буду угадывать путь."),
             ],
             tools=[tool],
             tool_metadata={
@@ -985,11 +987,18 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(len(tool.calls), 1)
-        self.assertGreaterEqual(len(agent_llm.invocations), 1)
+        self.assertGreaterEqual(len(agent_llm.invocations), 2)
         self.assertEqual(result["turn_outcome"], "finish_turn")
         self.assertIsNone(result["open_tool_issue"])
         self.assertGreaterEqual(result["steps"], 2)
-        self.assertIn("missing required field", str(result["messages"][-1].content).lower())
+        error_results = [
+            message
+            for message in result["messages"]
+            if getattr(message, "status", "") == "error"
+            and "missing required field" in str(message.content).lower()
+        ]
+        self.assertTrue(error_results)
+        self.assertIn("path", str(result["messages"][-1].content).lower())
 
     async def test_edit_file_match_failure_returns_to_agent_and_allows_alternate_tool_path(self):
         def _edit_result(args):
@@ -1155,12 +1164,12 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["open_tool_issue"])
         self.assertIn("проверено напрямую", str(result["messages"][-1].content).lower())
 
-    async def test_approval_denied_finishes_without_retry_and_without_tool_execution(self):
+    async def test_approval_denied_returns_to_agent_without_tool_execution(self):
         tool = FakeTool("danger_tool", "Изменение применено.")
         app, agent_llm = self._build_app(
             agent_responses=[
                 AIMessage(content="", tool_calls=[{"name": "danger_tool", "args": {"action": "apply"}, "id": "tc-d1"}]),
-                AIMessage(content="", tool_calls=[{"name": "danger_tool", "args": {"action": "again"}, "id": "tc-d2"}]),
+                AIMessage(content="Понял, вы отклонили действие. Не выполняю его; уточните, что делать дальше."),
             ],
             tools=[tool],
             enable_approvals=True,
@@ -1181,10 +1190,10 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         resumed = await app.ainvoke(Command(resume={"approved": False}), config=thread_config)
 
         self.assertEqual(tool.calls, [])
-        self.assertEqual(len(agent_llm.invocations), 1)
+        self.assertEqual(len(agent_llm.invocations), 2)
         self.assertEqual(resumed["turn_outcome"], "finish_turn")
         self.assertIsNone(resumed["open_tool_issue"])
-        self.assertIn("declined", str(resumed["messages"][-1].content).lower())
+        self.assertIn("отклонили", str(resumed["messages"][-1].content).lower())
 
     async def test_mutating_tool_interrupts_and_executes_only_after_approval(self):
         tool = FakeTool("edit_file", "Success: updated")

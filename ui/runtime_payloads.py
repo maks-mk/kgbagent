@@ -20,14 +20,7 @@ from core.session_store import (
     SessionStore,
     normalize_project_path,
 )
-from core.summarize_policy import (
-    estimate_context_tokens,
-    token_model_name,
-    estimate_summary_tokens,
-    should_summarize,
-    summary_fill_ratio,
-    summary_trigger_tokens,
-)
+from core.summarize_policy import summary_progress_payload, token_model_name
 from core.text_utils import build_mcp_tool_ui_labels, build_tool_ui_labels, format_tool_output, prepare_markdown_for_render
 from core.tool_args import canonicalize_tool_args
 from core.tool_policy import ToolMetadata
@@ -289,43 +282,18 @@ def build_summary_progress_payload(config: AgentConfig, state_values: dict[str, 
     messages = list(values.get("messages", []) or [])
     threshold = max(0, _safe_int(getattr(config, "summary_threshold", 0), 0))
     reserved_tokens = max(0, _safe_int(getattr(config, "summary_reserved_tokens", 0), 0))
-    summary_text = str(values.get("summary") or "").strip()
-    model_name = token_model_name(config)
-    summary_tokens = estimate_summary_tokens(summary_text, model_name=model_name)
     reserved_tokens += max(0, _safe_int(values.get("summary_context_overhead_tokens"), 0))
-    effective_reserved_tokens = reserved_tokens + summary_tokens
-    estimated_tokens = estimate_context_tokens(messages, reserved_tokens=effective_reserved_tokens, model_name=model_name)
-    has_summary = bool(summary_text)
-    trigger_tokens = summary_trigger_tokens(threshold, has_summary=has_summary)
-    # The ring shows the compactable history filling toward the hard threshold; fixed
-    # overhead and memory are excluded so it drops right after a compaction.
-    progress = 1.0 - summary_fill_ratio(
-        estimated_tokens,
-        threshold=threshold,
-        baseline_tokens=effective_reserved_tokens,
-    )
-    keep_last = _safe_int(getattr(config, "summary_keep_last", 0), 0)
-    will_summarize = should_summarize(
+    progress = summary_progress_payload(
         messages,
         threshold=threshold,
-        keep_last=keep_last,
-        has_summary=has_summary,
-        reserved_tokens=effective_reserved_tokens,
-        model_name=model_name,
-    ) if messages and threshold > 0 else False
-    return {
-        "estimated_tokens": estimated_tokens,
-        "threshold": threshold,
-        "trigger_tokens": trigger_tokens,
-        "remaining_tokens": max(0, trigger_tokens - estimated_tokens),
-        "reserved_tokens": reserved_tokens if messages else 0,
-        "summary_tokens": summary_tokens,
-        "provider_input_tokens": _provider_input_tokens(values.get("token_usage")),
-        "progress": progress,
-        "message_count": len(messages),
-        "has_summary": has_summary,
-        "will_summarize": will_summarize,
-    }
+        keep_last=_safe_int(getattr(config, "summary_keep_last", 0), 0),
+        summary=str(values.get("summary") or "").strip(),
+        reserved_tokens=reserved_tokens,
+        allow_tool_round_boundaries=_safe_int(values.get("steps"), 0) > 0,
+        model_name=token_model_name(config),
+    )
+    progress["provider_input_tokens"] = _provider_input_tokens(values.get("token_usage"))
+    return progress
 
 
 def build_help_markdown() -> str:

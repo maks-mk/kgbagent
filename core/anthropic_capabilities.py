@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 _MANUAL_THINKING_MODELS = (
     "claude-haiku-4-5",
     "claude-sonnet-4-5",
@@ -62,6 +64,10 @@ def _matches_family(model: str | None, families: tuple[str, ...]) -> bool:
     normalized = str(model or "").strip().lower()
     if normalized.startswith("claude-4.8-opus"):
         normalized = "claude-opus-4-8" + normalized[len("claude-4.8-opus") :]
+    # Anthropic aliases some versions with "." (e.g. "claude-opus-5.5") and
+    # others with "-" (e.g. "claude-opus-5-5"). Normalise both separators so
+    # every family entry covers both spellings without listing each twice.
+    normalized = re.sub(r"[._]", "-", normalized)
     return any(normalized == family or normalized.startswith(f"{family}-") for family in families)
 
 

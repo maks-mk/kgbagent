@@ -655,6 +655,25 @@ class ToolRegistry:
             source="mcp",
         )
 
+    def _prepare_mcp_server_config(self, cfg: Dict[str, Any], valid_keys: set[str]) -> Dict[str, Any]:
+        server_config = {key: value for key, value in cfg.items() if key in valid_keys}
+        if server_config.get("transport") != "stdio":
+            return server_config
+
+        # The UI changes the process cwd when switching projects. Launch paths
+        # belong to the MCP config, not to whichever project is currently open.
+        config_dir = self.config.mcp_config_path.parent
+        cwd = Path(server_config.get("cwd") or config_dir).expanduser()
+        server_config["cwd"] = str((config_dir / cwd).resolve())
+        command = server_config.get("command")
+        if isinstance(command, str) and command:
+            command_path = Path(command).expanduser()
+            if command_path.is_absolute() or "/" in command or "\\" in command:
+                server_config["command"] = str((config_dir / command_path).resolve())
+        # Bare commands (python, uv, npx, etc.) still use PATH. Arguments remain
+        # untouched: relative script/data paths are interpreted in the child cwd.
+        return server_config
+
     async def _load_single_mcp_server(
         self,
         name: str,
@@ -666,10 +685,14 @@ class ToolRegistry:
             try:
                 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-                server_config = {key: value for key, value in cfg.items() if key in valid_keys}
+                server_config = self._prepare_mcp_server_config(cfg, valid_keys)
                 client = MultiServerMCPClient({name: server_config})
+                if server_config.get("transport") == "stdio":
+                    from tools.mcp_session import PersistentMCPClient
+
+                    client = PersistentMCPClient(client, name)
                 return name, client, await client.get_tools(), None
-            except BaseException as e:
+            except Exception as e:
                 return name, None, None, e
 
     @staticmethod
@@ -737,12 +760,16 @@ class ToolRegistry:
             }
 
             semaphore = asyncio.Semaphore(4)
-            results = await asyncio.gather(
-                *(
-                    self._load_single_mcp_server(name, cfg, valid_keys, semaphore)
-                    for name, cfg in enabled_servers
-                )
-            )
+
+            async def load_server(name, cfg):
+                result = await self._load_single_mcp_server(name, cfg, valid_keys, semaphore)
+                if result[1] is not None:
+                    # Register immediately: another server can still be starting
+                    # when the enclosing load operation is cancelled.
+                    self.mcp_clients.append(result[1])
+                return result
+
+            results = await asyncio.gather(*(load_server(name, cfg) for name, cfg in enabled_servers))
             for name, client, mcp_tools, err in results:
                 if err is not None:
                     error_text = self._format_mcp_error(err)
@@ -753,8 +780,6 @@ class ToolRegistry:
                 server_cfg = raw_cfg.get(name) if isinstance(raw_cfg.get(name), dict) else {}
                 server_policy, tool_policies = self._split_mcp_policy_config(server_cfg)
 
-                if client is not None:
-                    self.mcp_clients.append(client)
                 if mcp_tools:
                     self.tools.extend(mcp_tools)
                     for tool in mcp_tools:
@@ -777,6 +802,9 @@ class ToolRegistry:
                 else:
                     self.mcp_server_status.append({"server": name, "loaded_tools": [], "error": "No tools found", "enabled": True})
                     logger.warning("⚠ MCP Server '%s': No tools found", name)
+        except asyncio.CancelledError:
+            await self.cleanup()
+            raise
         except Exception as e:
             logger.exception(f"Failed to load MCP tools: {e}")
 

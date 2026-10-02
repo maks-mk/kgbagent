@@ -1486,6 +1486,29 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("extra_body", captured)
         self.assertEqual(captured["reasoning_effort"], "high")
 
+    def test_create_llm_for_minimax_official_api_sends_reasoning_effort(self):
+        captured = {}
+
+        class FakeChatOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with mock.patch.dict(sys.modules, {"langchain_openai": mock.Mock(ChatOpenAI=FakeChatOpenAI)}):
+            create_llm(
+                self._make_config(
+                    PROVIDER="openai",
+                    OPENAI_API_KEY="sk-test",
+                    OPENAI_MODEL="MiniMax-M3",
+                    OPENAI_BASE_URL="https://api.minimaxi.com/v1",
+                    MODEL_REASONING_EFFORT="medium",
+                    LLM_API_MODE="responses",
+                )
+            )
+
+        self.assertNotIn("extra_body", captured)
+        self.assertNotIn("reasoning_effort", captured)
+        self.assertEqual(captured["reasoning"]["effort"], "medium")
+
     def test_create_llm_for_freetheai_gemini_uses_provider_level_reasoning(self):
         captured = {}
 
@@ -2190,6 +2213,116 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["turn_outcome"], "finish_turn")
         self.assertIsNone(result["open_tool_issue"])
 
+    async def test_invoke_llm_with_retry_retries_responses_without_visible_content(self):
+        empty_contents = [
+            "",
+            " \n\t\u200b",
+            [],
+            [{"type": "text", "text": ""}],
+            [{"type": "text", "text": " \u200b"}],
+            [{"type": "thinking", "thinking": "private reasoning", "signature": "private signature"}],
+            [{"type": "redacted_thinking", "data": "private data"}],
+            [{"type": "reasoning", "reasoning": "private reasoning"}],
+        ]
+        for content in empty_contents:
+            with self.subTest(content=content):
+                rejected = AIMessage(
+                    content=content,
+                    response_metadata={"stop_reason": "end_turn", "model_name": "claude-opus-4-8"},
+                )
+                accepted = AIMessage(content="Visible answer")
+                llm = FakeLLM([rejected, accepted])
+                nodes = AgentNodes(
+                    config=self._make_config(MAX_RETRIES=2, RETRY_DELAY=0),
+                    llm=llm,
+                    tools=[],
+                    llm_with_tools=llm,
+                )
+                with (
+                    mock.patch("core.nodes.llm.asyncio.sleep", new=mock.AsyncMock()),
+                    mock.patch.object(nodes, "_log_run_event") as log_event,
+                ):
+                    response = await nodes._invoke_llm_with_retry(
+                        llm, [HumanMessage(content="Answer")], state=self._initial_state(), node_name="agent"
+                    )
+
+                self.assertIs(response, accepted)
+                self.assertEqual(len(llm.invocations), 2)
+                self.assertEqual(llm.invocations[0], llm.invocations[1])
+                empty_events = [c.kwargs for c in log_event.call_args_list if c.args[1] == "llm_invoke_empty_response"]
+                self.assertEqual(len(empty_events), 1)
+                self.assertEqual(empty_events[0]["stop_reason"], "end_turn")
+                self.assertEqual(empty_events[0]["model"], "claude-opus-4-8")
+                self.assertNotIn("private", str(log_event.call_args_list))
+                success_events = [c.kwargs for c in log_event.call_args_list if c.args[1] == "llm_invoke_success"]
+                self.assertEqual(len(success_events), 1)
+                self.assertTrue(success_events[0]["has_content"])
+
+    async def test_invoke_llm_with_retry_accepts_text_or_tool_calls_with_thinking(self):
+        thinking = {"type": "thinking", "thinking": "private reasoning", "signature": "signature"}
+        responses = [
+            AIMessage(content=[thinking, {"type": "text", "text": "Visible answer"}]),
+            AIMessage(content=[{"type": "refusal", "refusal": "Cannot help with that request."}]),
+            AIMessage(
+                content=[thinking],
+                tool_calls=[{"id": "call-1", "name": "read_file", "args": {"path": "README.md"}}],
+            ),
+            AIMessage(
+                content=[thinking],
+                invalid_tool_calls=[{"id": "call-1", "name": "read_file", "args": "{", "error": "Invalid JSON"}],
+            ),
+        ]
+        for expected in responses:
+            with self.subTest(response=expected):
+                llm = FakeLLM([expected])
+                nodes = AgentNodes(
+                    config=self._make_config(MAX_RETRIES=2, RETRY_DELAY=0),
+                    llm=llm,
+                    tools=[],
+                    llm_with_tools=llm,
+                )
+                response = await nodes._invoke_llm_with_retry(
+                    llm, [HumanMessage(content="Answer")], state=self._initial_state(), node_name="agent"
+                )
+                self.assertIs(response, expected)
+                self.assertEqual(len(llm.invocations), 1)
+
+    async def test_agent_node_reports_repeated_thinking_only_response(self):
+        thinking_only = AIMessage(
+            content=[{"type": "thinking", "thinking": "private reasoning", "signature": "signature"}],
+            response_metadata={"stop_reason": "end_turn", "model_name": "claude-opus-4-8"},
+        )
+        llm = FakeLLM([thinking_only, thinking_only, thinking_only])
+        nodes = AgentNodes(
+            config=self._make_config(MAX_RETRIES=3, RETRY_DELAY=0),
+            llm=llm,
+            tools=[],
+            llm_with_tools=llm,
+        )
+        with mock.patch("core.nodes.llm.asyncio.sleep", new=mock.AsyncMock()):
+            result = await nodes.agent_node(self._initial_state("Answer"))
+
+        self.assertEqual(len(llm.invocations), 3)
+        self.assertEqual(result["turn_outcome"], "finish_turn")
+        self.assertEqual(result["last_tool_error"], "Empty response from LLM: no visible text or tool calls")
+        self.assertIn("The model returned an empty response", result["messages"][-1].content)
+        self.assertNotIn("private reasoning", str(result["messages"]))
+        self.assertIsNone(result["open_tool_issue"])
+
+        async def stream():
+            yield "messages", (AIMessageChunk(content=thinking_only.content), {"langgraph_node": "agent"})
+            yield "updates", {"agent": result}
+
+        processor = StreamProcessor()
+        stream_result = await processor.process_stream(stream())
+        self.assertFalse(stream_result.failed)
+        statuses = [event.payload["label"] for event in stream_result.events if event.type == "status_changed"]
+        self.assertIn("Thinking...", statuses)
+        deltas = [event.payload["full_text"] for event in stream_result.events if event.type == "assistant_delta"]
+        self.assertTrue(deltas)
+        self.assertIn("The model returned an empty response", deltas[-1])
+        self.assertNotIn("private reasoning", "".join(deltas))
+
     async def test_invoke_llm_with_retry_normalizes_context_once_per_attempt(self):
         config = self._make_config(MAX_RETRIES=2, RETRY_DELAY=0)
         llm = FakeLLM([RuntimeError("temporary"), AIMessage(content="ok")])
@@ -2521,7 +2654,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, {"pending_approval": None})
 
-    async def test_approval_rejection_blocks_followup_tool_calls_in_same_turn(self):
+    async def test_approval_rejection_returns_to_agent_without_followup_tool_execution(self):
         config = self._make_config(ENABLE_APPROVALS=True)
         denied_tool = FakeTool("danger_tool", "Изменение применено.")
         fallback_tool = FakeTool("write_file", "Файл записан.")
@@ -2532,10 +2665,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             llm_with_tools=FakeLLM(
                 [
                     AIMessage(content="", tool_calls=[{"name": "danger_tool", "args": {"action": "apply"}, "id": "tc-3"}]),
-                    AIMessage(
-                        content="Сохраню результат в другой файл.",
-                        tool_calls=[{"name": "write_file", "args": {"path": "alt.md", "content": "x"}, "id": "tc-4"}],
-                    ),
+                    AIMessage(content="Действие отклонено пользователем. Повторно не запускаю; уточните, как продолжить."),
                 ]
             ),
             tool_metadata={
@@ -2562,7 +2692,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(denied_tool.calls, [])
         self.assertEqual(fallback_tool.calls, [])
         self.assertIsInstance(resumed["messages"][-1], AIMessage)
-        self.assertIn("declined", str(resumed["messages"][-1].content).lower())
+        self.assertIn("отклонено", str(resumed["messages"][-1].content).lower())
         self.assertIsNone(resumed["open_tool_issue"])
 
     async def test_approval_rejection_resume_keeps_provider_safe_order(self):
@@ -2607,7 +2737,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(tool.calls, [])
         self.assertEqual(resumed["turn_outcome"], "finish_turn")
-        self.assertIn("declined", str(resumed["messages"][-1].content).lower())
+        self.assertIn("не выполнено", str(resumed["messages"][-1].content).lower())
 
     async def test_approval_rejection_finishes_turn_without_secondary_verifier(self):
         config = self._make_config(ENABLE_APPROVALS=True)
@@ -2642,9 +2772,9 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool.calls, [])
         self.assertEqual(resumed["turn_outcome"], "finish_turn")
         self.assertIsNone(resumed["open_tool_issue"])
-        self.assertEqual(len(agent_llm.invocations), 1)
+        self.assertEqual(len(agent_llm.invocations), 2)
         final_text = str(resumed["messages"][-1].content).lower()
-        self.assertIn("declined", final_text)
+        self.assertIn("не сделал", final_text)
 
     def test_sanitize_messages_for_model_remaps_non_compliant_tool_call_ids(self):
         # Hermetic: in responses mode provider call IDs are preserved (they must
@@ -2751,7 +2881,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(response.content), "ok")
         self.assertTrue(any(isinstance(message, AIMessage) and message.content == "Промежуточный ответ." for message in llm.invocations[0]))
 
-    async def test_tools_node_marks_approval_denied_as_open_issue_before_agent_ack(self):
+    async def test_tools_node_returns_approval_denied_to_agent_without_issue(self):
         config = self._make_config(ENABLE_APPROVALS=True)
         tool = FakeTool("danger_tool", "Изменение применено.")
         nodes = AgentNodes(
@@ -2787,7 +2917,14 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        self.assertEqual(result["open_tool_issue"]["kind"], "approval_denied")
+        self.assertIsNone(result["open_tool_issue"])
+        denied_results = [
+            message
+            for message in result["messages"]
+            if getattr(message, "status", "") == "error"
+        ]
+        self.assertTrue(denied_results)
+        self.assertIn("ACCESS_DENIED", str(denied_results[-1].content))
 
     async def test_tools_node_preserves_parallel_results_when_one_tool_processing_crashes(self):
         config = self._make_config()
@@ -3681,12 +3818,9 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(restored)
         self.assertEqual(restored.cache_hit_tokens, 12_288)
 
-    def test_worker_emits_live_summary_progress_after_tool_finished(self):
+    def test_worker_does_not_estimate_summary_progress_from_tool_display_output(self):
         worker = gui_runtime.AgentRunWorker()
         worker.config = SimpleNamespace(summary_threshold=100, summary_keep_last=1)
-        worker._active_summary_estimated_tokens = 10
-        worker._active_summary_message_count = 2
-        worker._active_summary_has_summary = False
         emitted = []
         worker.event_emitted.connect(emitted.append)
 
@@ -3697,57 +3831,29 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        self.assertEqual(emitted[0].type, "tool_finished")
-        progress_events = [event for event in emitted if event.type == "summary_progress"]
-        self.assertEqual(len(progress_events), 1)
-        payload = progress_events[0].payload
-        self.assertGreater(payload["estimated_tokens"], 10)
-        self.assertEqual(payload["threshold"], 100)
-        self.assertTrue(payload["live"])
+        self.assertEqual([event.type for event in emitted], ["tool_finished"])
 
-    async def test_worker_resets_summary_progress_from_checkpoint_after_auto_summary(self):
-        checkpoint_values = {
-            "summary": "compressed earlier messages",
-            "messages": [HumanMessage(content="recent user message"), AIMessage(content="recent answer")],
-        }
+    async def test_worker_keeps_authoritative_summary_progress_after_auto_summary(self):
         worker = gui_runtime.AgentRunWorker()
-        worker.config = SimpleNamespace(
-            summary_threshold=40000,
-            summary_keep_last=4,
-            summary_reserved_tokens=3000,
-        )
-        worker.agent_app = SimpleNamespace(
-            get_state=lambda _config: SimpleNamespace(values=checkpoint_values),
-        )
-        worker.current_session = SimpleNamespace(
-            thread_id="thread-1",
-            last_run_stats="31.8s  ↓ 15921  ↑ 574",
-        )
-        worker.store = SimpleNamespace(save_active_session=lambda *_args, **_kwargs: None)
-        worker._active_summary_estimated_tokens = 57731
-        worker._active_summary_message_count = 40
-        worker._active_summary_has_summary = False
-        worker._active_summary_reserved_tokens = 3000
+        worker.config = SimpleNamespace(summary_threshold=40000, summary_keep_last=4)
+        worker.agent_app = SimpleNamespace(get_state=mock.Mock(), aget_state=mock.AsyncMock())
+        worker.current_session = SimpleNamespace(thread_id="thread-1", last_run_stats="old stats")
+        worker.store = SimpleNamespace(save_active_session=mock.Mock())
         emitted = []
         worker.event_emitted.connect(emitted.append)
+        progress = {"estimated_tokens": 3500, "progress": 0.95, "message_count": 2, "has_summary": True}
 
+        worker._emit_stream_event(StreamEvent("summary_progress", progress))
         worker._emit_stream_event(StreamEvent("summary_notice", {"kind": "auto_summary", "count": 12}))
         await asyncio.sleep(0)
 
         progress_events = [event for event in emitted if event.type == "summary_progress"]
         self.assertEqual(len(progress_events), 1)
-        payload = progress_events[0].payload
-        self.assertGreater(payload["estimated_tokens"], 3000)
-        self.assertNotEqual(payload["estimated_tokens"], payload["reserved_tokens"])
-        self.assertLess(payload["estimated_tokens"], 37000)
-        self.assertEqual(
-            payload["remaining_tokens"],
-            payload["trigger_tokens"] - payload["estimated_tokens"],
-        )
-        self.assertEqual(payload["message_count"], 2)
-        self.assertTrue(payload["has_summary"])
-        self.assertTrue(payload["live"])
+        self.assertEqual(progress_events[0].payload, progress)
+        worker.agent_app.get_state.assert_not_called()
+        worker.agent_app.aget_state.assert_not_called()
         self.assertEqual(worker.current_session.last_run_stats, "")
+        worker.store.save_active_session.assert_called_once()
 
     def test_build_transcript_payload_restores_turns_and_summary_notice(self):
         payload = build_transcript_payload(
@@ -4665,7 +4771,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         result = await nodes.agent_node(self._initial_state("Ответь коротко"))
 
         self.assertEqual(result["turn_outcome"], "finish_turn")
-        self.assertEqual(result["last_tool_error"], "Empty response from LLM")
+        self.assertEqual(result["last_tool_error"], "Empty response from LLM: no visible text or tool calls")
         response = result["messages"][-1]
         self.assertIsInstance(response, AIMessage)
         self.assertIn("The model returned an empty response", str(response.content))
@@ -5713,7 +5819,6 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             side_effect=repairs, return_value=[]
         )
         worker._emit_session_payload = mock.AsyncMock()
-        worker._reset_live_summary_progress_from_state = mock.AsyncMock()
         worker._stream_retry_backoff = mock.Mock(return_value=0)
         events = []
         worker.event_emitted.connect(events.append)

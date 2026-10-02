@@ -239,14 +239,6 @@ class AgentMixin:
 
             has_tool_calls = bool(tools_available and t_calls)
 
-            if has_tool_calls and open_tool_issue and open_tool_issue.get("kind") == "approval_denied":
-                response = self._new_ai_message_without_tool_calls(
-
-                    response,
-                    "Okay, I did not do that because you declined the action. Tell me what you want to do instead.",
-                )
-                has_tool_calls = False
-
             if protocol_issue is not None and not has_tool_calls:
                 response = self._hide_message_from_ui(
                     response,
@@ -257,13 +249,7 @@ class AgentMixin:
         outbound_messages.append(response)
 
         next_open_tool_issue = protocol_issue or open_tool_issue
-        if (
-            not has_tool_calls
-            and isinstance(next_open_tool_issue, dict)
-            and str(next_open_tool_issue.get("kind") or "").strip().lower() == "approval_denied"
-        ):
-            next_open_tool_issue = None
-        elif not has_tool_calls and protocol_issue is None:
+        if not has_tool_calls and protocol_issue is None:
             # A normal prose answer after a tool/recovery issue is the model's final response.
             # Clear the stale issue so the graph does not re-enter recovery and ask the model
             # to answer the same turn again.

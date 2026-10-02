@@ -18,6 +18,12 @@ START
      → END
 ```
 
+### Управление ресурсами MCP
+
+Инструменты регистрируются в `ToolRegistry`. Для MCP-серверов используется механизм **Persistent Sessions**:
+- **`PersistentMCPClient`**: Обертка над stdio-клиентом, которая удерживает один процесс сервера на протяжении всего жизненного цикла runtime. Это предотвращает потерю состояния (statefulness) и ошибки запуска при смене `cwd` (пути разрешаются относительно `mcp.json`).
+- **Cleanup**: Реестр инструментов гарантирует закрытие всех активных MCP-сессий при завершении runtime или возникновении критической ошибки инициализации.
+
 - `MAX_LOOPS` и per-tool loop guards предотвращают бесконечные циклы.
 - Recovery использует stateful error tracking: `attempts_by_strategy`, `progress_markers`, `llm_replan_attempted_for` — адаптивные повторы с учётом уникальных fingerprints ошибок.
 - При смене проблемы (новый fingerprint) retry-бюджет сбрасывается; для одной и той же проблемы разрешены несколько `llm_replan` попыток в рамках `SELF_CORRECTION_RETRY_LIMIT`.

@@ -523,17 +523,22 @@ def build_repair_plan(
         and tool_name not in {"cli_exec", "edit_file", "write_file"}
     ):
         return _repair_plan(
-            strategy="external_block",
+            strategy="llm_replan",
             reason="non_retryable_mutating_tool_error",
             fingerprint=fingerprint,
             tool_name=tool_name,
             suggested_tool_name=tool_name,
             original_args=original_args,
             patched_args=original_args,
-            notes="Non-retryable mutating tool failures should be handed off instead of retried automatically.",
+            notes=(
+                "The mutating tool failed in a way that must not be auto-retried. "
+                "Return control to the model so it can explain the failure or adapt the approach."
+            ),
             max_auto_repairs=max_auto_repairs,
-            terminal_reason="non_retryable_mutating_tool_error",
-            needs_external_input=True,
+            llm_guidance=(
+                "Do not repeat the failed call unchanged. Inspect the error output, fix the arguments or switch to a "
+                "safer verification path, and tell the user what failed and what happens next."
+            ),
         )
 
     if error_type in {"TIMEOUT", "NETWORK"}:

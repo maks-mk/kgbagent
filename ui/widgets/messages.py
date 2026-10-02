@@ -44,6 +44,11 @@ class NoticeWidget(QFrame):
 
         self.text_label = QLabel(message)
         self.text_label.setObjectName("MetaText")
+        # Provider error bodies can contain raw HTML (e.g. a WAF "405 Not Allowed"
+        # page). QLabel defaults to Qt.AutoText and would parse tags like <img>
+        # without src, triggering QFSFileEngine "No file name specified" warnings
+        # and leaking page internals (traceid JSON). Render notices as plain text.
+        self.text_label.setTextFormat(Qt.PlainText)
         self.text_label.setWordWrap(True)
         layout.addWidget(self.text_label, 1)
 

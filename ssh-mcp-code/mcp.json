@@ -30,8 +30,11 @@
     }
   },
   "ssh-mcp": {
-    "command": "./ssh-mcp/ssh-mcp.exe",
-    "args": [],
+    "command": "D:\\py_projects\\simple_ai_agent\\agent+stategraph\\ssh-mcp\\ssh_mcp_windows_native_0.3.0\\.venv\\Scripts\\python.exe",
+    "args": [
+      "-m",
+      "ssh_mcp"
+    ],
     "transport": "stdio",
     "enabled": true
   },
@@ -44,6 +47,6 @@
     "run_background_process": false,
     "safe_delete_directory": true,
     "write_file": true,
-    "read_skills": false
+    "read_skills": true
   }
 }

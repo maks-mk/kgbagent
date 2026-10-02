@@ -673,7 +673,7 @@ class ModelSettingsDialog(QDialog):
         form_layout.addRow(name_label, self.name_edit)
         form_layout.addRow(provider_label, self.provider_combo)
         form_layout.addRow(model_label, model_field)
-        form_layout.addRow(api_key_label, api_key_row)
+        form_layout.addRow(base_url_label, self.base_url_edit)
         editor_layout.addWidget(form_frame)
 
         advanced_content = QWidget()
@@ -683,7 +683,7 @@ class ModelSettingsDialog(QDialog):
         advanced_layout.setVerticalSpacing(8)
         advanced_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         advanced_layout.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        advanced_layout.addRow(base_url_label, self.base_url_edit)
+        advanced_layout.addRow(api_key_label, api_key_row)
         advanced_layout.addRow(images_label, images_row)
 
         rotation_content = QWidget()

@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "data_version": 1,
-  "verified_on": "2026-09-12",
-  "verification_basis": "Same provider facts as provider_registry.json (schema_version 1, data_version 6). Only the data structure changed; provider behavior was not re-verified.",
+  "data_version": 2,
+  "verified_on": "2026-10-01",
+  "verification_basis": "Same provider facts as provider_registry.json (schema_version 1, data_version 6), plus MiniMax official API added in data_version 2. MiniMax was verified empirically on 2026-10-01 with /v1/responses streaming probes against api.minimaxi.com (MiniMax-M3): reasoning is only separated into response.reasoning_text.* events when a reasoning effort is present, otherwise the model writes its chain of thought into the assistant message text. All other provider behavior was not re-verified.",
   "providers": [
     {
       "id": "openai",
@@ -214,6 +214,18 @@
           "param": "reasoning_effort",
           "values": { "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high" },
           "notes": "B.AI (api.b.ai) and TokenBay (api.tokenbay.com). Both use top-level reasoning_effort=low|medium|high with the same normalization (minimal→low, xhigh→high)."
+        }
+      ]
+    },
+    {
+      "id": "minimax",
+      "hosts": ["api.minimaxi.com", "api.minimax.io"],
+      "rules": [
+        {
+          "models": { "contains": ["minimax"] },
+          "param": "reasoning_effort",
+          "values": { "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+          "notes": "MiniMax official API (api.minimaxi.com, api.minimax.io) in Responses mode. The reasoning payload must always be sent: without it MiniMax-M3 does not use the response.reasoning_text.* channel and writes its chain of thought directly into the assistant message text, so private deliberation becomes visible in chat. Every level is forwarded 1:1 because MiniMax does not document distinct effort levels and the probes accepted none|minimal|low|medium|high|xhigh|max. Scoped to MiniMax model names so legacy text models on the same host do not receive unknown parameters."
         }
       ]
     },

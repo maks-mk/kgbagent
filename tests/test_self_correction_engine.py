@@ -123,6 +123,29 @@ class SelfCorrectionEngineTests(unittest.TestCase):
         self.assertTrue(plan.safety_violation)
         self.assertEqual(plan.reason, "workspace_boundary_violation")
 
+    def test_build_repair_plan_non_retryable_mutating_tool_error_replans_with_llm(self):
+        issue = {
+            "kind": "tool_error",
+            "tool_names": ["ssh_list_sessions"],
+            "tool_args": {"host": "demo"},
+            "summary": "ERROR[EXECUTION]: [WinError 2] The system cannot find the file specified",
+            "error_type": "EXECUTION",
+            "details": {
+                "retryable": False,
+                "tool_read_only": False,
+                "tool_mutating": True,
+                "tool_requires_approval": True,
+            },
+        }
+        plan = build_repair_plan(issue, current_task="Покажи активные сессии", max_auto_repairs=2)
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertTrue(plan.retryable)
+        self.assertEqual(plan.strategy, "llm_replan")
+        self.assertEqual(plan.reason, "non_retryable_mutating_tool_error")
+        self.assertEqual(plan.terminal_reason, "")
+        self.assertFalse(plan.needs_external_input)
+
     def test_repair_fingerprint_is_stable(self):
         first = repair_fingerprint("edit_file", {"path": "a.txt", "old_string": "x"}, "VALIDATION")
         second = repair_fingerprint("edit_file", {"path": "a.txt", "old_string": "x"}, "VALIDATION")

@@ -357,6 +357,46 @@ def should_summarize(
     return True
 
 
+def summary_progress_payload(
+    messages: List[BaseMessage],
+    *,
+    threshold: int,
+    keep_last: int,
+    summary: str = "",
+    reserved_tokens: int = 0,
+    allow_tool_round_boundaries: bool = False,
+    model_name: str = "",
+) -> dict:
+    """Use the same context budget and compaction guards for the node and its UI."""
+    summary_tokens = estimate_summary_tokens(summary, model_name=model_name)
+    effective_reserved = reserved_tokens + summary_tokens
+    estimated = estimate_context_tokens(messages, reserved_tokens=effective_reserved, model_name=model_name)
+    has_summary = bool(summary)
+    trigger = summary_trigger_tokens(threshold, has_summary=has_summary)
+    return {
+        "estimated_tokens": estimated,
+        "threshold": threshold,
+        "trigger_tokens": trigger,
+        "remaining_tokens": max(0, trigger - estimated),
+        "reserved_tokens": reserved_tokens if messages else 0,
+        "summary_tokens": summary_tokens,
+        "progress": 1.0 - summary_fill_ratio(
+            estimated, threshold=threshold, baseline_tokens=effective_reserved,
+        ),
+        "message_count": len(messages),
+        "has_summary": has_summary,
+        "will_summarize": should_summarize(
+            messages,
+            threshold=threshold,
+            keep_last=keep_last,
+            has_summary=has_summary,
+            reserved_tokens=effective_reserved,
+            allow_tool_round_boundaries=allow_tool_round_boundaries,
+            model_name=model_name,
+        ),
+    }
+
+
 def _tool_round_boundaries(messages: List[BaseMessage], *, user_boundaries: set[int]) -> List[int]:
     """Indexes that start a completed tool round: an AI message with tool_calls whose
     results are already present. Everything before such an index is finished work, so it

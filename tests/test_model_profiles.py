@@ -312,6 +312,23 @@ class ModelProfilesTests(unittest.TestCase):
         self.assertEqual([option["value"] for option in always_on], ["low", "medium", "high", "max", "xhigh"])
         self.assertEqual(unknown, [])
 
+    def test_anthropic_reasoning_options_accept_dot_and_dash_separators(self):
+        # Anthropic aliases the same model with both "claude-opus-5.5" and
+        # "claude-opus-5-5". Both spellings must resolve to the same family
+        # without listing each alias in the capability tables.
+        opus_5_dot = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-opus-5.5"})
+        opus_5_dash = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-opus-5-5"})
+        opus_48_dot = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-opus-4.8"})
+        # "claude-fable-5" forces thinking on, so it intentionally has no "off".
+        fable_5_dot = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-fable-5.0"})
+
+        expected_full = ["off", "low", "medium", "high", "max", "xhigh"]
+        expected_always_on = ["low", "medium", "high", "max", "xhigh"]
+        self.assertEqual([option["value"] for option in opus_5_dot], expected_full)
+        self.assertEqual([option["value"] for option in opus_5_dash], expected_full)
+        self.assertEqual([option["value"] for option in opus_48_dot], expected_full)
+        self.assertEqual([option["value"] for option in fable_5_dot], expected_always_on)
+
     def test_profile_reasoning_overrides_use_provider_specific_fields(self):
         self.assertEqual(
             profile_reasoning_overrides({"provider": "openai", "reasoning": {"enabled": False}}),

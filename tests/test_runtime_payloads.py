@@ -119,6 +119,21 @@ class RuntimePayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["progress"], 0.0)
         self.assertTrue(payload["will_summarize"])
 
+    def test_summary_progress_uses_mid_run_tool_boundaries(self):
+        config = SimpleNamespace(summary_threshold=1000, summary_keep_last=1)
+        messages = [
+            HumanMessage(content="active task"),
+            AIMessage(content="", tool_calls=[{"id": "tc-1", "name": "read_file", "args": {}}]),
+            ToolMessage(content="large output " * 2000, tool_call_id="tc-1"),
+            AIMessage(content="", tool_calls=[{"id": "tc-2", "name": "read_file", "args": {}}]),
+            ToolMessage(content="recent output", tool_call_id="tc-2"),
+        ]
+        entry = build_summary_progress_payload(config, {"messages": messages, "steps": 0})
+        active = build_summary_progress_payload(config, {"messages": messages, "steps": 2})
+        self.assertFalse(entry["will_summarize"])
+        self.assertTrue(active["will_summarize"])
+        self.assertEqual(active["progress"], 0.0)
+
     def test_generate_chat_title_strips_common_prefixes_and_limits_length(self):
         self.assertEqual(
             generate_chat_title("Помоги скачать и настроить Apache на Windows"),

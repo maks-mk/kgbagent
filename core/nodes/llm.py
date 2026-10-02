@@ -19,6 +19,7 @@ from core.api_key_rotation import (
 from core.state import AgentState
 from core.node_errors import EmptyLLMResponseError
 from core.message_utils import stringify_content
+from core.text_utils import has_visible_text
 from core.providers.anthropic import anthropic_prompt_cache_kwargs
 from core.providers.factory import prepare_llm_with_tools
 
@@ -130,15 +131,31 @@ class LLMMixin:
                 normalized_context = self._normalize_system_prefix_for_provider(context)
                 response = await current_llm.ainvoke(normalized_context, **invocation_kwargs)
                 invalid_calls = getattr(response, "invalid_tool_calls", None)
-                if not response.content and not response.tool_calls and not invalid_calls:
-                    raise EmptyLLMResponseError("Empty response from LLM")
+                # Thinking/redacted blocks are non-empty content, but not a visible answer.
+                has_content = has_visible_text(stringify_content(response.content))
+                if not has_content and not response.tool_calls and not invalid_calls:
+                    metadata = getattr(response, "response_metadata", {}) or {}
+                    self._log_run_event(
+                        state,
+                        "llm_invoke_empty_response",
+                        run_id=None if state is None else state.get("run_id", ""),
+                        node=node_name,
+                        attempt=invocation_attempt,
+                        stop_reason=metadata.get("stop_reason") or metadata.get("finish_reason"),
+                        model=metadata.get("model_name") or metadata.get("model"),
+                        content_types=[
+                            block.get("type", "unknown") if isinstance(block, dict) else "text"
+                            for block in response.content
+                        ] if isinstance(response.content, list) else ["text"],
+                    )
+                    raise EmptyLLMResponseError("Empty response from LLM: no visible text or tool calls")
                 self._log_run_event(
                     state,
                     "llm_invoke_success",
                     run_id=None if state is None else state.get("run_id", ""),
                     node=node_name,
                     attempt=invocation_attempt,
-                    has_content=bool(stringify_content(response.content).strip()),
+                    has_content=has_content,
                     tool_calls=len(getattr(response, "tool_calls", []) or []),
                 )
                 return response

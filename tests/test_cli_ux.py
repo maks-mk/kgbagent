@@ -14,6 +14,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QFrame, QMessageBox, QPushButton, QSizePolicy, QToolBar, QToolButton, QWidget
 
 import qtawesome as qta
+from langchain_core.messages import AIMessageChunk, ToolMessage
 
 import main as agent_cli
 from core.model_fetcher import ModelEntry
@@ -22,7 +23,7 @@ from core.model_profiles import normalize_profiles_payload
 from core.tool_policy import ToolMetadata
 from ui.runtime import build_runtime_snapshot, summarize_approval_request
 from ui.runtime_worker import AgentRunWorker, AgentRuntimeController
-from ui.streaming import StreamEvent
+from ui.streaming import StreamEvent, StreamProcessor
 from ui.theme import AMBER_WARNING, BORDER, ERROR_RED, SUCCESS_GREEN, SURFACE_BG, SURFACE_CARD, TEXT_MUTED, build_stylesheet
 from ui.widgets.composer import _ComposerMentionItemWidget
 from ui.widgets.foundation import AutoTextBrowser, CodeBlockWidget, CopySafePlainTextEdit, DiffBlockWidget, TRANSCRIPT_MAX_WIDTH
@@ -273,6 +274,23 @@ class GuiUxTests(unittest.TestCase):
             self.assertEqual(widget.output_view.toPlainText(), "")
             widget._flush_pending_output()
             self.assertEqual(widget.output_view.toPlainText(), "ab")
+        finally:
+            widget.deleteLater()
+
+    def test_notice_widget_renders_html_error_body_as_plain_text(self):
+        # A provider/WAF error body (e.g. a "405 Not Allowed" HTML page with
+        # <img id="block_image">) must not be parsed as rich text: parsing it
+        # makes QLabel try to load the <img> resource (QFSFileEngine warnings)
+        # and strips tags, leaking page internals such as traceid JSON.
+        html_error = (
+            '<html><body><img id="block_image">'
+            '<textarea id="renderData">{"traceid":"abc123","lang":"en"}</textarea>'
+            "</body></html>"
+        )
+        widget = NoticeWidget(html_error, level="error")
+        try:
+            self.assertEqual(widget.text_label.textFormat(), Qt.PlainText)
+            self.assertEqual(widget.text_label.text(), html_error)
         finally:
             widget.deleteLater()
 
@@ -2443,6 +2461,53 @@ class GuiUxTests(unittest.TestCase):
         self.assertTrue(tool_card.tool_button.isChecked())
         self.assertTrue(tool_card.args_container.isHidden())
         self.assertFalse(tool_card.diff_section.content_container.isHidden())
+
+    def test_write_file_card_appears_at_complete_path_before_content(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Сохрани файл"}))
+        processor = StreamProcessor(self.window._handle_event)
+        processor._handle_agent_message(
+            AIMessageChunk(content="", tool_call_chunks=[{
+                "name": "write_file", "args": '{"path": "notes.md',
+                "id": "call-write", "index": 0,
+            }]), source="messages",
+        )
+        self._process_events()
+        self.assertNotIn("call-write", self.window.current_turn.tool_cards)
+
+        processor._handle_agent_message(
+            AIMessageChunk(content="", tool_call_chunks=[{
+                "name": None, "args": '", "content": "', "id": None, "index": 0,
+            }]), source="messages",
+        )
+        self._process_events()
+        card = self.window.current_turn.tool_cards["call-write"]
+        self.assertFalse(card.isHidden())
+        self.assertEqual(card.action_label.full_text(), "Writing notes.md")
+        self.assertEqual(card.payload["args"], {"path": "notes.md"})
+
+        processor._handle_agent_message(
+            AIMessageChunk(content="", tool_call_chunks=[{
+                "name": None, "args": 'hello"}', "id": None, "index": 0,
+            }], chunk_position="last"), source="messages",
+        )
+        args = {"path": "notes.md", "content": "hello"}
+        processor._handle_custom({"type": "tool_batch_started", "tool_calls": [
+            {"id": "call-write", "name": "write_file", "args": args},
+        ]})
+        self._process_events()
+        self.assertIs(self.window.current_turn.tool_cards["call-write"], card)
+        self.assertEqual(len(self.window.current_turn.tool_cards), 1)
+        self.assertEqual(card.payload["args"], args)
+
+        processor._handle_tool_result(ToolMessage(
+            content="File written", name="write_file", tool_call_id="call-write",
+            additional_kwargs={"tool_args": args},
+        ))
+        self._process_events()
+        self.assertIs(self.window.current_turn.tool_cards["call-write"], card)
+        self.assertEqual(card.payload["phase"], "finished")
+        self.assertFalse(card.payload["is_error"])
 
     def test_preview_tool_card_stays_hidden_until_resolved_refresh_arrives(self):
         self.window._handle_initialized(self._snapshot_payload())

@@ -187,6 +187,24 @@ class ProviderRegistryTests(unittest.TestCase):
         self.assertEqual(payload["reasoning_effort"], "high")
         self.assertEqual(payload["extra_body"]["thinking"]["type"], "enabled")
 
+    def test_minimax_registry_always_sends_reasoning_effort(self):
+        registry = ProviderRegistry.from_path(Path(__file__).parents[1] / "provider_registry.json")
+
+        config = registry.match("https://api.minimaxi.com/v1", "MiniMax-M3")
+        self.assertEqual(config["id"], "minimax")
+        self.assertEqual(config["param"], "reasoning.effort")
+
+        # MiniMax only moves its chain of thought into the reasoning channel when a
+        # reasoning payload is present, so no level may be dropped from the mapping.
+        for effort in ("none", "minimal", "low", "medium", "high", "xhigh", "max"):
+            with self.subTest(effort=effort):
+                payload = {"model": "MiniMax-M3"}
+                build_reasoning_kwargs(payload, config, effort)
+                self.assertEqual(payload, {"model": "MiniMax-M3", "reasoning": {"effort": effort}})
+
+        self.assertEqual(registry.match("https://api.minimax.io/v1", "MiniMax-M3")["id"], "minimax")
+        self.assertIsNone(registry.match("https://api.minimaxi.com/v1", "abab6.5s-chat"))
+
     def test_build_reasoning_kwargs_toggle_preserves_typed_values(self):
         config = ProviderRegistry(
             _registry(

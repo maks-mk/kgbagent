@@ -260,19 +260,24 @@ async def build_agent_app(
 
     # 1. Initialize Resources
     tool_registry = ToolRegistry(config)
-    await tool_registry.load_all()
-    tool_registry.disabled_local_tools.update(disabled_local_tools or set())
-    checkpoint_runtime = await create_checkpoint_runtime(config)
-    run_logger = JsonlRunLogger(config.run_log_dir)
-    tool_registry.checkpoint_info = checkpoint_runtime.to_dict()
-    tool_registry.checkpoint_runtime = checkpoint_runtime
-    tool_registry.register_cleanup_callback(checkpoint_runtime.aclose)
-    return build_compiled_agent(
-        config,
-        tool_registry,
-        checkpoint_runtime,
-        run_logger=run_logger,
-    )
+    try:
+        await tool_registry.load_all()
+        tool_registry.disabled_local_tools.update(disabled_local_tools or set())
+        checkpoint_runtime = await create_checkpoint_runtime(config)
+        tool_registry.register_cleanup_callback(checkpoint_runtime.aclose)
+        run_logger = JsonlRunLogger(config.run_log_dir)
+        tool_registry.checkpoint_info = checkpoint_runtime.to_dict()
+        tool_registry.checkpoint_runtime = checkpoint_runtime
+        return build_compiled_agent(
+            config,
+            tool_registry,
+            checkpoint_runtime,
+            run_logger=run_logger,
+        )
+    except BaseException:
+        # Persistent MCP processes must not outlive a failed/cancelled build.
+        await tool_registry.cleanup()
+        raise
 
 
 if __name__ == "__main__":

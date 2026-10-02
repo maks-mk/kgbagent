@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import shutil
 import unittest
 from pathlib import Path
@@ -2596,6 +2597,219 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertEqual({payload["tool_id"] for payload in started}, {"call-stream"})
         self.assertEqual(started[0]["args"], {"path": "demo.txt"})
         self.assertFalse(started[0].get("refresh", False))
+
+    def test_write_file_stream_shows_card_only_after_complete_path(self):
+        for key in ("path", "file_path", "filepath"):
+            for path in ("demo.txt", 'folder/quoted"name.txt', "folder\\файл.txt"):
+                with self.subTest(key=key, path=path):
+                    events = []
+                    processor = StreamProcessor(events.append)
+                    prefix = "{" + json.dumps(key) + ": " + json.dumps(path)
+                    for position, character in enumerate(prefix):
+                        processor._handle_agent_message(
+                            AIMessageChunk(content="", tool_call_chunks=[{
+                                "name": "write_file" if position == 0 else None,
+                                "args": character,
+                                "id": "call-write" if position == 0 else None,
+                                "index": 0,
+                            }]),
+                            source="messages",
+                        )
+                        started = [e.payload for e in events if e.type == "tool_started"]
+                        self.assertEqual(len(started), int(position == len(prefix) - 1))
+                    self.assertEqual(started[0]["args"]["path"], path)
+                    self.assertEqual(started[0]["display_state"], "resolved")
+                    self.assertEqual(processor.active_node, "agent")
+                    self.assertNotIn("Running tools", [e.payload.get("label") for e in events])
+
+    def test_write_file_stream_does_not_show_invalid_or_missing_path(self):
+        for raw_args in (
+            '', '{"path": "', '{"path": "demo.txt', '{"path": ""}',
+            '{"path": "   "}', '{"path": null}', '{"path": 123}',
+            '{"path": ["demo.txt"]}', '{"content": "text"}',
+            '{"content": "escaped \\"path\\": \\"fake.txt\\""}',
+            '{"nested": {"path": "demo.txt"}}', '{"path": invalid}',
+        ):
+            for index in (0, None):
+                with self.subTest(raw_args=raw_args, index=index):
+                    events = []
+                    processor = StreamProcessor(events.append)
+                    processor._handle_agent_message(
+                        AIMessageChunk(content="", tool_call_chunks=[{
+                            "name": "write_file", "args": raw_args,
+                            "id": "call-write", "index": index,
+                        }]), source="messages",
+                    )
+                    self.assertEqual([e for e in events if e.type == "tool_started"], [])
+
+    def test_write_file_stream_keeps_one_card_through_content_execution_and_result(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        processor._handle_agent_message(
+            AIMessageChunk(content="", tool_call_chunks=[{
+                "name": "write_file", "args": '{"path": "demo.txt", "content": "',
+                "id": "call-write", "index": 0,
+            }]), source="messages",
+        )
+        self.assertEqual(len([e for e in events if e.type == "tool_started"]), 1)
+        for fragment in ("hello", " world"):
+            processor._handle_agent_message(
+                AIMessageChunk(content="", tool_call_chunks=[{
+                    "name": None, "args": fragment, "id": None, "index": 0,
+                }]), source="messages",
+            )
+        # Unfinished content is not copied into UI events on every token.
+        self.assertEqual(len([e for e in events if e.type == "tool_started"]), 1)
+        processor._handle_agent_message(
+            AIMessageChunk(content="", tool_call_chunks=[{
+                "name": None, "args": '"}', "id": None, "index": 0,
+            }], chunk_position="last"), source="messages",
+        )
+        tool_call = {"id": "call-write", "name": "write_file",
+                     "args": {"path": "demo.txt", "content": "hello world"}}
+        processor._handle_updates({"agent": {"messages": [AIMessage(content="", tool_calls=[tool_call])]}})
+        processor._handle_custom({"type": "tool_batch_started", "tool_calls": [tool_call]})
+        processor._handle_tool_result(ToolMessage(
+            content="File written", name="write_file", tool_call_id="call-write",
+            additional_kwargs={"tool_args": tool_call["args"]},
+        ))
+        started = [e.payload for e in events if e.type == "tool_started"]
+        finished = [e.payload for e in events if e.type == "tool_finished"]
+        self.assertEqual(len([p for p in started if not p.get("refresh")]), 1)
+        self.assertEqual({p["tool_id"] for p in started + finished}, {"call-write"})
+        self.assertEqual(started[-1]["args"], tool_call["args"])
+        self.assertEqual(len(finished), 1)
+        self.assertFalse(finished[0]["is_error"])
+        self.assertEqual(processor.tool_buffer, {})
+
+    def test_write_file_stream_handles_path_after_content_and_nonstreamed_calls(self):
+        for message in (
+            AIMessageChunk(content="", tool_call_chunks=[{
+                "name": "write_file", "args": '{"content": "hello", "path": "demo.txt"',
+                "id": "call-write", "index": None,
+            }]),
+            AIMessage(content="", tool_calls=[{
+                "name": "write_file", "args": {"path": "demo.txt", "content": "hello"},
+                "id": "call-write",
+            }]),
+        ):
+            with self.subTest(message_type=type(message).__name__):
+                events = []
+                processor = StreamProcessor(events.append)
+                processor._handle_agent_message(message, source="messages")
+                started = [e.payload for e in events if e.type == "tool_started"]
+                self.assertEqual(len(started), 1)
+                self.assertEqual(started[0]["args"]["path"], "demo.txt")
+
+    def test_write_file_stream_aliases_late_id_and_isolates_parallel_calls(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        processor._handle_agent_message(
+            AIMessageChunk(content="", tool_call_chunks=[
+                {"name": "write_file", "args": '{"path": "a.txt", "content": "', "id": None, "index": 0},
+                {"name": "read_file", "args": '{"path": "b.txt"}', "id": "call-read", "index": 1},
+                {"name": "write_file", "args": '{"path": "c', "id": "call-c", "index": 2},
+            ]), source="messages",
+        )
+        started = [e.payload for e in events if e.type == "tool_started"]
+        self.assertEqual(len(started), 1)
+        preview_id = started[0]["tool_id"]
+        processor._handle_agent_message(
+            AIMessageChunk(content="", tool_call_chunks=[
+                {"name": None, "args": 'hello"}', "id": "call-real", "index": 0},
+                {"name": None, "args": '.txt", "content": "', "id": None, "index": 2},
+            ]), source="messages",
+        )
+        processor._handle_tool_result(ToolMessage(
+            content="File written", name="write_file", tool_call_id="call-real",
+            additional_kwargs={"tool_args": {"path": "a.txt", "content": "hello"}},
+        ))
+        started = [e.payload for e in events if e.type == "tool_started" and not e.payload.get("refresh")]
+        finished = [e.payload for e in events if e.type == "tool_finished"]
+        self.assertEqual([p["args"]["path"] for p in started], ["a.txt", "c.txt"])
+        self.assertEqual(finished[0]["tool_id"], preview_id)
+        self.assertEqual(finished[0]["args"]["path"], "a.txt")
+        self.assertEqual(processor.tool_buffer["call-read"]["args"], {"path": "b.txt"})
+
+    def test_write_file_stream_reuses_idless_card_when_batch_supplies_id(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        processor._handle_agent_message(
+            AIMessageChunk(content="", tool_call_chunks=[{
+                "name": "write_file", "args": '{"path": "demo.txt", "content": "',
+                "id": None, "index": 0,
+            }]), source="messages",
+        )
+        preview_id = next(e.payload["tool_id"] for e in events if e.type == "tool_started")
+        call = {"name": "write_file", "id": "call-real",
+                "args": {"path": "demo.txt", "content": "hello"}}
+        processor._handle_updates({"agent": {"messages": [AIMessage(content="", tool_calls=[call])]}})
+        processor._handle_custom({"type": "tool_batch_started", "tool_calls": [call]})
+        processor._handle_tool_result(ToolMessage(
+            content="File written", name="write_file", tool_call_id="call-real",
+            additional_kwargs={"tool_args": call["args"]},
+        ))
+        tool_events = [e.payload for e in events if e.type in {"tool_started", "tool_finished"}]
+        self.assertEqual({p["tool_id"] for p in tool_events}, {preview_id})
+        self.assertEqual(processor.tool_buffer, {})
+
+    def test_write_file_stream_retry_clears_cards_and_partial_arguments(self):
+        for event_type in ("provider_retry", "api_key_rotated"):
+            with self.subTest(event_type=event_type):
+                events = []
+                processor = StreamProcessor(events.append)
+                processor._handle_agent_message(
+                    AIMessageChunk(content="", tool_call_chunks=[
+                        {"name": "write_file", "args": '{"path": "old.txt", "content": "old',
+                         "id": "call-old", "index": 0},
+                        {"name": "read_file", "args": '{"path": "unfinished',
+                         "id": "call-buffered", "index": 1},
+                        {"name": "write_file", "args": " ", "id": "call-unparsed", "index": 2},
+                    ]), source="messages",
+                )
+                processor._handle_custom({"type": event_type})
+                finished = [e.payload for e in events if e.type == "tool_finished"]
+                self.assertIn("call-old", [p["tool_id"] for p in finished])
+                self.assertTrue(all(p["interrupted"] for p in finished))
+                self.assertEqual(processor.tool_buffer, {})
+                self.assertEqual(processor.tool_start_times, {})
+                self.assertEqual(processor._tool_chunk_accumulators, {})
+                self.assertEqual(processor._tool_index_to_id, {})
+                processor._handle_agent_message(
+                    AIMessageChunk(content="", tool_call_chunks=[{
+                        "name": "write_file", "args": '{"path": "new.txt", "content": "',
+                        "id": "call-new", "index": 0,
+                    }]), source="messages",
+                )
+                started = [e.payload for e in events if e.type == "tool_started"]
+                self.assertEqual(started[-1]["tool_id"], "call-new")
+                self.assertEqual(started[-1]["args"], {"path": "new.txt"})
+
+    def test_write_file_stream_finalizes_early_card_on_abort(self):
+        for reason in ("stream_error", "cancelled", "incomplete"):
+            with self.subTest(reason=reason):
+                events = []
+                processor = StreamProcessor(events.append)
+
+                async def stream():
+                    yield ("messages", (AIMessageChunk(content="", tool_call_chunks=[{
+                        "name": "write_file", "args": '{"path": "demo.txt", "content": "partial',
+                        "id": "call-write", "index": 0,
+                    }]), {"langgraph_node": "agent"}))
+                    if reason == "stream_error":
+                        raise RuntimeError("upstream disconnected")
+                    if reason == "cancelled":
+                        raise asyncio.CancelledError()
+
+                asyncio.run(processor.process_stream(stream()))
+                started = [e.payload for e in events if e.type == "tool_started"]
+                finished = [e.payload for e in events if e.type == "tool_finished"]
+                self.assertEqual(len(started), 1)
+                self.assertEqual(len(finished), 1)
+                self.assertEqual(finished[0]["tool_id"], started[0]["tool_id"])
+                self.assertEqual(finished[0]["interruption_reason"], reason)
+                self.assertEqual(processor.tool_buffer, {})
+                self.assertEqual(processor.tool_start_times, {})
 
     def test_stream_processor_defers_tool_started_until_batch_event(self):
         events = []

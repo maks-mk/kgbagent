@@ -10,7 +10,7 @@ import uuid
 from typing import Any
 
 from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from core.config import AgentConfig
@@ -26,12 +26,10 @@ from core.multimodal import (
 )
 from core.run_logger import JsonlRunLogger
 from core.session_store import SessionSnapshot, SessionStore
-from core.summarize_policy import token_model_name, estimate_tokens, summary_fill_ratio, summary_trigger_tokens
 from core.text_utils import TokenTracker
 from ui.runtime_payloads import (
     APPROVAL_MODE_ALWAYS,
     APPROVAL_MODE_PROMPT,
-    build_summary_progress_payload,
     build_approval_payload,
     build_ui_payload,
     build_user_choice_payload,
@@ -152,12 +150,6 @@ class AgentRunWorker(QObject):
         self._active_run_elapsed_seconds = 0.0
         self._active_run_token_tracker: TokenTracker | None = None
         self._active_request_has_images = False
-        self._active_summary_estimated_tokens = 0
-        self._active_summary_message_count = 0
-        self._active_summary_has_summary = False
-        self._active_summary_reserved_tokens = 0
-        self._active_summary_memory_tokens = 0
-        self._active_provider_input_tokens = 0
         self._coordinator = RuntimeSessionCoordinator(self)
 
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
@@ -328,7 +320,6 @@ class AgentRunWorker(QObject):
                     logger.debug("Failed to persist session Cache Hit tokens.", exc_info=True)
         self.event_emitted.emit(event)
         self._maybe_reset_summary_progress_after_compaction(event)
-        self._maybe_emit_live_summary_progress(event)
         if event.type in {"tool_args_missing"}:
             self._log_ui_run_event(
                 event.type,
@@ -349,95 +340,6 @@ class AgentRunWorker(QObject):
                 self.store.save_active_session(self.current_session, touch=False, set_active=True)
             except Exception:
                 logger.debug("Failed to persist cleared run stats after auto-summary.", exc_info=True)
-        self._refresh_live_summary_progress_from_state_soon()
-
-    def _refresh_live_summary_progress_from_state_soon(self) -> None:
-        if self.config is None or self.agent_app is None or self.current_session is None:
-            return
-
-        async def _refresh() -> None:
-            await self._reset_live_summary_progress_from_state(emit=True)
-
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            if self._loop is not None and self._loop.is_running():
-                self._loop.call_soon_threadsafe(lambda: asyncio.create_task(_refresh()))
-                return
-            self._run(_refresh())
-            return
-        loop.create_task(_refresh())
-
-    def _maybe_emit_live_summary_progress(self, event: StreamEvent) -> None:
-        if event.type != "tool_finished" or self.config is None:
-            return
-        payload = dict(event.payload or {})
-        content = str(payload.get("content", "") or "")
-        if not content:
-            return
-        tool_name = str(payload.get("name", "") or "tool").strip() or "tool"
-        tool_tokens = estimate_tokens(
-            [ToolMessage(content=content, tool_call_id="live-summary-progress", name=tool_name)],
-            model_name=token_model_name(self.config),
-        )
-        self._active_summary_estimated_tokens = max(0, self._active_summary_estimated_tokens + tool_tokens)
-        self._active_summary_message_count = max(0, self._active_summary_message_count + 1)
-        self.event_emitted.emit(StreamEvent("summary_progress", self._build_live_summary_progress_payload()))
-
-    def _build_live_summary_progress_payload(self) -> dict[str, Any]:
-        if self.config is None:
-            return {}
-        threshold = max(0, int(getattr(self.config, "summary_threshold", 0) or 0))
-        estimated = max(0, int(self._active_summary_estimated_tokens or 0))
-        reserved = max(0, int(self._active_summary_reserved_tokens or 0))
-        memory_tokens = max(0, int(self._active_summary_memory_tokens or 0))
-        has_summary = bool(self._active_summary_has_summary)
-        trigger = summary_trigger_tokens(threshold, has_summary=has_summary)
-        return {
-            "estimated_tokens": estimated,
-            "threshold": threshold,
-            "trigger_tokens": trigger,
-            "remaining_tokens": max(0, trigger - estimated),
-            "reserved_tokens": reserved,
-            "summary_tokens": memory_tokens,
-            "provider_input_tokens": max(0, int(self._active_provider_input_tokens or 0)),
-            "progress": 1.0 - summary_fill_ratio(
-                estimated,
-                threshold=threshold,
-                baseline_tokens=reserved + memory_tokens,
-            ),
-            "message_count": max(0, int(self._active_summary_message_count or 0)),
-            "has_summary": has_summary,
-            # Live updates are approximate; the full checkpoint payload decides readiness.
-            "will_summarize": False,
-            "live": True,
-        }
-
-    async def _reset_live_summary_progress_from_state(self, *, emit: bool = False) -> None:
-        self._active_summary_estimated_tokens = 0
-        self._active_summary_message_count = 0
-        self._active_summary_has_summary = False
-        self._active_summary_reserved_tokens = 0
-        self._active_summary_memory_tokens = 0
-        self._active_provider_input_tokens = 0
-        if self.config is None or self.agent_app is None or self.current_session is None:
-            return
-        try:
-            from ui.runtime_payloads import load_state_values
-
-            values = await load_state_values(self.agent_app, self.current_session.thread_id)
-        except Exception:
-            logger.debug("Failed to refresh live summary progress baseline.", exc_info=True)
-            return
-        progress = build_summary_progress_payload(self.config, values)
-        self._active_summary_estimated_tokens = max(0, int(progress.get("estimated_tokens", 0) or 0))
-        self._active_summary_message_count = max(0, int(progress.get("message_count", 0) or 0))
-        self._active_summary_has_summary = bool(progress.get("has_summary"))
-        self._active_summary_reserved_tokens = max(0, int(progress.get("reserved_tokens", 0) or 0))
-        self._active_summary_memory_tokens = max(0, int(progress.get("summary_tokens", 0) or 0))
-        self._active_provider_input_tokens = max(0, int(progress.get("provider_input_tokens", 0) or 0))
-        if emit:
-            self.event_emitted.emit(StreamEvent("summary_progress", self._build_live_summary_progress_payload()))
 
     @Slot()
     def initialize(self) -> None:
@@ -693,7 +595,6 @@ class AgentRunWorker(QObject):
         self._active_run_elapsed_seconds = 0.0
         self._active_run_token_tracker = None
         self._active_request_has_images = bool(request_payload["attachments"])
-        await self._reset_live_summary_progress_from_state()
         if self.current_session is not None:
             self.current_session.last_run_stats = ""
         repair_notices = await self._repair_current_session_if_needed()

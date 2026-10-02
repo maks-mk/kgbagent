@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional, Set
 
 from langchain_core.messages import AIMessage, AIMessageChunk, RemoveMessage, ToolMessage
+from pydantic_core import from_json
 
 from core.api_key_rotation import describe_provider_error
 from core.message_utils import is_tool_message_error, stringify_content
@@ -501,6 +502,9 @@ class StreamProcessor:
     def _handle_custom(self, payload: Any) -> None:
         if not isinstance(payload, dict):
             return
+        if payload.get("type") == "summary_progress":
+            self._emit("summary_progress", {key: value for key, value in payload.items() if key != "type"})
+            return
         if payload.get("type") == "api_key_rotated":
             self._handle_api_key_rotated(payload)
             return
@@ -566,6 +570,7 @@ class StreamProcessor:
                 "level": "warning",
             },
         )
+        self._emit_interrupted_tool_results(reason="stream_error")
         self._begin_assistant_stream_section()
         # The next key regenerates the answer from scratch; its opening may
         # legitimately match the aborted partial text, so the previous-section
@@ -1484,22 +1489,15 @@ class StreamProcessor:
                 self._remember_tool_call_chunk_ids(chunk_calls)
                 accumulator_key = source or "messages"
                 accumulators = self._tool_chunk_accumulators.setdefault(accumulator_key, {})
-                processed_any = False
-                has_arg_fragment = False
-                is_last_chunk = getattr(message, "chunk_position", None) == "last"
                 for chunk in chunk_calls:
-                    chunk_name = str(chunk.get("name") or "").strip() if isinstance(chunk, dict) else str(getattr(chunk, "name", "") or "").strip()
-                    raw_index = chunk.get("index") if isinstance(chunk, dict) else getattr(chunk, "index", None)
+                    chunk_payload = self._tool_call_chunk_payload(chunk)
+                    chunk_name = str(chunk_payload.get("name") or "").strip()
                     try:
-                        index = int(raw_index)
+                        index = int(chunk_payload.get("index"))
                     except (TypeError, ValueError):
-                        continue
-                    raw_id = chunk.get("id") if isinstance(chunk, dict) else getattr(chunk, "id", None)
-                    raw_args = chunk.get("args") if isinstance(chunk, dict) else getattr(chunk, "args", None)
-                    if str(raw_args or "").strip():
-                        has_arg_fragment = True
-                    previous = accumulators.get(index)
-                    current_chunk = AIMessageChunk(content="", tool_call_chunks=[self._tool_call_chunk_payload(chunk)])
+                        index = None
+                    current_chunk = AIMessageChunk(content="", tool_call_chunks=[chunk_payload])
+                    previous = accumulators.get(index) if index is not None else None
                     if previous is None:
                         gathered = current_chunk
                     else:
@@ -1507,23 +1505,22 @@ class StreamProcessor:
                             gathered = previous + current_chunk
                         except Exception:
                             gathered = current_chunk
-                    accumulators[index] = gathered
-                    tool_calls = list(getattr(gathered, "tool_calls", []) or [])
-                    if not tool_calls:
-                        continue
-                    processed_any = True
-                    self._process_tool_calls(
-                        [
-                            dict(tool_call, index=index, name=chunk_name or tool_call.get("name"))
-                            for tool_call in tool_calls
-                        ],
-                        index_order=None,
-                    )
-                if not processed_any:
-                    self._process_tool_calls(
-                        list(getattr(message, "tool_calls", []) or []),
-                        index_order=None,
-                    )
+                    if index is not None:
+                        accumulators[index] = gathered
+                    tool_calls = []
+                    for tool_call in gathered.tool_calls:
+                        normalized = dict(tool_call, index=index, name=chunk_name or tool_call.get("name"))
+                        if self._normalize_tool_name(normalized.get("name")) == "write_file":
+                            # LangChain closes unfinished strings when parsing tool_calls.
+                            # Only trust values actually closed in the raw argument stream.
+                            raw_args = gathered.tool_call_chunks[0].get("args") or ""
+                            try:
+                                args = from_json(raw_args, allow_partial=True)
+                            except ValueError:
+                                args = {}
+                            normalized["args"] = args if isinstance(args, dict) else {}
+                        tool_calls.append(normalized)
+                    self._process_tool_calls(tool_calls, index_order=None)
                 if getattr(message, "chunk_position", None) == "last":
                     self._tool_chunk_accumulators.pop(accumulator_key, None)
                 return
@@ -1569,13 +1566,26 @@ class StreamProcessor:
         *,
         index_order: list[int] | None,
     ) -> None:
-        # Streamed deltas only accumulate call metadata; the card is drawn when the call
-        # reaches execution (tool_batch_started) or its first tool_result arrives.
+        # Most tools stay hidden until execution. A write_file card can be shown
+        # once its path is complete, while the model is still generating content.
         for position, tool_call in enumerate(tool_calls):
             normalized = dict(tool_call)
             if index_order is not None and position < len(index_order):
                 normalized["index"] = index_order[position]
+            is_write = self._normalize_tool_name(normalized.get("name")) == "write_file"
+            if is_write:
+                args = canonicalize_tool_args(normalized.get("args"))
+                path = next(
+                    (args[key] for key in ("path", "file_path", "filepath")
+                     if isinstance(args.get(key), str) and args[key].strip()),
+                    None,
+                )
+                if path is not None:
+                    args = dict(args, path=path)
+                normalized["args"] = args
             self._remember_tool_call(normalized)
+            if is_write and path is not None:
+                self._emit_tool_started(normalized)
 
     def _resolve_tool_id(self, tool_id: Any) -> str:
         current = str(tool_id or "").strip()
@@ -1612,7 +1622,26 @@ class StreamProcessor:
         try:
             index = int(raw_index)
         except (TypeError, ValueError):
-            return self._resolve_tool_id(raw_id)
+            tool_id = self._resolve_tool_id(raw_id)
+            if (
+                tool_id
+                and tool_id not in self.tool_buffer
+                and tool_id not in self._completed_tool_ids
+                and self._normalize_tool_name(tool_call.get("name")) == "write_file"
+            ):
+                # A provider may first supply the real ID in the final message or
+                # execution batch, rather than in the indexed argument deltas.
+                claimed_ids = set(self._tool_id_aliases.values())
+                for candidate_id, candidate in self.tool_buffer.items():
+                    if (
+                        candidate_id.startswith("stream-tool-")
+                        and candidate_id not in claimed_ids
+                        and self._normalize_tool_name(candidate.get("name")) == "write_file"
+                        and self._tool_args_compatible(candidate.get("args"), tool_call.get("args"))
+                    ):
+                        self._tool_id_aliases[tool_id] = candidate_id
+                        return candidate_id
+            return tool_id
         return self._tool_id_for_index(index, raw_id, str(tool_call.get("name") or "").strip())
 
     def _mark_tool_completed(self, tool_id: str, raw_tool_id: str = "") -> None:
@@ -1910,7 +1939,7 @@ class StreamProcessor:
     def _emit_interrupted_tool_results(self, reason: str) -> list[Dict[str, Any]]:
         interrupted_payloads: list[Dict[str, Any]] = []
         self._discard_request_user_input_state()
-        active_tool_ids = list(self.tool_start_times.keys()) or list(self.tool_buffer.keys())
+        active_tool_ids = list(dict.fromkeys([*self.tool_start_times, *self.tool_buffer]))
         for tool_id in active_tool_ids:
             tool_info = self.tool_buffer.get(tool_id, {})
             tool_name = str(tool_info.get("name") or "unknown_tool")
@@ -1936,10 +1965,13 @@ class StreamProcessor:
             self.tool_buffer.pop(tool_id, None)
             self.printed_tool_ids.discard(tool_id)
             if tool_id:
-                self._completed_tool_ids.pop(tool_id, None)
-                self._completed_tool_ids[tool_id] = None
+                self._mark_tool_completed(tool_id)
                 self._trim_tool_buffers()
 
+        # Even an unparseable call may have reserved an index in the failed attempt.
+        self._tool_chunk_accumulators.clear()
+        self._tool_index_to_id.clear()
+        self._tool_id_to_index.clear()
         if interrupted_payloads:
             self.active_node = "agent"
             self._emit_status(force=True)

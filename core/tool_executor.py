@@ -8,10 +8,8 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from core.config import AgentConfig
 from core.errors import ErrorType, format_error
 from core.fast_copy import copy_jsonish
-from core.message_utils import compact_text, is_error_text, stringify_content
-from core.policy_engine import classify_shell_command
-from core.self_correction_engine import repair_fingerprint
-from core.tool_issues import build_tool_issue, enrich_tool_issue_details, merge_tool_issues
+from core.message_utils import compact_text, stringify_content
+from core.tool_issues import merge_tool_issues
 from core.tool_policy import ToolMetadata
 from core.tool_results import ToolExecutionResult, parse_tool_execution_result
 from core.tool_output_compressor import ToolOutputCompressor
@@ -272,40 +270,6 @@ class ToolExecutor:
             had_error=True,
         )
 
-    def _tool_error_requires_recovery_gate(
-        self,
-        tool_name: str,
-        tool_args: Dict[str, Any],
-        parsed_result: ToolExecutionResult,
-    ) -> bool:
-        if parsed_result.ok:
-            return False
-
-        error_type = str(parsed_result.error_type or "").strip().upper()
-        if error_type == "ACCESS_DENIED":
-            return True
-
-        metadata = self._metadata_for_tool(tool_name)
-        if metadata.requires_approval or metadata.destructive or metadata.mutating:
-            return True
-
-        if tool_name == "cli_exec":
-            command = str((tool_args or {}).get("command", "") or "")
-            profile = classify_shell_command(command)
-            if profile.get("inspect_only") and not profile.get("long_running_service"):
-                return False
-            if (
-                profile.get("mutating")
-                or profile.get("destructive")
-                or profile.get("long_running_service")
-            ):
-                return True
-
-        if metadata.read_only:
-            return False
-
-        return True
-
     def _build_open_tool_issue(
         self,
         *,
@@ -317,45 +281,25 @@ class ToolExecutor:
         content: str,
         issue_details: Dict[str, Any] | None = None,
     ) -> Dict[str, Any] | None:
-        if not self._tool_error_requires_recovery_gate(tool_name, tool_args, parsed_result):
-            self._log_run_event(
-                state,
-                "tool_error_returned_to_agent",
-                run_id="" if state is None else state.get("run_id", ""),
-                tool_name=tool_name,
-                tool_args=tool_args,
-                error_type=parsed_result.error_type,
-                summary=compact_text(parsed_result.message or content, 220),
-            )
-            return None
+        """Tool errors are never converted into graph-level recovery issues.
 
-        details = enrich_tool_issue_details(
-            tool_name,
-            tool_args,
-            parsed_result,
-            issue_details=issue_details,
-            workspace_boundary_violated=self._workspace_boundary_violated,
-        )
-        metadata = self._metadata_for_tool(tool_name)
-        details.setdefault("retryable", bool(parsed_result.retryable))
-        details.setdefault("tool_read_only", bool(metadata.read_only))
-        details.setdefault("tool_mutating", bool(metadata.mutating))
-        details.setdefault("tool_destructive", bool(metadata.destructive))
-        details.setdefault("tool_requires_approval", bool(metadata.requires_approval))
-        issue_kind = "approval_denied" if details.get("approval_denied") else "tool_error"
-        issue_source = "approval" if issue_kind == "approval_denied" else "tools"
-        return build_tool_issue(
-            current_turn_id=current_turn_id,
-            kind=issue_kind,
-            summary=parsed_result.message or content,
-            tool_names=[tool_name],
+        Following the standard LangGraph ReAct contract, a failed tool call is
+        returned to the model as a ``ToolMessage`` with ``status="error"`` so the
+        model decides how to adapt (retry, fix arguments, switch tools, or ask
+        the user). The graph must not turn the failure into a deterministic
+        recovery/handoff path. This deliberately applies to every tool and every
+        error type, including mutating, approval-gated, and MCP tools.
+        """
+        self._log_run_event(
+            state,
+            "tool_error_returned_to_agent",
+            run_id="" if state is None else state.get("run_id", ""),
+            tool_name=tool_name,
             tool_args=tool_args,
-            source=issue_source,
             error_type=parsed_result.error_type,
-            fingerprint=repair_fingerprint(tool_name, tool_args, parsed_result.error_type),
-            progress_fingerprint=repair_fingerprint(tool_name, tool_args, parsed_result.error_type),
-            details=details,
+            summary=compact_text(parsed_result.message or content, 220),
         )
+        return None
 
     @staticmethod
     def _build_tool_message(

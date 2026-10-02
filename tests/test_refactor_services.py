@@ -1295,7 +1295,9 @@ class RefactorServicesTests(unittest.TestCase):
         self.assertFalse(outcome.parsed_result.ok)
         self.assertEqual("EXECUTION", outcome.parsed_result.error_type)
         self.assertEqual("error", outcome.tool_message.status)
-        self.assertIsNotNone(outcome.issue)
+        # Standard agent contract: tool failures go back to the model, never
+        # into a graph-level recovery issue.
+        self.assertIsNone(outcome.issue)
 
     def test_tool_executor_forwards_latest_user_query_to_compressor(self):
         executor = ToolExecutor(
