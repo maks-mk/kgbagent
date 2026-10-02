@@ -33,7 +33,7 @@
     "command": "./ssh-mcp/ssh-mcp.exe",
     "args": [],
     "transport": "stdio",
-    "enabled": true
+    "enabled": false
   },
   "_builtin_tools": {
     "download_file": false,

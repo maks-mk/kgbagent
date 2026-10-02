@@ -37,6 +37,55 @@ def stringify_content(content: Any) -> str:
     return _stringify_content_item(content)
 
 
+# Reasoning/thinking blocks are provider-private: they stay in the transcript for
+# protocol round-trips but they are never user-visible output.
+_NON_VISIBLE_CONTENT_TYPES = frozenset(
+    {
+        "analysis",
+        "analysis_content",
+        "reasoning",
+        "reasoning_content",
+        "reasoning_delta",
+        "reasoning_summary",
+        "reasoning_text",
+        "redacted_thinking",
+        "summary_text",
+        "thinking",
+        "thinking_content",
+        "thought",
+    }
+)
+_NON_VISIBLE_CONTENT_TYPE_PREFIXES = ("analysis.", "reasoning.", "thinking.", "thought.")
+
+
+def _visible_text_content_item(item: Any) -> str:
+    if item is None:
+        return ""
+    if isinstance(item, str):
+        return item
+    if isinstance(item, list):
+        return "".join(_visible_text_content_item(part) for part in item)
+    if isinstance(item, dict):
+        item_type = str(item.get("type") or "").strip().lower()
+        if bool(item.get("thought")) or item_type in _NON_VISIBLE_CONTENT_TYPES:
+            return ""
+        if item_type.startswith(_NON_VISIBLE_CONTENT_TYPE_PREFIXES):
+            return ""
+        if "text" in item:
+            return str(item.get("text") or "")
+        if "refusal" in item:
+            return str(item.get("refusal") or "")
+        if "content" in item:
+            return _visible_text_content_item(item.get("content"))
+        return ""
+    return str(item)
+
+
+def visible_text_content(content: Any) -> str:
+    """Return only content a user can see; reasoning/thinking blocks are skipped."""
+    return _visible_text_content_item(content)
+
+
 def compact_text(text: str, limit: int) -> str:
     compact = " ".join(str(text).split())
     if len(compact) <= limit:

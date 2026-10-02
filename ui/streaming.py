@@ -153,6 +153,65 @@ def _clip_debug_text(value: Any, limit: int = 240) -> str:
     return f"{text[:limit]}…(+{len(text) - limit} chars)"
 
 
+# Chunks that carry no user-visible text by design: tool-call argument deltas
+# and reasoning/thinking blocks. Logging every one of them as an "empty
+# assistant chunk" buries real diagnostics in thousands of noise lines.
+_EXPECTED_NON_VISIBLE_CHUNK_TYPES = frozenset(
+    {
+        "analysis",
+        "analysis_content",
+        "function_call",
+        "input_json_delta",
+        "reasoning",
+        "reasoning_content",
+        "reasoning_delta",
+        "reasoning_summary",
+        "reasoning_text",
+        "redacted_thinking",
+        "signature",
+        "signature_delta",
+        "summary_text",
+        "thinking",
+        "thinking_content",
+        "thought",
+        "tool_call",
+        "tool_call_chunk",
+        "tool_use",
+        "tool_use_delta",
+    }
+)
+
+
+def _is_expected_non_visible_chunk(message: Any) -> bool:
+    """True when a text-free chunk is expected rather than suspicious."""
+    if getattr(message, "tool_call_chunks", None) or getattr(message, "tool_calls", None):
+        return True
+    additional = getattr(message, "additional_kwargs", None)
+    if isinstance(additional, dict) and ("tool_calls" in additional or "function_call" in additional):
+        return True
+    return _is_non_visible_content_block(getattr(message, "content", None))
+
+
+def _is_non_visible_content_block(content: Any) -> bool:
+    if isinstance(content, str) or content is None:
+        return False
+    if isinstance(content, list):
+        return bool(content) and all(_is_non_visible_content_block(item) for item in content)
+    if isinstance(content, dict):
+        item_type = str(content.get("type") or "").strip().lower()
+        if item_type in _EXPECTED_NON_VISIBLE_CHUNK_TYPES or item_type.startswith(
+            ("analysis.", "reasoning.", "signature", "thinking.", "thought.")
+        ):
+            return True
+        if bool(content.get("thought")):
+            return True
+        return any(
+            content.get(key)
+            for key in ("thinking", "signature", "redacted_thinking", "function_call", "tool_call", "tool_use")
+        )
+    return False
+
+
 def _ends_with_partial_thought_tag(text: str) -> bool:
     """True when ``text`` ends with the beginning of a thought tag.
 
@@ -766,13 +825,14 @@ class StreamProcessor:
             )
             return
         if not chunk:
-            logger.debug(
-                "Stream empty assistant chunk content_type=%s additional_kwargs=%s response_metadata=%s content_preview=%s",
-                type(message.content).__name__,
-                sorted((getattr(message, "additional_kwargs", {}) or {}).keys()),
-                sorted((getattr(message, "response_metadata", {}) or {}).keys()),
-                _clip_debug_text(message.content),
-            )
+            if not _is_expected_non_visible_chunk(message):
+                logger.debug(
+                    "Stream empty assistant chunk content_type=%s additional_kwargs=%s response_metadata=%s content_preview=%s",
+                    type(message.content).__name__,
+                    sorted((getattr(message, "additional_kwargs", {}) or {}).keys()),
+                    sorted((getattr(message, "response_metadata", {}) or {}).keys()),
+                    _clip_debug_text(message.content),
+                )
             return
         if not has_visible_text(chunk) and (
             self._post_tool_needs_boundary or not has_visible_text(self.full_text)
@@ -1508,17 +1568,13 @@ class StreamProcessor:
                     if index is not None:
                         accumulators[index] = gathered
                     tool_calls = []
+                    partial_args = self._partial_tool_args(gathered)
                     for tool_call in gathered.tool_calls:
                         normalized = dict(tool_call, index=index, name=chunk_name or tool_call.get("name"))
-                        if self._normalize_tool_name(normalized.get("name")) == "write_file":
+                        if partial_args is not None:
                             # LangChain closes unfinished strings when parsing tool_calls.
-                            # Only trust values actually closed in the raw argument stream.
-                            raw_args = gathered.tool_call_chunks[0].get("args") or ""
-                            try:
-                                args = from_json(raw_args, allow_partial=True)
-                            except ValueError:
-                                args = {}
-                            normalized["args"] = args if isinstance(args, dict) else {}
+                            # Only trust values that are actually closed in the raw argument stream.
+                            normalized["args"] = partial_args
                         tool_calls.append(normalized)
                     self._process_tool_calls(tool_calls, index_order=None)
                 if getattr(message, "chunk_position", None) == "last":
@@ -1543,6 +1599,29 @@ class StreamProcessor:
             "index": getattr(chunk, "index", None),
         }
 
+    @staticmethod
+    def _partial_tool_args(gathered: AIMessageChunk) -> Dict[str, Any] | None:
+        """Return only the argument values already closed in the raw JSON stream.
+
+        LangChain closes unfinished strings while parsing ``tool_calls``, so a
+        partially generated value can look complete. The raw argument stream
+        does not lie: ``from_json(..., allow_partial=True)`` drops keys whose
+        value is still unterminated. ``None`` means the raw args are unusable
+        and the caller should keep the LangChain-parsed values.
+        """
+        chunks = list(getattr(gathered, "tool_call_chunks", []) or [])
+        if not chunks:
+            return None
+        first = chunks[0]
+        raw_args = first.get("args") if isinstance(first, dict) else getattr(first, "args", None)
+        if not isinstance(raw_args, str):
+            return None
+        try:
+            args = from_json(raw_args, allow_partial=True)
+        except ValueError:
+            return {}
+        return args if isinstance(args, dict) else {}
+
     def _remember_tool_call_chunk_ids(self, chunks: list[Any]) -> None:
         for chunk in chunks:
             if isinstance(chunk, dict):
@@ -1566,8 +1645,10 @@ class StreamProcessor:
         *,
         index_order: list[int] | None,
     ) -> None:
-        # Most tools stay hidden until execution. A write_file card can be shown
-        # once its path is complete, while the model is still generating content.
+        # Cards are shown as soon as their anchor arguments are complete, while
+        # the model may still be generating the remaining ones. write_file keeps
+        # its own path validation; every other tool uses the shared classifier
+        # so it shows up at the same point instead of waiting for the result.
         for position, tool_call in enumerate(tool_calls):
             normalized = dict(tool_call)
             if index_order is not None and position < len(index_order):
@@ -1583,8 +1664,15 @@ class StreamProcessor:
                 if path is not None:
                     args = dict(args, path=path)
                 normalized["args"] = args
+                self._remember_tool_call(normalized)
+                if path is not None:
+                    self._emit_tool_started(normalized)
+                continue
+
+            args = canonicalize_tool_args(normalized.get("args"))
+            normalized["args"] = args
             self._remember_tool_call(normalized)
-            if is_write and path is not None:
+            if classify_tool_args_state(normalized.get("name"), args) == "complete":
                 self._emit_tool_started(normalized)
 
     def _resolve_tool_id(self, tool_id: Any) -> str:
@@ -1623,20 +1711,16 @@ class StreamProcessor:
             index = int(raw_index)
         except (TypeError, ValueError):
             tool_id = self._resolve_tool_id(raw_id)
-            if (
-                tool_id
-                and tool_id not in self.tool_buffer
-                and tool_id not in self._completed_tool_ids
-                and self._normalize_tool_name(tool_call.get("name")) == "write_file"
-            ):
+            if tool_id and tool_id not in self.tool_buffer and tool_id not in self._completed_tool_ids:
                 # A provider may first supply the real ID in the final message or
                 # execution batch, rather than in the indexed argument deltas.
+                incoming_name = self._normalize_tool_name(tool_call.get("name"))
                 claimed_ids = set(self._tool_id_aliases.values())
                 for candidate_id, candidate in self.tool_buffer.items():
                     if (
                         candidate_id.startswith("stream-tool-")
                         and candidate_id not in claimed_ids
-                        and self._normalize_tool_name(candidate.get("name")) == "write_file"
+                        and self._normalize_tool_name(candidate.get("name")) == incoming_name
                         and self._tool_args_compatible(candidate.get("args"), tool_call.get("args"))
                     ):
                         self._tool_id_aliases[tool_id] = candidate_id

@@ -2582,7 +2582,9 @@ class StreamAndFilesystemTests(unittest.TestCase):
         )
 
         started = [event.payload for event in events if event.type == "tool_started"]
-        self.assertEqual(started, [])
+        self.assertEqual(len(started), 1)
+        self.assertEqual(started[0]["tool_id"], "call-stream")
+        self.assertEqual(started[0]["args"], {"path": "demo.txt"})
         self.assertEqual(processor.tool_buffer["call-stream"]["args"], {"path": "demo.txt"})
 
         processor._handle_custom(
@@ -2597,6 +2599,42 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertEqual({payload["tool_id"] for payload in started}, {"call-stream"})
         self.assertEqual(started[0]["args"], {"path": "demo.txt"})
         self.assertFalse(started[0].get("refresh", False))
+
+    def test_stream_processor_waits_for_closed_anchor_before_tool_started(self):
+        cases = (
+            ("cli_exec", '{"command": "git stat', 'us --short"}', {"command": "git status --short"}),
+            ("read_file", '{"path": "demo', '.txt"}', {"path": "demo.txt"}),
+            ("batch_web_search", '{"queries": ["async', ' io"]}', {"queries": ["async io"]}),
+        )
+        for name, prefix, suffix, expected_args in cases:
+            with self.subTest(name=name):
+                events = []
+                processor = StreamProcessor(events.append)
+                processor._handle_agent_message(
+                    AIMessageChunk(content="", tool_call_chunks=[
+                        {"name": name, "args": prefix, "id": "call-x", "index": 0}
+                    ]),
+                    source="messages",
+                )
+                self.assertEqual([event for event in events if event.type == "tool_started"], [])
+
+                processor._handle_agent_message(
+                    AIMessageChunk(
+                        content="",
+                        tool_call_chunks=[
+                            {"name": None, "args": suffix, "id": None, "index": 0}
+                        ],
+                        chunk_position="last",
+                    ),
+                    source="messages",
+                )
+
+                started = [event.payload for event in events if event.type == "tool_started"]
+                self.assertEqual(len(started), 1)
+                self.assertEqual(started[0]["tool_id"], "call-x")
+                self.assertEqual(started[0]["name"], name)
+                self.assertEqual(started[0]["args"], expected_args)
+                self.assertEqual(started[0]["display_state"], "resolved")
 
     def test_write_file_stream_shows_card_only_after_complete_path(self):
         for key in ("path", "file_path", "filepath"):
@@ -2712,8 +2750,11 @@ class StreamAndFilesystemTests(unittest.TestCase):
             ]), source="messages",
         )
         started = [e.payload for e in events if e.type == "tool_started"]
-        self.assertEqual(len(started), 1)
-        preview_id = started[0]["tool_id"]
+        self.assertEqual(len(started), 2)
+        preview_id = next(payload["tool_id"] for payload in started if payload["name"] == "write_file")
+        read_payload = next(payload for payload in started if payload["name"] == "read_file")
+        self.assertEqual(read_payload["tool_id"], "call-read")
+        self.assertEqual(read_payload["args"], {"path": "b.txt"})
         processor._handle_agent_message(
             AIMessageChunk(content="", tool_call_chunks=[
                 {"name": None, "args": 'hello"}', "id": "call-real", "index": 0},
@@ -2726,7 +2767,7 @@ class StreamAndFilesystemTests(unittest.TestCase):
         ))
         started = [e.payload for e in events if e.type == "tool_started" and not e.payload.get("refresh")]
         finished = [e.payload for e in events if e.type == "tool_finished"]
-        self.assertEqual([p["args"]["path"] for p in started], ["a.txt", "c.txt"])
+        self.assertEqual([p["args"]["path"] for p in started], ["a.txt", "b.txt", "c.txt"])
         self.assertEqual(finished[0]["tool_id"], preview_id)
         self.assertEqual(finished[0]["args"]["path"], "a.txt")
         self.assertEqual(processor.tool_buffer["call-read"]["args"], {"path": "b.txt"})
@@ -2811,7 +2852,7 @@ class StreamAndFilesystemTests(unittest.TestCase):
                 self.assertEqual(processor.tool_buffer, {})
                 self.assertEqual(processor.tool_start_times, {})
 
-    def test_stream_processor_defers_tool_started_until_batch_event(self):
+    def test_stream_processor_defers_tool_started_until_args_are_complete(self):
         events = []
         processor = StreamProcessor(
             events.append,
@@ -2841,7 +2882,9 @@ class StreamAndFilesystemTests(unittest.TestCase):
         )
 
         started = [event.payload for event in events if event.type == "tool_started"]
-        self.assertEqual(started, [])
+        self.assertEqual(len(started), 1)
+        self.assertEqual(started[0]["tool_id"], "call-delayed")
+        self.assertEqual(started[0]["args"], {"path": "demo.txt"})
         self.assertEqual(processor.tool_buffer["call-delayed"]["args"], {"path": "demo.txt"})
 
         processor._handle_custom(
@@ -2994,7 +3037,12 @@ class StreamAndFilesystemTests(unittest.TestCase):
         )
 
         started = [event.payload for event in events if event.type == "tool_started"]
-        self.assertEqual(started, [])
+        started_by_id = {payload["tool_id"]: payload for payload in started}
+        self.assertEqual(set(started_by_id), {"call-a", "call-b"})
+        self.assertEqual(started_by_id["call-a"]["name"], "list_directory")
+        self.assertEqual(started_by_id["call-a"]["args"], {"path": "."})
+        self.assertEqual(started_by_id["call-b"]["name"], "read_file")
+        self.assertEqual(started_by_id["call-b"]["args"], {"path": "b.txt"})
         self.assertEqual(processor.tool_buffer["call-a"]["args"], {"path": "."})
         self.assertEqual(processor.tool_buffer["call-b"]["args"], {"path": "b.txt"})
 
@@ -3059,7 +3107,9 @@ class StreamAndFilesystemTests(unittest.TestCase):
 
         started = [event.payload for event in events if event.type == "tool_started"]
         read_starts = [payload for payload in started if payload["tool_id"] == "call-read"]
-        self.assertEqual(read_starts, [])
+        self.assertEqual(len(read_starts), 1)
+        self.assertEqual(read_starts[0]["name"], "read_file")
+        self.assertEqual(read_starts[0]["args"], {"path": "a.py"})
         self.assertEqual(processor.tool_buffer["call-read"]["args"], {"path": "a.py"})
 
         processor._handle_custom(
@@ -3071,7 +3121,7 @@ class StreamAndFilesystemTests(unittest.TestCase):
 
         started = [event.payload for event in events if event.type == "tool_started"]
         read_starts = [payload for payload in started if payload["tool_id"] == "call-read"]
-        self.assertGreaterEqual(len(read_starts), 1)
+        self.assertEqual(len(read_starts), 1)
         self.assertEqual({payload["name"] for payload in read_starts}, {"read_file"})
         self.assertEqual(read_starts[-1]["args"], {"path": "a.py"})
 

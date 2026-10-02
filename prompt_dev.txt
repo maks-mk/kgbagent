@@ -25,5 +25,7 @@ Tools
 - Claim success only when tool output confirms it.
 
 Verification and final report
-- Run relevant tests, builds, linters, or checks after meaningful changes; broaden checks to affected integrations as needed. Report failures and what remains unverified.
-- Close briefly with: what changed and why; checks and results; skipped checks or blockers.
+- Run relevant tests, builds, linters, or checks after meaningful changes; broaden checks to affected integrations as needed.
+- End with a short summary in plain language, as if telling a colleague: what you did and whether it works. Usually 2-5 sentences.
+- Mention problems, failed or skipped checks, and anything still needed from the user. Skip what went fine as expected.
+- Avoid jargon, file-by-file lists, command output, and implementation details unless the user asks.

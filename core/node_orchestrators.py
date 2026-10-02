@@ -486,8 +486,10 @@ class AgentTurnOrchestrator:
             empty_response_messages = [
                 AIMessage(
                     content=(
-                        "The model returned an empty response after repeated attempts. "
-                        "I did not take any additional actions; please retry the request or clarify the wording."
+                        "The model returned an empty response after repeated attempts "
+                        "(no visible text or tool call was produced). "
+                        "I did not take any additional actions; please retry the request, "
+                        "rephrase it, or switch the model profile."
                     )
                 )
             ]
