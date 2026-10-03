@@ -998,6 +998,39 @@ class GuiUxTests(unittest.TestCase):
         self.assertTrue(updated_switch.isEnabled())
         self.assertIn("Tools: 2", self.window.runtime_meta_label.text())
 
+    def test_pending_tool_label_stays_on_the_title_row(self):
+        # "Applying…" must sit next to the tool name, not on a row of its own: an extra
+        # row grows the card and shifts every card below it while the runtime applies
+        # the change (the "jumping" list).
+        self.window._handle_initialized(self._snapshot_payload())
+        switch = next(
+            item
+            for item in self.window.tools_panel.findChildren(QCheckBox, "ToolAvailabilitySwitch")
+            if item.accessibleName() == "edit_file enabled"
+        )
+
+        def assert_label_sits_next_to_title() -> None:
+            label = self.window.tools_panel.findChild(QLabel, "MCPServerLoadingLabel")
+            self.assertIsNotNone(label)
+            self.assertEqual(label.text(), "Applying…")
+            card = label.parentWidget()
+            self.assertEqual(card.layout().count(), 2)
+            row = card.layout().itemAt(0).layout()
+            row_widgets = [row.itemAt(index).widget() for index in range(row.count())]
+            title = card.findChild(QToolButton, "ToolCardTitle")
+            self.assertIn(title, row_widgets)
+            self.assertIn(label, row_widgets)
+            self.assertEqual(row_widgets.index(label), row_widgets.index(title) + 1)
+
+        switch.setChecked(False)
+        assert_label_sits_next_to_title()
+
+        # The confirmed snapshot still reports the previous state, so the rebuilt card
+        # keeps the pending label and must use the same layout.
+        self.window._handle_initialized(self._snapshot_payload())
+        self._process_events()
+        assert_label_sits_next_to_title()
+
     def test_multiple_tool_switches_keep_each_pending_until_its_state_is_confirmed(self):
         self.window._handle_initialized(self._snapshot_payload())
         switches = {

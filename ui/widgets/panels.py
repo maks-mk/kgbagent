@@ -202,16 +202,14 @@ class ToolsPanelWidget(QWidget):
                         )
                     top_row.addWidget(toggle, 0, Qt.AlignRight | Qt.AlignVCenter)
 
+                card_layout.addLayout(top_row)
+
                 row_name = str(row["name"])
                 if (
                     row.get("kind") == "server" and row_name in self._pending_servers
                     or row.get("kind") == "tool" and row_name in self._pending_tools
                 ):
-                    pending_label = QLabel("Applying…")
-                    pending_label.setObjectName("MCPServerLoadingLabel")
-                    card_layout.addWidget(pending_label)
-
-                card_layout.addLayout(top_row)
+                    self._ensure_pending_label(top_row)
 
                 details = QWidget()
                 details.setObjectName("ToolCardDetails")
@@ -369,19 +367,52 @@ class ToolsPanelWidget(QWidget):
                 if pending is not None and enabled != pending:
                     self._pending_tools.pop(name, None)
 
+    @staticmethod
+    def _card_top_row(card: QFrame) -> QHBoxLayout | None:
+        """Return the card's title row so pending labels stay on that line.
+
+        Inserting the label into the card's vertical layout adds a row, which changes
+        the card height and shifts every card below it while the runtime reinitializes.
+        """
+        layout = card.layout()
+        if layout is None:
+            return None
+        for index in range(layout.count()):
+            row = layout.itemAt(index).layout()
+            if isinstance(row, QHBoxLayout):
+                return row
+        return None
+
+    @staticmethod
+    def _pending_label_in_row(top_row: QHBoxLayout) -> QLabel | None:
+        for index in range(top_row.count()):
+            widget = top_row.itemAt(index).widget()
+            if isinstance(widget, QLabel) and widget.objectName() == "MCPServerLoadingLabel":
+                return widget
+        return None
+
+    def _ensure_pending_label(self, top_row: QHBoxLayout) -> QLabel:
+        label = self._pending_label_in_row(top_row)
+        if label is None:
+            label = QLabel("Applying…")
+            label.setObjectName("MCPServerLoadingLabel")
+            # Index 1 keeps the label right after the title, ahead of the stretch that
+            # right-aligns the availability switch.
+            top_row.insertWidget(1, label)
+        label.setText("Applying…")
+        label.setToolTip("Waiting for the tool runtime to finish reinitializing.")
+        return label
+
     def set_tools_pending_labels(self) -> None:
         pending_names = set(self._pending_servers) | set(self._pending_tools)
         for card in self.findChildren(QFrame, "ToolCard"):
             title = card.findChild(QToolButton, "ToolCardTitle")
             if title is None or title.text() not in pending_names:
                 continue
-            label = card.findChild(QLabel, "MCPServerLoadingLabel")
-            if label is None:
-                label = QLabel("Applying…", card)
-                label.setObjectName("MCPServerLoadingLabel")
-                card.layout().insertWidget(1, label)
-            label.setText("Applying…")
-            label.setToolTip("Waiting for the tool runtime to finish reinitializing.")
+            top_row = self._card_top_row(card)
+            if top_row is None:
+                continue
+            self._ensure_pending_label(top_row)
 
     def clear_server_pending(self) -> None:
         self._pending_servers.clear()
