@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QApplication, QLabel
 
 from ui.main_window_state import StreamEventRouter
 from ui.streaming import StreamEvent
-from ui.theme import build_stylesheet
+from ui.theme import SURFACE_BG, TEXT_PRIMARY, build_stylesheet
 from ui.widgets.attachments import ImageAttachmentChipWidget
 from ui.widgets.composer import ComposerTextEdit
 from ui.widgets.foundation import SummaryProgressRing
@@ -80,6 +80,40 @@ class UiHelperTests(unittest.TestCase):
 
         self.assertIn("background: transparent;", meta_rule)
         self.assertNotIn("background:", error_rule)
+
+    def test_composer_chat_only_label_has_transparent_background(self):
+        stylesheet = build_stylesheet()
+        selector = "QLabel#ComposerChatOnlyLabel"
+        start = stylesheet.index(selector)
+        rule = stylesheet[start:stylesheet.index("}", start)]
+
+        self.assertIn("background: transparent;", rule)
+
+    def test_composer_chat_only_label_dims_while_disabled(self):
+        stylesheet = build_stylesheet()
+        selector = "QLabel#ComposerChatOnlyLabel:disabled"
+        start = stylesheet.index(selector)
+        rule = stylesheet[start:stylesheet.index("}", start)]
+
+        self.assertIn("color: #", rule)
+        self.assertNotIn(f"color: {TEXT_PRIMARY};", rule)
+
+    def test_disabled_checked_tool_switch_keeps_visible_indicator(self):
+        stylesheet = build_stylesheet()
+        track_selector = "QCheckBox#ToolAvailabilitySwitch:checked:disabled"
+        track_start = stylesheet.index(track_selector)
+        track_rule = stylesheet[track_start:stylesheet.index("}", track_start)]
+        off_selector = "QCheckBox#ToolAvailabilitySwitch::indicator:disabled"
+        off_start = stylesheet.index(off_selector)
+        off_rule = stylesheet[off_start:stylesheet.index("}", off_start)]
+        on_selector = "QCheckBox#ToolAvailabilitySwitch::indicator:checked:disabled"
+        on_start = stylesheet.index(on_selector)
+        on_rule = stylesheet[on_start:stylesheet.index("}", on_start)]
+
+        self.assertIn("background: #", track_rule)
+        self.assertIn("background: #", off_rule)
+        self.assertIn(f"background: {SURFACE_BG};", on_rule)
+        self.assertNotEqual(track_rule, on_rule)
 
     def test_empty_attachment_path_uses_placeholder_without_file_load(self):
         with mock.patch("ui.widgets.attachments.QPixmap") as pixmap_cls:

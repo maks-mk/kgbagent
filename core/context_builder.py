@@ -27,7 +27,11 @@ from core.multimodal import (
     strip_image_content_from_message_content,
 )
 from core.tool_args import canonicalize_tool_args
-from core.runtime_prompt_policy import RuntimePromptContext, RuntimePromptPolicyBuilder
+from core.runtime_prompt_policy import (
+    CHAT_MODE_BASE_PROMPT,
+    RuntimePromptContext,
+    RuntimePromptPolicyBuilder,
+)
 from core.state import AgentState, OpenToolIssue, RecoveryState
 
 logger = logging.getLogger("agent")
@@ -80,8 +84,9 @@ class ContextBuilder:
         user_choice_locked: bool = False,
     ) -> List[BaseMessage]:
         sanitized_messages = self.sanitize_messages(messages, state=state)
+        chat_only = bool(state.get("chat_only", False)) if state else False
         full_context: List[BaseMessage] = [
-            self._build_base_system_message()
+            self._build_base_system_message(chat_only=chat_only)
         ]
         # Memory goes early: it's context ballast, must not override operational rules
         if summary:
@@ -705,8 +710,8 @@ class ContextBuilder:
             )
         )
 
-    def _build_base_system_message(self) -> SystemMessage:
-        raw_prompt = self._prompt_loader()
+    def _build_base_system_message(self, *, chat_only: bool = False) -> SystemMessage:
+        raw_prompt = CHAT_MODE_BASE_PROMPT if chat_only else self._prompt_loader()
 
         prompt = raw_prompt.replace("{{current_date}}", datetime.now().strftime("%Y-%m-%d"))
         prompt = prompt.replace("{{cwd}}", str(Path.cwd()))

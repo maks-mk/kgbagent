@@ -1231,9 +1231,67 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertEqual(
             self.controller.start_calls,
-            [{"text": "Собери summary", "attachments": []}],
+            [{"text": "Собери summary", "attachments": [], "chat_only": False}],
         )
         self.assertEqual(self.window.composer.toPlainText(), "")
+
+    def test_chat_only_switch_defaults_off_and_sends_each_request_mode(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        switch = self.window.chat_only_switch
+        self.assertFalse(switch.isChecked())
+        self.assertTrue(switch.isEnabled())
+        self.assertEqual(switch.parentWidget().objectName(), "ComposerPill")
+        for index, expected in enumerate((False, True, False)):
+            if switch.isChecked() != expected:
+                switch.click()
+            self.window.composer.setPlainText(f"Request {index}")
+            self.window._submit_request()
+            self.assertIs(self.controller.start_calls[-1]["chat_only"], expected)
+            self.assertFalse(switch.isEnabled())
+            self.controller.busy_changed.emit(True)
+            self.assertFalse(switch.isEnabled())
+            switch.click()
+            self.assertIs(switch.isChecked(), expected)
+            self.controller.busy_changed.emit(False)
+            self.assertTrue(switch.isEnabled())
+        self.assertEqual(self.controller.reinitialize_calls, [])
+        self.assertEqual(self.controller.set_tool_enabled_calls, [])
+        self.assertEqual(self.controller.set_mcp_server_enabled_calls, [])
+
+    def test_chat_only_switch_recovers_after_run_failure(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window.chat_only_switch.setChecked(True)
+        self.window.composer.setPlainText("Hello")
+        self.window._submit_request()
+        self.controller.busy_changed.emit(True)
+        self.window._handle_event(StreamEvent("run_failed", {"message": "Test failure"}))
+        self.assertFalse(self.window.chat_only_switch.isEnabled())
+        self.controller.busy_changed.emit(False)
+        self.assertTrue(self.window.chat_only_switch.isEnabled())
+        self.assertTrue(self.window.chat_only_switch.isChecked())
+
+    def test_chat_only_label_dims_while_run_is_in_progress(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        label = self.window.chat_only_label
+        self.assertTrue(label.isEnabled())
+        self.window.composer.setPlainText("Hello")
+        self.window._submit_request()
+        self.assertFalse(label.isEnabled())
+        self.controller.busy_changed.emit(True)
+        self.assertFalse(label.isEnabled())
+        self.controller.busy_changed.emit(False)
+        self.assertTrue(label.isEnabled())
+
+    def test_chat_only_switch_stays_locked_during_approval(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_approval_request({"tool_name": "write_file", "args": {}})
+        self.controller.busy_changed.emit(False)
+        self.assertFalse(self.window.chat_only_switch.isEnabled())
+        self.window._handle_inline_approval_decision(False, False)
+        self.assertFalse(self.window.chat_only_switch.isEnabled())
+        self.controller.busy_changed.emit(False)
+        self.assertTrue(self.window.chat_only_switch.isEnabled())
+        self.assertEqual(self.controller.resume_calls, [(False, False)])
 
     def test_submit_request_includes_pasted_text_and_manual_suffix(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -1598,6 +1656,7 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertFalse(self.window.user_choice_card.isHidden())
         self.assertEqual(self.window.user_choice_card.title_label.text(), "Your input is required")
+        self.assertFalse(self.window.chat_only_switch.isEnabled())
         self.assertEqual(self.window.user_choice_card.question_label.text(), "Какой режим выбираем?")
         option_buttons = self.window.user_choice_card.findChildren(QPushButton, "UserChoiceOptionButton")
         self.assertEqual(len(option_buttons), 2)
@@ -1635,6 +1694,9 @@ class GuiUxTests(unittest.TestCase):
         self.assertFalse(self.window.user_choice_card.isHidden())
         self.assertEqual(self.window.composer.toPlainText(), "Мой вариант")
         self.assertEqual(self.window.composer.textCursor().selectedText(), "Мой вариант")
+        self.assertTrue(self.window.composer.isEnabled())
+        self.controller.busy_changed.emit(False)
+        self.assertFalse(self.window.chat_only_switch.isEnabled())
 
         self.window._submit_request()
 
@@ -1657,7 +1719,7 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertEqual(
             self.controller.start_calls,
-            [{"text": "Сделай задачу", "attachments": []}],
+            [{"text": "Сделай задачу", "attachments": [], "chat_only": False}],
         )
         self.assertEqual(self.window.composer.toPlainText(), "")
 

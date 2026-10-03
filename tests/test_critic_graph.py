@@ -14,7 +14,7 @@ from core.summarize_policy import estimate_summary_tokens
 from core.tool_output_compressor import ToolOutputCompressor
 from core.tool_policy import ToolMetadata
 from tools.user_input_tool import request_user_input
-from ui.runtime import build_graph_config
+from ui.runtime import build_graph_config, build_initial_state
 from ui.runtime_payloads import build_transcript_payload
 
 
@@ -173,6 +173,120 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["turn_outcome"], "finish_turn")
         self.assertEqual(len(agent_llm.invocations), 1)
         self.assertIsNone(result["open_tool_issue"])
+
+    async def test_chat_only_switch_selects_raw_model_and_restores_tools_with_history(self):
+        tool = FakeTool("read_file", "file contents")
+        config = self._make_config()
+        raw_llm = ProviderSafeFakeLLM([AIMessage(content="A chat response.")])
+        bound_llm = ProviderSafeFakeLLM([
+            AIMessage(content="Reading first file.", tool_calls=[
+                {"id": "first-call", "name": "read_file", "args": {"path": "first.txt"}},
+            ]),
+            AIMessage(content="First file read."),
+            AIMessage(content="Reading second file.", tool_calls=[
+                {"id": "second-call", "name": "read_file", "args": {"path": "second.txt"}},
+            ]),
+            AIMessage(content="Second file read."),
+        ])
+        nodes = AgentNodes(config=config, llm=raw_llm, tools=[tool], llm_with_tools=bound_llm)
+        app = create_agent_workflow(nodes, config).compile(checkpointer=MemorySaver())
+        graph_config = build_graph_config("chat-only-switch", config.max_loops)
+        requests = [
+            {"text": "Read first.txt"},
+            {"text": "Discuss the first file", "chat_only": True},
+            {"text": "Read second.txt", "chat_only": False},
+        ]
+        for index, request in enumerate(requests):
+            result = await app.ainvoke(
+                build_initial_state(request, session_id="chat-only-switch"),
+                config=graph_config,
+            )
+            self.assertEqual(result["turn_outcome"], "finish_turn")
+            self.assertEqual(result["chat_only"], index == 1)
+            self.assertEqual(len(tool.calls), 1 if index < 2 else 2)
+            self.assertEqual(
+                [message.content for message in result["transcript_messages"] if isinstance(message, HumanMessage)],
+                [item["text"] for item in requests[:index + 1]],
+            )
+        self.assertEqual(len(raw_llm.invocations), 1)
+        self.assertEqual(len(bound_llm.invocations), 4)
+        chat_context = raw_llm.invocations[0]
+        self.assertTrue(any(isinstance(message, ToolMessage) for message in chat_context))
+        self.assertTrue(any("No tools are available" in str(message.content) for message in chat_context))
+        self.assertFalse(any("TOOL INTENT REQUIREMENT" in str(message.content) for message in chat_context))
+        self.assertTrue(config.model_supports_tools)
+        self.assertIs(nodes.llm_with_tools, bound_llm)
+        self.assertEqual(nodes.tools, [tool])
+
+    async def test_chat_only_blocks_unsolicited_calls_without_interrupt_or_pending_history(self):
+        responses = {
+            "structured": AIMessage(content="Text answer", tool_calls=[
+                {"id": "call", "name": "write_file", "args": {}},
+            ]),
+            "user_choice": AIMessage(content="", tool_calls=[
+                {"id": "call", "name": "request_user_input", "args": {"question": "Choose?"}},
+            ]),
+            "invalid": AIMessage(content="", invalid_tool_calls=[
+                {"id": "call", "name": "write_file", "args": "{", "error": "invalid JSON"},
+            ]),
+            "provider_payload": AIMessage(content="Text answer", additional_kwargs={
+                "tool_calls": [{"id": "call", "type": "function", "function": {"name": "write_file", "arguments": "{}"}}],
+                "function_call": {"name": "write_file", "arguments": "{}"},
+            }),
+            "native_block": AIMessage(content=[
+                {"type": "thinking", "thinking": "private reasoning"},
+                {"type": "text", "text": "Text answer"},
+                {"type": "tool_use", "id": "call", "name": "write_file", "input": {}},
+            ]),
+            "text_marker": AIMessage(content='<tool_call>{"name":"write_file","arguments":{}}</tool_call>'),
+        }
+        for label, response in responses.items():
+            with self.subTest(label=label):
+                tool = FakeTool("write_file", "must not run")
+                choice_tool = FakeTool("request_user_input", "must not run")
+                app, llm = self._build_app(
+                    agent_responses=[response], tools=[tool, choice_tool], enable_approvals=True,
+                )
+                graph_config = build_graph_config(f"chat-only-{label}", 8)
+                result = await app.ainvoke(
+                    build_initial_state({"text": "Answer without actions", "chat_only": True}, session_id=label),
+                    config=graph_config,
+                )
+                self.assertEqual(tool.calls, [])
+                self.assertEqual(choice_tool.calls, [])
+                self.assertEqual(len(llm.invocations), 1)
+                self.assertEqual(result["turn_outcome"], "finish_turn")
+                self.assertIsNone(result["pending_approval"])
+                self.assertIsNone(result["open_tool_issue"])
+                self.assertEqual((await app.aget_state(graph_config)).next, ())
+                for history in (result["messages"], result["transcript_messages"]):
+                    self.assertFalse(any(isinstance(message, ToolMessage) for message in history))
+                    answer = history[-1]
+                    self.assertTrue(answer.content)
+                    self.assertEqual(answer.tool_calls, [])
+                    self.assertEqual(answer.invalid_tool_calls, [])
+                    self.assertNotIn("tool_calls", answer.additional_kwargs)
+                    self.assertNotIn("function_call", answer.additional_kwargs)
+                    self.assertIsInstance(answer.content, str)
+                if label in {"structured", "provider_payload", "native_block"}:
+                    self.assertEqual(result["messages"][-1].content, "Text answer")
+
+    async def test_chat_only_switch_does_not_override_globally_disabled_tools(self):
+        config = self._make_config(model_supports_tools=False)
+        tool = FakeTool("read_file", "must not run")
+        raw_llm = FakeLLM([AIMessage(content="Chat"), AIMessage(content="Still no tools")])
+        bound_llm = FakeLLM([])
+        nodes = AgentNodes(config=config, llm=raw_llm, tools=[tool], llm_with_tools=bound_llm)
+        app = create_agent_workflow(nodes, config).compile(checkpointer=MemorySaver())
+        for chat_only in (True, False):
+            await app.ainvoke(
+                build_initial_state({"text": "Hello", "chat_only": chat_only}, session_id="global-tools-off"),
+                config=build_graph_config("global-tools-off", config.max_loops),
+            )
+        self.assertEqual(len(raw_llm.invocations), 2)
+        self.assertEqual(bound_llm.invocations, [])
+        self.assertEqual(tool.calls, [])
+        self.assertFalse(config.model_supports_tools)
 
     async def test_auto_summary_keeps_active_user_turn_for_final_transcript(self):
         tool = FakeTool("read_file", "important result")

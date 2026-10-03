@@ -1651,10 +1651,31 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn("reasoning", captured)
 
+    def test_build_initial_state_normalizes_chat_only_for_each_new_request(self):
+        from core.multimodal import normalize_request_payload
+
+        cases = [
+            ("Hello", False),
+            ({"text": "Hello"}, False),
+            ({"text": "Hello", "chat_only": True}, True),
+            ({"text": "Hello", "chat_only": False}, False),
+            ({"text": "Hello", "chat_only": "false"}, False),
+            ({"text": "Hello", "chat_only": None}, False),
+        ]
+        for request, expected in cases:
+            with self.subTest(request=request):
+                normalized = normalize_request_payload(request)
+                self.assertIs(normalized["chat_only"], expected)
+                self.assertEqual(normalize_request_payload(normalized), normalized)
+                state = build_initial_state(normalized, session_id="session-1")
+                self.assertIs(state["chat_only"], expected)
+                self.assertEqual(state["messages"][0].content, "Hello")
+
     def test_build_initial_state_supports_text_and_image_attachments(self):
         state = build_initial_state(
             {
                 "text": "Что на изображении?",
+                "chat_only": True,
                 "attachments": [
                     {
                         "id": "img-1",
@@ -1671,6 +1692,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(state["current_task"], "Что на изображении?")
+        self.assertIs(state["chat_only"], True)
         message = state["messages"][0]
         self.assertIsInstance(message, HumanMessage)
         self.assertIsInstance(message.content, list)
@@ -5841,6 +5863,21 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                 "token_usage": usage,
             }}},
         ]
+
+    async def test_worker_passes_chat_only_and_resets_it_for_next_request(self):
+        worker, inputs, _events = self._make_token_usage_worker([
+            self._token_usage_events("chat", 100, 10),
+            self._token_usage_events("agent", 100, 10),
+            self._token_usage_events("legacy", 100, 10),
+        ])
+        app = worker.agent_app
+        await worker._start_run_async({"text": "Chat", "chat_only": True})
+        await worker._start_run_async({"text": "Use tools", "chat_only": False})
+        await worker._start_run_async("Legacy text request")
+        self.assertEqual([state["chat_only"] for state in inputs], [True, False, False])
+        self.assertEqual([state["current_task"] for state in inputs], ["Chat", "Use tools", "Legacy text request"])
+        self.assertEqual({state["session_id"] for state in inputs}, {"usage-session"})
+        self.assertIs(worker.agent_app, app)
 
     async def test_worker_accumulates_tokens_across_approval_and_user_choice(self):
         for mode in ("auto", "replay", "approve", "reject", "always", "choice"):

@@ -149,6 +149,7 @@ class AgentTurnOwner(NodeOrchestratorOwner, Protocol):
         open_tool_issue: OpenToolIssue | None = None,
         recovery_state: RecoveryState | None = None,
         allowed_tool_names: list[str] | None = None,
+        chat_only: bool = False,
     ) -> dict[str, Any]: ...
 
     def _normalize_system_prefix_for_provider(
@@ -407,6 +408,7 @@ class AgentTurnOrchestrator:
                 open_tool_issue=open_tool_issue,
                 recovery_state=recovery_state,
                 allowed_tool_names=active_tool_names,
+                chat_only=bool(state.get("chat_only", False)),
             )
             if result.pop("_retry_user_input_turn", False):
                 owner._log_run_event(
@@ -444,6 +446,7 @@ class AgentTurnOrchestrator:
                     open_tool_issue=open_tool_issue,
                     recovery_state=recovery_state,
                     allowed_tool_names=active_tool_names,
+                    chat_only=bool(state.get("chat_only", False)),
                 )
                 result.pop("_retry_user_input_turn", None)
             result_issue = result.get("open_tool_issue")

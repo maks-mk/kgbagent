@@ -77,6 +77,7 @@ def build_initial_state(user_input: Any, session_id: str, safety_mode: str = "de
         "steps": 0,
         "token_usage": {},
         "current_task": current_task,
+        "chat_only": request_payload["chat_only"],
         "requires_evidence": False,
         "session_id": session_id,
         "run_id": uuid.uuid4().hex,

@@ -1767,6 +1767,14 @@ def build_stylesheet() -> str:
         font-size: 8.4pt;
     }}
 
+    QLabel#ComposerChatOnlyLabel {{
+        background: transparent;
+    }}
+
+    QLabel#ComposerChatOnlyLabel:disabled {{
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.22)};
+    }}
+
     QPushButton#ComposerOpenSettingsButton {{
         background: transparent;
         border: 1px solid {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.15)};
@@ -2059,6 +2067,11 @@ def build_stylesheet() -> str:
         border-color: {BORDER};
     }}
 
+    QCheckBox#ToolAvailabilitySwitch:checked:disabled {{
+        background: {blend_hex(TEXT_MUTED, SURFACE_BG, 0.35)};
+        border: 1px solid {blend_hex(TEXT_MUTED, SURFACE_BG, 0.35)};
+    }}
+
     QCheckBox#ToolAvailabilitySwitch::indicator {{
         width: 14px;
         height: 14px;
@@ -2077,6 +2090,14 @@ def build_stylesheet() -> str:
         subcontrol-origin: margin;
         subcontrol-position: right center;
         margin-right: 2px;
+        background: {SURFACE_BG};
+    }}
+
+    QCheckBox#ToolAvailabilitySwitch::indicator:disabled {{
+        background: {blend_hex(TEXT_PRIMARY, SURFACE_BG, 0.5)};
+    }}
+
+    QCheckBox#ToolAvailabilitySwitch::indicator:checked:disabled {{
         background: {SURFACE_BG};
     }}
 

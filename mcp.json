@@ -35,6 +35,15 @@
     "transport": "stdio",
     "enabled": false
   },
+  "parallel-search": {
+    "type": "remote",
+    "url": "https://search.parallel.ai/mcp",
+    "transport": "http",
+    "enabled": false,
+    "policy": {
+      "read_only": true
+    }
+  },
   "_builtin_tools": {
     "download_file": false,
     "list_directory": false,

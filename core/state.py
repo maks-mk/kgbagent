@@ -114,6 +114,8 @@ class AgentState(TypedDict):
 
     # Original user task for the current request
     current_task: NotRequired[str]
+    # Per-request mode; every new request explicitly resets it.
+    chat_only: NotRequired[bool]
     requires_evidence: NotRequired[bool]
     safety_mode: NotRequired[str]
 

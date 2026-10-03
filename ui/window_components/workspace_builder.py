@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QActionGroup
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -67,6 +68,8 @@ class WorkspaceBuildResult:
     open_settings_inline_button: QPushButton
     cache_hit_label: QLabel
     summary_progress_ring: SummaryProgressRing
+    chat_only_switch: QCheckBox
+    chat_only_label: QLabel
     send_button: QPushButton
     stop_action_button: QPushButton
     inspector_container: QFrame
@@ -309,6 +312,22 @@ class WorkspaceBuilder:
 
         control_row.addStretch(1)
 
+        chat_only_switch = QCheckBox()
+        chat_only_switch.setObjectName("ToolAvailabilitySwitch")
+        chat_only_switch.setFixedSize(34, 20)
+        chat_only_switch.setChecked(False)
+        chat_only_switch.setAccessibleName("Chat only")
+        chat_only_switch.setToolTip("On: chat without tools. Off: full agent mode.")
+        chat_only_switch.setAccessibleDescription(chat_only_switch.toolTip())
+        chat_only_label = QLabel("Chat only")
+        chat_only_label.setObjectName("ComposerChatOnlyLabel")
+        chat_only_label.setBuddy(chat_only_switch)
+        chat_only_label.setToolTip(chat_only_switch.toolTip())
+        control_row.addWidget(chat_only_label, 0, Qt.AlignVCenter)
+        control_row.addWidget(chat_only_switch, 0, Qt.AlignVCenter)
+        # Keep the toggle clear of the auto-summary ring on its right.
+        control_row.addSpacing(8)
+
         summary_progress_ring = SummaryProgressRing()
         control_row.addWidget(summary_progress_ring, 0, Qt.AlignVCenter)
 
@@ -386,6 +405,8 @@ class WorkspaceBuilder:
             open_settings_inline_button=open_settings_inline_button,
             cache_hit_label=cache_hit_label,
             summary_progress_ring=summary_progress_ring,
+            chat_only_switch=chat_only_switch,
+            chat_only_label=chat_only_label,
             send_button=send_button,
             stop_action_button=stop_action_button,
             inspector_container=inspector_container,

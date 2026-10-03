@@ -406,6 +406,61 @@ class RefactorServicesTests(unittest.TestCase):
         regular_texts = [str(message.content) for message in regular_context if isinstance(message, SystemMessage)]
         self.assertFalse(any("REQUEST_USER_INPUT TEST POLICY:" in text for text in regular_texts))
 
+    def test_context_builder_uses_chat_mode_prompt_when_chat_only(self):
+        builder = ContextBuilder(
+            config=self._make_config(),
+            prompt_loader=lambda: "Base prompt {{current_date}}",
+            is_internal_retry=lambda _msg: False,
+            log_run_event=lambda *_args, **_kwargs: None,
+            recovery_message_builder=lambda _state: None,
+            provider_safe_tool_call_id_re=__import__("re").compile(r"^[A-Za-z0-9]{9}$"),
+        )
+
+        context = builder.build(
+            [HumanMessage(content="привет")],
+            {"chat_only": True},
+            summary="",
+            current_task="",
+            tools_available=False,
+            active_tool_names=[],
+            open_tool_issue=None,
+            recovery_state=None,
+        )
+
+        system_text = "\n".join(
+            str(message.content) for message in context if isinstance(message, SystemMessage)
+        )
+        self.assertIn("chat mode", system_text)
+        self.assertNotIn("Base prompt", system_text)
+        self.assertNotIn("{{current_date}}", system_text)
+
+    def test_context_builder_uses_agent_prompt_when_chat_only_is_off(self):
+        builder = ContextBuilder(
+            config=self._make_config(),
+            prompt_loader=lambda: "Base prompt {{current_date}}",
+            is_internal_retry=lambda _msg: False,
+            log_run_event=lambda *_args, **_kwargs: None,
+            recovery_message_builder=lambda _state: None,
+            provider_safe_tool_call_id_re=__import__("re").compile(r"^[A-Za-z0-9]{9}$"),
+        )
+
+        context = builder.build(
+            [HumanMessage(content="привет")],
+            {"chat_only": False},
+            summary="",
+            current_task="",
+            tools_available=False,
+            active_tool_names=[],
+            open_tool_issue=None,
+            recovery_state=None,
+        )
+
+        system_text = "\n".join(
+            str(message.content) for message in context if isinstance(message, SystemMessage)
+        )
+        self.assertIn("Base prompt", system_text)
+        self.assertNotIn("chat mode", system_text)
+
     def test_context_builder_preserves_tool_then_user_sequence_without_bridge_messages(self):
         builder = ContextBuilder(
             config=self._make_config(),

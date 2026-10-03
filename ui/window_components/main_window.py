@@ -231,6 +231,8 @@ class MainWindow(QMainWindow):
         self.open_settings_inline_button = refs.open_settings_inline_button
         self.cache_hit_label = refs.cache_hit_label
         self.summary_progress_ring = refs.summary_progress_ring
+        self.chat_only_switch = refs.chat_only_switch
+        self.chat_only_label = refs.chat_only_label
         self.send_button = refs.send_button
         self.stop_action_button = refs.stop_action_button
         self.inspector_container = refs.inspector_container
@@ -620,6 +622,8 @@ class MainWindow(QMainWindow):
         self.send_button.setEnabled(can_send)
         self._update_send_button_visual(can_send)
         self.attach_button.setEnabled(attach_enabled)
+        self.chat_only_switch.setEnabled(attach_enabled)
+        self.chat_only_label.setEnabled(attach_enabled)
         self.add_image_action.setEnabled(attach_enabled and self._has_active_model and self._active_model_supports_images())
         self.insert_file_path_action.setEnabled(attach_enabled)
         self.model_chip.setEnabled(can_edit and self._has_active_model)
@@ -1049,6 +1053,7 @@ class MainWindow(QMainWindow):
         request_payload = {
             "text": text,
             "attachments": attachments,
+            "chat_only": self.chat_only_switch.isChecked(),
         }
         self._clear_draft_image_attachments()
         self.controller.start_run(request_payload)

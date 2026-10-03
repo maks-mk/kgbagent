@@ -7,7 +7,7 @@ from langchain_core.messages import AIMessage
 from core.state import AgentState, OpenToolIssue, RecoveryState, transcript_message_delta
 from core.tool_args import canonicalize_tool_args
 from core.constants import TOOL_ISSUE_UI_NOTICE
-from core.message_utils import stringify_content
+from core.message_utils import stringify_content, visible_text_content
 from core.text_tool_calls import extract_text_tool_calls
 from core.turn_outcomes import (
     TURN_OUTCOME_FINISH_TURN,
@@ -78,6 +78,7 @@ class AgentMixin:
         open_tool_issue: OpenToolIssue | None = None,
         recovery_state: RecoveryState | None = None,
         allowed_tool_names: List[str] | None = None,
+        chat_only: bool = False,
     ) -> Dict[str, Any]:
         token_usage_update = {}
         if getattr(response, "usage_metadata", None):
@@ -88,7 +89,32 @@ class AgentMixin:
         protocol_issue: Dict[str, Any] | None = None
         outbound_messages = self._collect_internal_retry_removals(messages)
 
+        if chat_only:
+            tools_available = False
         if isinstance(response, AIMessage):
+            if chat_only and (
+                response.tool_calls
+                or response.invalid_tool_calls
+                or response.additional_kwargs.get("tool_calls")
+                or response.additional_kwargs.get("function_call")
+                or (
+                    isinstance(response.content, list)
+                    and any(
+                        isinstance(block, dict)
+                        and block.get("type") in {"tool_use", "tool_call", "function_call"}
+                        for block in response.content
+                    )
+                )
+            ):
+                # Do not execute or replay unsolicited calls, including provider-native
+                # payloads that would otherwise survive in additional_kwargs/content.
+                response = AIMessage(
+                    content=visible_text_content(response.content)
+                    or "Chat-only mode is enabled. No tools were run; please ask for a text response.",
+                    response_metadata=response.response_metadata,
+                    usage_metadata=response.usage_metadata,
+                    id=response.id,
+                )
             t_calls = list(getattr(response, "tool_calls", []))
             invalid_calls = list(getattr(response, "invalid_tool_calls", []))
             retry_user_input_turn = False

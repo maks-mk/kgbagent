@@ -408,10 +408,12 @@ def normalize_request_payload(payload: Any) -> dict[str, Any]:
     if isinstance(payload, dict):
         text = str(payload.get("text") or "")
         attachments = normalize_image_attachments(payload.get("attachments"))
+        chat_only = payload.get("chat_only") is True
     else:
         text = str(payload or "")
         attachments = []
-    return {"text": text, "attachments": attachments}
+        chat_only = False
+    return {"text": text, "attachments": attachments, "chat_only": chat_only}
 
 
 def request_has_content(payload: Any) -> bool:

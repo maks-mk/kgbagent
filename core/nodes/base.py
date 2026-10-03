@@ -194,7 +194,7 @@ class BaseMixin:
         state: AgentState,
         messages: List[BaseMessage],
     ) -> Tuple[List[Any], List[str]]:
-        if not self.config.model_supports_tools:
+        if state.get("chat_only", False) or not self.config.model_supports_tools:
             return [], []
 
         active_tools = list(
