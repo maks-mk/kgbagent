@@ -30,13 +30,19 @@
     }
   },
   "ssh-mcp": {
-    "command": "D:\\py_projects\\simple_ai_agent\\agent+stategraph\\ssh-mcp\\ssh_mcp_windows_native_0.3.0\\.venv\\Scripts\\python.exe",
-    "args": [
-      "-m",
-      "ssh_mcp"
-    ],
+    "command": "./ssh-mcp/ssh-mcp.exe",
+    "args": [],
     "transport": "stdio",
-    "enabled": true
+    "enabled": false
+  },
+  "parallel-search": {
+    "type": "remote",
+    "url": "https://search.parallel.ai/mcp",
+    "transport": "http",
+    "enabled": false,
+    "policy": {
+      "read_only": true
+    }
   },
   "_builtin_tools": {
     "download_file": false,
@@ -47,6 +53,8 @@
     "run_background_process": false,
     "safe_delete_directory": true,
     "write_file": true,
-    "read_skills": true
+    "read_skills": false,
+    "stop_background_process": false,
+    "cli_exec": true
   }
 }

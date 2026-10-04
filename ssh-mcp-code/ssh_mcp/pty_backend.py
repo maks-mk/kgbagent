@@ -140,7 +140,12 @@ class InteractiveProcess:
                 written = self.process.write(data.decode("utf-8", errors="replace"))
             except Exception as exc:
                 raise OSError(errno.EIO, str(exc)) from exc
-            if isinstance(written, int):
+            # pywinpty does not report how many bytes it consumed: on success it
+            # returns 0 (older releases returned None) even though the whole
+            # buffer was delivered. Report a full write unless it contradicts
+            # itself, so callers that check the count do not mistake success for
+            # a broken PTY.
+            if isinstance(written, int) and 0 < written <= len(data):
                 return written
             return len(data)
 
