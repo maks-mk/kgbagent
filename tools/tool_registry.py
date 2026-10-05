@@ -6,7 +6,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Sequence, Union
+from typing import Any, Callable, Dict, List, Sequence, Tuple, Union
 
 from langchain_core.tools import BaseTool
 
@@ -33,6 +33,9 @@ class ToolLoaderSpec:
     tool_names: Sequence[str]
     configure: Callable[[Any, AgentConfig], None] | None = None
     metadata: Dict[str, ToolMetadata] | None = None
+    # Config flags the `configure` callback depends on. An explicitly activated tool is
+    # configured as if these were on, so the module never receives a policy that rejects it.
+    enable_flags: Tuple[str, ...] = ()
 
 
 class ToolRegistry:
@@ -161,18 +164,36 @@ class ToolRegistry:
             return False
         spec = self.builtin_specs.get(tool.name)
         if spec is not None and not spec.enabled(self.config):
-            self._configure_spec_module(spec)
+            self._configure_spec_module(spec, activated=True)
         self.tools.append(tool)
         return True
 
-    def _configure_spec_module(self, spec: ToolLoaderSpec) -> None:
+    def _configure_spec_module(self, spec: ToolLoaderSpec, *, activated: bool = False) -> None:
         if not spec.configure:
             return
         try:
             module = importlib.import_module(spec.module_name)
-            spec.configure(module, self.config)
+            config = self._config_for_activated_spec(spec) if activated else self.config
+            spec.configure(module, config)
         except Exception:
             logger.debug("Failed to configure %s tools on activation.", spec.name, exc_info=True)
+
+    def _config_for_activated_spec(self, spec: ToolLoaderSpec) -> AgentConfig:
+        """Config used when a tool is activated while its loader flag is off in `.env`.
+
+        The override makes the tool usable, so the loader flag has to be treated as on for
+        this configuration pass; otherwise the module gets a policy that rejects the very
+        tool it is being configured for.
+        """
+        updates = {
+            flag: True for flag in spec.enable_flags if not getattr(self.config, flag, False)
+        }
+        if not updates:
+            return self.config
+        activated_config = self.config.model_copy(update=updates)
+        # `safety` is memoized per config instance; reset it so the flipped flags apply.
+        activated_config._cache_safety = None
+        return activated_config
 
     def _persist_builtin_tool_state(self, name: str, enabled: bool) -> None:
         config = dict(self.mcp_config)
@@ -204,6 +225,31 @@ class ToolRegistry:
             if server_by_tool.get(tool.name, "") not in self.disabled_mcp_servers
             and tool.name not in self.disabled_local_tools
         ]
+
+    def mcp_tool_groups(
+        self,
+        active_tool_names: Sequence[str] | None = None,
+    ) -> List[Tuple[str, List[str]]]:
+        """Return enabled MCP servers paired with their tool names, in config order."""
+        allowed = set(active_tool_names) if active_tool_names is not None else None
+        groups: List[Tuple[str, List[str]]] = []
+        seen_servers: set[str] = set()
+        for status in self.mcp_server_status:
+            server = str(status.get("server") or "").strip()
+            if not server or server in seen_servers:
+                continue
+            if not status.get("enabled") or server in self.disabled_mcp_servers:
+                continue
+            names = [
+                str(name)
+                for name in status.get("loaded_tools", [])
+                if name and (allowed is None or name in allowed)
+            ]
+            if not names:
+                continue
+            seen_servers.add(server)
+            groups.append((server, names))
+        return groups
 
     def sync_working_directory(self, cwd: str | Path | None = None) -> None:
         """Propagate runtime cwd to local tool modules that cache workspace roots."""
@@ -349,6 +395,7 @@ class ToolRegistry:
                 module_name="tools.local_shell",
                 tool_names=("cli_exec",),
                 configure=self._configure_shell,
+                enable_flags=("enable_shell_tool",),
                 metadata={
                     "cli_exec": ToolMetadata(
                         name="cli_exec",

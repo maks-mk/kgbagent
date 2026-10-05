@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
@@ -56,6 +56,7 @@ class AgentNodes(
         "tool_batch",
         "_required_fields_cache",
         "active_tools_provider",
+        "mcp_tool_groups_provider",
     )
 
     # Built-in fallback when explicit metadata is unavailable. Registered tools
@@ -95,12 +96,14 @@ class AgentNodes(
         model_capabilities: Optional[Dict[str, Any]] = None,
         run_logger: Optional[JsonlRunLogger] = None,
         active_tools_provider: Callable[[], List[BaseTool]] | None = None,
+        mcp_tool_groups_provider: Callable[[Sequence[str] | None], List[Tuple[str, List[str]]]] | None = None,
     ):
         self.config = config
         self.llm = llm
         self.tools = tools
         self.llm_with_tools = llm_with_tools or llm
         self.active_tools_provider = active_tools_provider
+        self.mcp_tool_groups_provider = mcp_tool_groups_provider
 
         # Optimization: O(1) tool lookup instead of O(N) list traversal
         self.tools_map = {t.name: t for t in tools}

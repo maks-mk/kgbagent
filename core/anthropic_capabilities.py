@@ -60,8 +60,12 @@ _NO_SAMPLING_MODELS = (
 _BASE_EFFORTS = ("low", "medium", "high")
 
 
+def _model_basename(model: str | None) -> str:
+    return str(model or "").strip().lower().rsplit("/", 1)[-1]
+
+
 def _matches_family(model: str | None, families: tuple[str, ...]) -> bool:
-    normalized = str(model or "").strip().lower()
+    normalized = _model_basename(model)
     if normalized.startswith("claude-4.8-opus"):
         normalized = "claude-opus-4-8" + normalized[len("claude-4.8-opus") :]
     # Anthropic aliases some versions with "." (e.g. "claude-opus-5.5") and
@@ -78,7 +82,7 @@ def is_claude_model(model: str | None) -> bool:
     Messages API. Those models must not receive Claude-specific thinking or
     reasoning parameters merely because the selected transport is Anthropic.
     """
-    return str(model or "").strip().lower().startswith("claude-")
+    return _model_basename(model).startswith("claude-")
 
 
 def anthropic_model_uses_manual_thinking(model: str | None) -> bool:

@@ -36,6 +36,8 @@ class RuntimePromptContext:
     tools_available: bool
     active_tool_names: Sequence[str]
     user_choice_locked: bool = False
+    # Enabled MCP servers paired with their active tool names, in config order.
+    mcp_tool_groups: Sequence[tuple[str, Sequence[str]]] = ()
 
 
 @dataclass(frozen=True)
@@ -172,16 +174,37 @@ class RuntimePromptPolicyBuilder:
                 "answer directly from already-known information otherwise. Do not invent unavailable tools."
             )
         if len(names) <= 4:
-            return (
+            message = (
                 "TOOLS:\n"
                 "Available tools: "
                 + ", ".join(names)
                 + ". Do not invent unavailable tools."
             )
+        else:
+            message = (
+                "TOOLS:\n"
+                "Multiple tools are available in this runtime. Do not invent unavailable tools. "
+                "If unsure which tool fits, prefer the read-only inspection tool over a mutating one."
+            )
+        mcp_section = self._build_mcp_server_section(context)
+        if mcp_section:
+            message = f"{message}\n{mcp_section}"
+        return message
+
+    def _build_mcp_server_section(self, context: RuntimePromptContext) -> str:
+        """Name connected MCP servers so the user can address them ("use <server>")."""
+        lines: List[str] = []
+        for server_name, tool_names in context.mcp_tool_groups or ():
+            server = str(server_name or "").strip()
+            names = self._normalized_tool_names(tool_names)
+            if not server or not names:
+                continue
+            lines.append(f"- {server}: {', '.join(names)}")
+        if not lines:
+            return ""
         return (
-            "TOOLS:\n"
-            "Multiple tools are available in this runtime. Do not invent unavailable tools. "
-            "If unsure which tool fits, prefer the read-only inspection tool over a mutating one."
+            "MCP servers (the user may address a server by name; call that server's tools normally):\n"
+            + "\n".join(lines)
         )
     def _build_request_user_input_policy(self, context: RuntimePromptContext) -> str:
         if self.REQUEST_USER_INPUT_TOOL_NAME not in self._normalized_tool_names(context.active_tool_names):

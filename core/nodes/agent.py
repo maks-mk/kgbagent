@@ -7,7 +7,7 @@ from langchain_core.messages import AIMessage
 from core.state import AgentState, OpenToolIssue, RecoveryState, transcript_message_delta
 from core.tool_args import canonicalize_tool_args
 from core.constants import TOOL_ISSUE_UI_NOTICE
-from core.message_utils import stringify_content, visible_text_content
+from core.message_utils import iter_message_tool_calls, stringify_content, visible_text_content
 from core.text_tool_calls import extract_text_tool_calls
 from core.turn_outcomes import (
     TURN_OUTCOME_FINISH_TURN,
@@ -116,6 +116,11 @@ class AgentMixin:
                     id=response.id,
                 )
             t_calls = list(getattr(response, "tool_calls", []))
+            # Responses-native adapters may keep function_call only in content.
+            if not t_calls:
+                t_calls = list(iter_message_tool_calls(response))
+                if t_calls:
+                    response = self._new_ai_message_with_tool_calls(response, t_calls)
             invalid_calls = list(getattr(response, "invalid_tool_calls", []))
             retry_user_input_turn = False
             if not tools_available and t_calls and not any(

@@ -235,6 +235,7 @@ def build_compiled_agent(
         model_capabilities=effective_model_capabilities,
         run_logger=run_logger,
         active_tools_provider=tool_registry.active_tools,
+        mcp_tool_groups_provider=tool_registry.mcp_tool_groups,
     )
     workflow = create_agent_workflow(nodes, config, tools_enabled=tool_calling_enabled)
     return workflow.compile(checkpointer=checkpoint_runtime.checkpointer), tool_registry

@@ -1,3 +1,4 @@
+import json
 import re
 from typing import Any
 
@@ -13,6 +14,38 @@ _LEGACY_INTERRUPTED_TOOL_ERROR_RE = re.compile(
 )
 _TOOL_MESSAGE_ERROR_STATUS = "error"
 _TOOL_MESSAGE_SUCCESS_STATUS = "success"
+
+
+def iter_message_tool_calls(message: Any):
+    """Yield structured calls from LangChain fields and native content blocks."""
+    seen = set()
+    for call in getattr(message, "tool_calls", None) or []:
+        if isinstance(call, dict):
+            normalized = dict(call)
+            call_id = str(normalized.get("id") or normalized.get("call_id") or "").strip()
+            if call_id and call_id in seen:
+                continue
+            if call_id:
+                seen.add(call_id)
+            yield normalized
+    content = getattr(message, "content", None)
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") not in {"function_call", "tool_use", "tool_call"}:
+            continue
+        call_id = str(block.get("call_id") or block.get("id") or "").strip()
+        if call_id and call_id in seen:
+            continue
+        arguments = block.get("arguments", block.get("input", block.get("args", {})))
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except (TypeError, ValueError):
+                pass
+        if call_id:
+            seen.add(call_id)
+        yield {"id": call_id, "name": str(block.get("name") or ""), "args": arguments}
 
 
 def _stringify_content_item(item: Any) -> str:

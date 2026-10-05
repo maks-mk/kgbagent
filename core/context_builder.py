@@ -5,7 +5,7 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Sequence
 
 from langchain_core.messages import (
     AIMessage,
@@ -18,7 +18,7 @@ from langchain_core.messages import (
 
 from core import constants
 from core.config import AgentConfig
-from core.message_utils import stringify_content
+from core.message_utils import iter_message_tool_calls, stringify_content
 from core.multimodal import (
     IMAGE_INPUT_PROFILE_KEYS,
     human_message_has_image_content,
@@ -82,6 +82,7 @@ class ContextBuilder:
         open_tool_issue: OpenToolIssue | None,
         recovery_state: RecoveryState | None,
         user_choice_locked: bool = False,
+        mcp_tool_groups: Sequence[tuple[str, Sequence[str]]] = (),
     ) -> List[BaseMessage]:
         sanitized_messages = self.sanitize_messages(messages, state=state)
         chat_only = bool(state.get("chat_only", False)) if state else False
@@ -107,6 +108,7 @@ class ContextBuilder:
                     tools_available=tools_available,
                     active_tool_names=tuple(active_tool_names),
                     user_choice_locked=inferred_user_choice_locked,
+                    mcp_tool_groups=tuple(mcp_tool_groups),
                 )
             )
         )
@@ -511,7 +513,7 @@ class ContextBuilder:
             if not isinstance(message, (AIMessage, AIMessageChunk)):
                 continue
 
-            tool_calls = list(getattr(message, "tool_calls", []) or [])
+            tool_calls = list(iter_message_tool_calls(message))
             if not tool_calls:
                 if pending_calls:
                     pending_interleaving.append("assistant_before_tool_result")

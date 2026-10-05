@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, Remo
 
 from core.state import AgentState
 from core.message_utils import (
+    iter_message_tool_calls,
     compact_text,
     is_internal_retry_message,
     is_user_turn_message,
@@ -240,7 +241,7 @@ class BaseMixin:
                     return True
                 continue
             if isinstance(message, (AIMessage, AIMessageChunk)):
-                for tool_call in getattr(message, "tool_calls", []) or []:
+                for tool_call in iter_message_tool_calls(message):
                     if self._normalize_tool_name(tool_call.get("name") or "") == "request_user_input":
                         return True
         return False
@@ -269,7 +270,7 @@ class BaseMixin:
         for message in reversed(messages):
             if not isinstance(message, AIMessage):
                 continue
-            tool_calls = list(getattr(message, "tool_calls", []) or [])
+            tool_calls = list(iter_message_tool_calls(message))
             if not tool_calls:
                 continue
             unresolved_calls = [

@@ -53,6 +53,8 @@
     "run_background_process": false,
     "safe_delete_directory": true,
     "write_file": true,
-    "read_skills": false
+    "read_skills": false,
+    "stop_background_process": false,
+    "cli_exec": true
   }
 }

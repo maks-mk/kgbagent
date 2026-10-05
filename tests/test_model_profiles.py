@@ -312,6 +312,23 @@ class ModelProfilesTests(unittest.TestCase):
         self.assertEqual([option["value"] for option in always_on], ["low", "medium", "high", "max", "xhigh"])
         self.assertEqual(unknown, [])
 
+    def test_anthropic_reasoning_options_accept_provider_prefix(self):
+        prefixed_sonnet = reasoning_options_for_profile(
+            {"provider": "anthropic", "model": "abc/claude-sonnet-4-6"}
+        )
+        prefixed_opus = reasoning_options_for_profile(
+            {"provider": "anthropic", "model": "router/claude-opus-4-7"}
+        )
+
+        self.assertEqual(
+            [option["value"] for option in prefixed_sonnet],
+            ["off", "low", "medium", "high", "max"],
+        )
+        self.assertEqual(
+            [option["value"] for option in prefixed_opus],
+            ["off", "low", "medium", "high", "max", "xhigh"],
+        )
+
     def test_anthropic_reasoning_options_accept_dot_and_dash_separators(self):
         # Anthropic aliases the same model with both "claude-opus-5.5" and
         # "claude-opus-5-5". Both spellings must resolve to the same family

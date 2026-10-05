@@ -4,6 +4,7 @@ from typing import Any, Callable
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
 from core.tool_args import canonicalize_tool_args
+from core.message_utils import iter_message_tool_calls
 
 logger = logging.getLogger("agent")
 HANDOFF_MARKERS_SKIP_REPAIR = frozenset({"loop_budget_handoff"})
@@ -46,10 +47,10 @@ async def repair_session_if_needed(
         pending_segment_start_idx: int | None = None
 
         for index, message in enumerate(messages):
-            if isinstance(message, (AIMessage, AIMessageChunk)) and getattr(message, "tool_calls", None):
+            if isinstance(message, (AIMessage, AIMessageChunk)) and list(iter_message_tool_calls(message)):
                 if pending_segment_start_idx is None:
                     pending_segment_start_idx = index
-                for tool_call in message.tool_calls:
+                for tool_call in iter_message_tool_calls(message):
                     tool_call_id = str(tool_call.get("id") or "").strip()
                     tool_name = str(tool_call.get("name") or "").strip()
                     if not tool_call_id or not tool_name:
