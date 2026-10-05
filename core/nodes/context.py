@@ -40,7 +40,7 @@ class ContextMixin:
         )
 
     def _mcp_tool_groups_for_names(self, active_tool_names: List[str]) -> tuple:
-        """Resolve server -> tools mapping for the prompt, when a provider is wired."""
+        """Resolve server -> tools mapping so the prompt can list the MCP tool names."""
         provider = getattr(self, "mcp_tool_groups_provider", None)
         if provider is None or not active_tool_names:
             return ()

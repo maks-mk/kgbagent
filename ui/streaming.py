@@ -4,7 +4,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from langchain_core.messages import AIMessage, AIMessageChunk, RemoveMessage, ToolMessage
 from pydantic_core import from_json
@@ -73,6 +73,30 @@ INTERRUPTED_TOOL_MESSAGES = {
 DEFAULT_INTERRUPTED_TOOL_MESSAGE = (
     "ERROR[INTERRUPTED]: The run ended before this tool returned a result. Please retry or continue."
 )
+# A call the model invented (for example an MCP server name used as a tool name)
+# is dropped before execution, so the card must not claim an interrupted run.
+REJECTED_TOOL_MESSAGE_TEMPLATE = (
+    "ERROR[REJECTED]: The model requested the unknown tool(s) {names}, which are not available in this run, "
+    "so the call was not executed. Available tools: {allowed}. Issue a fresh call using one of them."
+)
+_MAX_LISTED_ALLOWED_TOOLS = 12
+
+
+def build_rejected_tool_message(
+    tool_names: List[Any],
+    allowed_tool_names: List[Any],
+) -> str:
+    requested = [str(name or "").strip() for name in tool_names]
+    requested = [name for name in requested if name]
+    names = ", ".join(f'"{name}"' for name in requested) or "an unknown tool"
+    allowed = [str(name or "").strip() for name in allowed_tool_names]
+    allowed = [name for name in allowed if name]
+    if len(allowed) > _MAX_LISTED_ALLOWED_TOOLS:
+        hidden = len(allowed) - _MAX_LISTED_ALLOWED_TOOLS
+        allowed_text = ", ".join(allowed[:_MAX_LISTED_ALLOWED_TOOLS]) + f" (+{hidden} more)"
+    else:
+        allowed_text = ", ".join(allowed) or "unknown"
+    return REJECTED_TOOL_MESSAGE_TEMPLATE.format(names=names, allowed=allowed_text)
 
 
 def _strip_inline_thought_content(text: str) -> str:
@@ -582,6 +606,9 @@ class StreamProcessor:
                     self._remember_tool_call(tool_call)
                     self._emit_tool_started(tool_call, force=True)
             return
+        if payload.get("type") == "tool_calls_rejected":
+            self._handle_rejected_tool_calls(payload)
+            return
         if payload.get("type") == "tool_result":
             message_payload = payload.get("message")
             if not isinstance(message_payload, dict):
@@ -654,6 +681,94 @@ class StreamProcessor:
         # legitimately match the aborted partial text, so the previous-section
         # replay guard must not strip it.
         self._previous_assistant_section_text = ""
+
+    def _handle_rejected_tool_calls(self, payload: Dict[str, Any]) -> None:
+        """Finalize cards of tool calls the agent dropped before execution.
+
+        The model sometimes invents a tool name (for example an MCP server name) or
+        asks for a tool that the current turn does not allow. Such calls are filtered
+        out before execution, so no ToolMessage ever arrives and the card rendered
+        from the stream would otherwise hang and later be reported as an interrupted
+        run. Here those cards are closed with the real reason.
+        """
+        tool_calls = [
+            tool_call
+            for tool_call in (payload.get("tool_calls") or [])
+            if isinstance(tool_call, dict)
+        ]
+        if not tool_calls:
+            return
+        reason = str(payload.get("reason") or "tool_not_allowed_for_turn")
+        content = build_rejected_tool_message(
+            [str(tool_call.get("name") or "") for tool_call in tool_calls],
+            list(payload.get("allowed_tool_names") or []),
+        )
+        for tool_call in tool_calls:
+            tool_name = str(tool_call.get("name") or "").strip() or "unknown_tool"
+            tool_args = canonicalize_tool_args(tool_call.get("args"))
+            raw_tool_id = str(tool_call.get("id") or "").strip()
+            tool_id = self._resolve_tool_id(raw_tool_id) if raw_tool_id else ""
+            if not self._is_active_tool_id(tool_id):
+                # Streamed ids may be synthesized, so fall back to the name: a rejected
+                # name cannot belong to a legitimately running call of this turn.
+                tool_id = self._active_tool_id_by_name(tool_name)
+            if not tool_id:
+                continue
+            self._finalize_rejected_tool(
+                tool_id,
+                tool_name,
+                tool_args,
+                content,
+                reason=reason,
+                raw_tool_id=raw_tool_id,
+            )
+
+    def _active_tool_id_by_name(self, tool_name: str) -> str:
+        target = self._normalize_tool_name(tool_name)
+        if not target:
+            return ""
+        for tool_id in dict.fromkeys([*self.tool_start_times, *self.tool_buffer]):
+            tool_info = self.tool_buffer.get(tool_id, {})
+            if self._normalize_tool_name(tool_info.get("name", "")) == target:
+                return tool_id
+        return ""
+
+    def _finalize_rejected_tool(
+        self,
+        tool_id: str,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        content: str,
+        *,
+        reason: str,
+        raw_tool_id: str = "",
+    ) -> None:
+        tool_info = self.tool_buffer.get(tool_id, {})
+        final_name = str(tool_info.get("name") or "").strip() or tool_name
+        final_args = self._merge_tool_args(tool_info.get("args", {}), tool_args)
+        elapsed = None
+        start_time = self.tool_start_times.pop(tool_id, None)
+        if start_time is not None:
+            elapsed = max(0.0, time.perf_counter() - start_time)
+        payload = {
+            "content": content,
+            "summary": format_tool_output(final_name, content, True),
+            "is_error": True,
+            "duration": elapsed,
+            "diff": "",
+            "diff_blocks": [],
+            "rejected": True,
+            "rejection_reason": reason,
+        }
+        payload.update(
+            self._build_tool_event_payload(tool_id, final_name, final_args, phase="finished", is_error=True)
+        )
+        self._emit("tool_finished", payload)
+        self.tool_buffer.pop(tool_id, None)
+        self.printed_tool_ids.discard(tool_id)
+        if tool_id:
+            self._mark_tool_completed(tool_id, raw_tool_id)
+            self._trim_tool_buffers()
 
     def _emit_cache_hit_delta(self, tokens: int) -> None:
         delta = max(0, int(tokens or 0))

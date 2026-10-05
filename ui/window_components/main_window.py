@@ -15,6 +15,7 @@ from core.input_sanitizer import build_user_input_notice, sanitize_user_text
 from core.multimodal import DEFAULT_MODEL_CAPABILITIES, can_read_image_file, resolve_model_capabilities
 from core.model_profiles import normalize_profiles_payload
 from core.reasoning_controls import normalize_profile_reasoning, reasoning_options_for_profile
+from core.std_streams import ensure_standard_streams
 from core.text_utils import format_compact_tokens, prepare_markdown_for_render
 from ui.main_window_state import ComposerStateController, RunStatusController, StreamEventRouter
 from ui.runtime import AgentRuntimeController
@@ -1199,6 +1200,7 @@ class MainWindow(QMainWindow):
 
 
 def main() -> int:
+    ensure_standard_streams()
     _configure_qt_logging()
     _configure_windows_app_user_model_id()
     QApplication.setApplicationName(APP_DISPLAY_NAME)

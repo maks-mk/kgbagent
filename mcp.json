@@ -8,23 +8,13 @@
       "read_only": true
     }
   },
-  "ux-expert": {
-    "command": "npx",
+  "ddg-search": {
+    "command": "uvx",
     "args": [
-      "-y",
-      "@elsahafy/ux-mcp-server"
+      "duckduckgo-mcp-server"
     ],
     "transport": "stdio",
-    "enabled": false
-  },
-  "sequential-thinking": {
-    "command": "npx",
-    "args": [
-      "-y",
-      "@modelcontextprotocol/server-sequential-thinking"
-    ],
-    "transport": "stdio",
-    "enabled": false,
+    "enabled": true,
     "policy": {
       "read_only": true
     }

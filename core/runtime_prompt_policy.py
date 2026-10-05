@@ -37,6 +37,7 @@ class RuntimePromptContext:
     active_tool_names: Sequence[str]
     user_choice_locked: bool = False
     # Enabled MCP servers paired with their active tool names, in config order.
+    # Only the tool names are rendered into the prompt; the server names are not.
     mcp_tool_groups: Sequence[tuple[str, Sequence[str]]] = ()
 
 
@@ -186,26 +187,25 @@ class RuntimePromptPolicyBuilder:
                 "Multiple tools are available in this runtime. Do not invent unavailable tools. "
                 "If unsure which tool fits, prefer the read-only inspection tool over a mutating one."
             )
-        mcp_section = self._build_mcp_server_section(context)
+        mcp_section = self._build_mcp_tools_section(context)
         if mcp_section:
             message = f"{message}\n{mcp_section}"
         return message
 
-    def _build_mcp_server_section(self, context: RuntimePromptContext) -> str:
-        """Name connected MCP servers so the user can address them ("use <server>")."""
-        lines: List[str] = []
-        for server_name, tool_names in context.mcp_tool_groups or ():
-            server = str(server_name or "").strip()
-            names = self._normalized_tool_names(tool_names)
-            if not server or not names:
-                continue
-            lines.append(f"- {server}: {', '.join(names)}")
-        if not lines:
+    def _build_mcp_tools_section(self, context: RuntimePromptContext) -> str:
+        """List MCP-provided tools by tool name only.
+
+        Server names are deliberately kept out of the prompt: the model otherwise
+        treats a server name as a callable tool, the call is dropped by the
+        allowed-tool filter, and its UI card hangs until the run ends.
+        """
+        names: List[str] = []
+        for _server_name, tool_names in context.mcp_tool_groups or ():
+            names.extend(self._normalized_tool_names(tool_names))
+        unique_names = list(dict.fromkeys(names))
+        if not unique_names:
             return ""
-        return (
-            "MCP servers (the user may address a server by name; call that server's tools normally):\n"
-            + "\n".join(lines)
-        )
+        return "MCP tools (call these tool names exactly as written): " + ", ".join(unique_names)
     def _build_request_user_input_policy(self, context: RuntimePromptContext) -> str:
         if self.REQUEST_USER_INPUT_TOOL_NAME not in self._normalized_tool_names(context.active_tool_names):
             return ""

@@ -87,6 +87,11 @@ class AgentMixin:
         has_tool_calls = False
         protocol_error = ""
         protocol_issue: Dict[str, Any] | None = None
+        # Calls dropped by the allowed-tool filter (model hallucinated a tool name,
+        # e.g. an MCP server name). They are never executed and never produce a
+        # ToolMessage, so the orchestrator forwards them to the UI to finalize the
+        # already streamed tool card instead of leaving it hanging.
+        rejected_tool_calls: List[Dict[str, Any]] = []
         outbound_messages = self._collect_internal_retry_removals(messages)
 
         if chat_only:
@@ -233,10 +238,22 @@ class AgentMixin:
                         self._normalize_tool_name(name)
                         for name in (allowed_tool_names or [])
                     }
-                    dropped_names = [
-                        str(tool_call.get("name") or "").strip()
+                    dropped_calls = [
+                        tool_call
                         for tool_call in original_tool_calls
                         if self._normalize_tool_name(tool_call.get("name") or "") not in allowed_tool_name_set
+                    ]
+                    dropped_names = [
+                        str(tool_call.get("name") or "").strip()
+                        for tool_call in dropped_calls
+                    ]
+                    rejected_tool_calls = [
+                        {
+                            "id": str(tool_call.get("id") or "").strip(),
+                            "name": str(tool_call.get("name") or "").strip(),
+                            "args": canonicalize_tool_args(tool_call.get("args")),
+                        }
+                        for tool_call in dropped_calls
                     ]
 
                     dropped_error = (
@@ -310,5 +327,6 @@ class AgentMixin:
             "last_tool_error": protocol_error,
             "last_tool_result": "",
             "_retry_user_input_turn": retry_user_input_turn,
+            "_rejected_tool_calls": rejected_tool_calls,
             **token_usage_update,
         }

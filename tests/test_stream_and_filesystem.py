@@ -447,6 +447,47 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertEqual(processor.full_text, "")
         self.assertEqual(processor._previous_assistant_section_text, "")
 
+    def test_stream_processor_finalizes_rejected_tool_calls_without_touching_live_cards(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        processor._handle_custom(
+            {
+                "type": "tool_batch_started",
+                "tool_calls": [
+                    {"id": "call-mcp", "name": "ddg-search", "args": {"query": "Claude Opus 5.5"}},
+                    {"id": "call-read", "name": "read_file", "args": {"path": "a.txt"}},
+                ],
+            }
+        )
+
+        processor._handle_custom(
+            {
+                "type": "tool_calls_rejected",
+                "reason": "tool_not_allowed_for_turn",
+                "tool_calls": [
+                    {"id": "call-mcp", "name": "ddg-search", "args": {"query": "Claude Opus 5.5"}},
+                    # Streamed ids may be synthesized, so a name match must work too.
+                    {"id": "stream-tool-1-1", "name": "server-as-tool", "args": {}},
+                ],
+                "allowed_tool_names": ["read_file", "search"],
+            }
+        )
+
+        finished = [event.payload for event in events if event.type == "tool_finished"]
+        self.assertEqual([payload["name"] for payload in finished], ["ddg-search"])
+        rejected_payload = finished[0]
+        self.assertTrue(rejected_payload["is_error"])
+        self.assertTrue(rejected_payload["rejected"])
+        self.assertEqual(rejected_payload["rejection_reason"], "tool_not_allowed_for_turn")
+        self.assertIn('"ddg-search"', rejected_payload["content"])
+        self.assertIn("read_file, search", rejected_payload["content"])
+        self.assertNotIn("INTERRUPTED", rejected_payload["content"])
+
+        # The unrelated in-flight call stays active and is only closed by the run.
+        self.assertIn("call-read", processor.tool_start_times)
+        leftover = processor._emit_interrupted_tool_results(reason="incomplete")
+        self.assertEqual([payload["tool_id"] for payload in leftover], ["call-read"])
+
     def test_stream_processor_tool_preview_does_not_claim_execution_started(self):
         events = []
         processor = StreamProcessor(events.append)

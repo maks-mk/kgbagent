@@ -383,6 +383,38 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("call:read_file", str(message.content))
         self.assertNotIn("<tool_call|>", str(message.content))
 
+    async def test_agent_node_reports_tool_calls_dropped_by_allowed_tool_filter(self):
+        hallucinated = AIMessage(
+            content="Ищу в интернете.",
+            tool_calls=[
+                {"id": "call-server-name", "name": "ddg-search", "args": {"query": "Claude Opus 5.5"}},
+            ],
+        )
+        agent_llm = FakeLLM([hallucinated])
+        nodes = AgentNodes(
+            config=self._make_config(),
+            llm=agent_llm,
+            tools=[FakeTool("read_file", "ok")],
+            llm_with_tools=agent_llm,
+        )
+        streamed = []
+
+        with mock.patch("core.node_orchestrators.get_stream_writer", return_value=streamed.append):
+            result = await nodes.agent_node(self._initial_state("Найди новости"))
+
+        rejected = [event for event in streamed if event.get("type") == "tool_calls_rejected"]
+        self.assertEqual(len(rejected), 1)
+        event = rejected[0]
+        self.assertEqual(event["reason"], "tool_not_allowed_for_turn")
+        self.assertEqual(event["allowed_tool_names"], ["read_file"])
+        self.assertEqual(
+            event["tool_calls"],
+            [{"id": "call-server-name", "name": "ddg-search", "args": {"query": "Claude Opus 5.5"}}],
+        )
+        self.assertEqual(result["turn_outcome"], TURN_OUTCOME_RECOVER_AGENT)
+        # The private hand-off key must not leak into the graph state.
+        self.assertNotIn("_rejected_tool_calls", result)
+
     def test_normalize_turn_outcome_defaults_unknown_values_to_finish_turn(self):
         self.assertEqual(normalize_turn_outcome("run_tools"), TURN_OUTCOME_RUN_TOOLS)
         self.assertEqual(normalize_turn_outcome(" recover_agent "), TURN_OUTCOME_RECOVER_AGENT)

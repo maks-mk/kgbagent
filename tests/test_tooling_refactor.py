@@ -14,6 +14,7 @@ from core.multimodal import DEFAULT_MODEL_CAPABILITIES
 from core.nodes.tools import ToolsMixin
 from core.safety_policy import SafetyPolicy
 from core.validation import validate_tool_result
+from langchain_core.tools import StructuredTool
 from tools import process_tools
 from tools.process_tools import run_background_process
 from tools.search_tools import _RUNTIME, _format_tavily_error, _parse_urls_input, crawl_site, fetch_content
@@ -146,6 +147,116 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
                 tool.name in {item.name for item in registry.active_tools()},
                 tool.name,
             )
+
+    def _patch_mcp_tools(self, server: str, specs):
+        """Stand in for a real MCP server so registry tests stay process-free."""
+
+        def inject(registry_self):
+            injected = []
+            for name, description in specs:
+                tool = StructuredTool.from_function(
+                    func=lambda **kwargs: "ok",
+                    name=name,
+                    description=description,
+                )
+                registry_self.mcp_tool_servers[id(tool)] = server
+                registry_self.tools.append(tool)
+                registry_self.tool_metadata[name] = registry_self._infer_mcp_metadata(
+                    tool,
+                    server_policy={"read_only": True},
+                )
+                injected.append(tool)
+            registry_self.mcp_server_status.append(
+                {
+                    "server": server,
+                    "loaded_tools": [tool.name for tool in injected],
+                    "error": "",
+                    "enabled": True,
+                }
+            )
+
+        async def loader(registry_self):
+            inject(registry_self)
+
+        return mock.patch.object(ToolRegistry, "_load_mcp_tools", new=loader)
+
+    def _mcp_config_path(self, payload) -> Path:
+        tmp = self._workspace_tempdir()
+        mcp_config_path = tmp / "mcp.json"
+        mcp_config_path.write_text(json.dumps(payload), encoding="utf-8")
+        return mcp_config_path
+
+    async def test_mcp_tool_stays_available_when_same_named_builtin_is_disabled(self):
+        mcp_config_path = self._mcp_config_path(
+            {
+                "ddg-search": {"command": "uvx", "args": ["duckduckgo-mcp-server"], "enabled": True},
+                "_builtin_tools": {"fetch_content": False},
+            }
+        )
+        config = self._make_config(MCP_CONFIG_PATH=mcp_config_path, ENABLE_SEARCH_TOOLS=True)
+
+        with self._patch_mcp_tools(
+            "ddg-search",
+            [
+                ("search", "Search the web."),
+                ("fetch_content", "Fetch and extract the main text content from a webpage."),
+                ("expand_link", "Expand a shortened ref link."),
+            ],
+        ):
+            registry = ToolRegistry(config)
+            await registry.load_all()
+
+        active = registry.active_tools()
+        active_fetch = [tool for tool in active if tool.name == "fetch_content"]
+        self.assertEqual(len(active_fetch), 1)
+        self.assertEqual(registry.mcp_server_for_tool(active_fetch[0]), "ddg-search")
+        self.assertTrue(registry.is_builtin_tool(registry.builtin_tools[0]))
+        self.assertEqual(
+            registry.mcp_tool_groups([tool.name for tool in active]),
+            [("ddg-search", ["search", "fetch_content", "expand_link"])],
+        )
+
+        rows = build_tools_snapshot(registry)
+        server_row = next(row for row in rows if row.get("name") == "ddg-search")
+        self.assertEqual(server_row["description"], "MCP server - 3 tool(s)")
+        self.assertEqual(
+            [tool["name"] for tool in server_row["tools"]],
+            ["expand_link", "fetch_content", "search"],
+        )
+        builtin_row = next(row for row in rows if row["kind"] == "tool" and row["name"] == "fetch_content")
+        self.assertFalse(builtin_row["enabled"])
+
+    async def test_mcp_tool_wins_over_same_named_enabled_builtin(self):
+        mcp_config_path = self._mcp_config_path(
+            {"ddg-search": {"command": "uvx", "args": ["duckduckgo-mcp-server"], "enabled": True}}
+        )
+        config = self._make_config(MCP_CONFIG_PATH=mcp_config_path, ENABLE_SEARCH_TOOLS=True)
+
+        with self._patch_mcp_tools("ddg-search", [("fetch_content", "Fetch a page.")]):
+            registry = ToolRegistry(config)
+            await registry.load_all()
+
+        self.assertNotIn("fetch_content", registry.disabled_local_tools)
+        active_fetch = [tool for tool in registry.active_tools() if tool.name == "fetch_content"]
+        self.assertEqual(len(active_fetch), 1)
+        self.assertEqual(registry.mcp_server_for_tool(active_fetch[0]), "ddg-search")
+
+    async def test_disabling_mcp_server_keeps_same_named_builtin_tool(self):
+        mcp_config_path = self._mcp_config_path(
+            {"ddg-search": {"command": "uvx", "args": ["duckduckgo-mcp-server"], "enabled": True}}
+        )
+        config = self._make_config(MCP_CONFIG_PATH=mcp_config_path, ENABLE_SEARCH_TOOLS=True)
+
+        with self._patch_mcp_tools("ddg-search", [("fetch_content", "Fetch a page.")]):
+            registry = ToolRegistry(config)
+            await registry.load_all()
+
+        registry.set_mcp_server_enabled("ddg-search", False)
+
+        active_names = [tool.name for tool in registry.active_tools()]
+        self.assertEqual(active_names.count("fetch_content"), 1)
+        active_fetch = next(tool for tool in registry.active_tools() if tool.name == "fetch_content")
+        self.assertTrue(registry.is_builtin_tool(active_fetch))
 
     async def test_tool_registry_does_not_keep_selector_catalog_state(self):
         registry = ToolRegistry(self._make_config())

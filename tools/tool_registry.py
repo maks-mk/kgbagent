@@ -53,6 +53,7 @@ class ToolRegistry:
         "_cleanup_callback_keys",
         "disabled_mcp_servers",
         "disabled_local_tools",
+        "mcp_tool_servers",
         "builtin_tools",
         "builtin_specs",
         "mcp_config",
@@ -72,6 +73,9 @@ class ToolRegistry:
         self._cleanup_callback_keys: set[tuple[int, int]] = set()
         self.disabled_mcp_servers: set[str] = set()
         self.disabled_local_tools: set[str] = set()
+        # id(tool) -> MCP server that provided it. Names may collide with builtins,
+        # so ownership is tracked by object identity instead of tool name.
+        self.mcp_tool_servers: Dict[int, str] = {}
         self.builtin_tools: List[BaseTool] = []
         self.builtin_specs: Dict[str, ToolLoaderSpec] = {}
         self.mcp_config: Dict[str, Any] = {}
@@ -214,17 +218,54 @@ class ToolRegistry:
         """Return the loaded runtime tool catalog, including locally disabled tools."""
         return list(self.tools)
 
+    def is_builtin_tool(self, tool: BaseTool) -> bool:
+        """Return True when the object is a locally loaded built-in tool."""
+        return any(tool is builtin for builtin in self.builtin_tools)
+
+    def mcp_server_for_tool(self, tool: BaseTool) -> str:
+        """Return the MCP server that supplied the tool, or "" for local tools."""
+        server = self.mcp_tool_servers.get(id(tool))
+        if server:
+            return str(server)
+        if self.is_builtin_tool(tool):
+            return ""
+        # Fallback for registries assembled without going through `_load_mcp_tools`.
+        for status in self.mcp_server_status:
+            name = str(status.get("server") or "")
+            if name and tool.name in status.get("loaded_tools", []):
+                return name
+        return ""
+
     def active_tools(self) -> List[BaseTool]:
-        server_by_tool = {
-            tool_name: status.get("server", "")
-            for status in self.mcp_server_status
-            for tool_name in status.get("loaded_tools", [])
-        }
-        return [
-            tool for tool in self.available_tools()
-            if server_by_tool.get(tool.name, "") not in self.disabled_mcp_servers
-            and tool.name not in self.disabled_local_tools
-        ]
+        """Return the tools exposed to the model for this runtime.
+
+        Tool names must stay unique in the model-facing catalog because the model
+        calls tools by name. A built-in and an MCP tool can share a name (for
+        example `fetch_content`), so the "local tool disabled" override is applied
+        only to the built-in object: it must not silently remove the MCP tool.
+        When both would be active, the MCP tool wins, matching the execution
+        lookup, where the MCP entry overrides an earlier same-named built-in.
+        """
+        candidates: list[tuple[BaseTool, str]] = []
+        for tool in self.available_tools():
+            server = self.mcp_server_for_tool(tool)
+            if server:
+                if server in self.disabled_mcp_servers:
+                    continue
+            elif tool.name in self.disabled_local_tools:
+                continue
+            candidates.append((tool, server))
+        mcp_names = {tool.name for tool, server in candidates if server}
+        active: List[BaseTool] = []
+        seen: set[str] = set()
+        for tool, server in candidates:
+            if not server and tool.name in mcp_names:
+                continue
+            if tool.name in seen:
+                continue
+            seen.add(tool.name)
+            active.append(tool)
+        return active
 
     def mcp_tool_groups(
         self,
@@ -828,6 +869,16 @@ class ToolRegistry:
                 server_policy, tool_policies = self._split_mcp_policy_config(server_cfg)
 
                 if mcp_tools:
+                    existing_names = {tool.name for tool in self.tools}
+                    for tool in mcp_tools:
+                        self.mcp_tool_servers[id(tool)] = name
+                        if tool.name in existing_names:
+                            logger.warning(
+                                "⚠ MCP tool '%s' from '%s' shares a name with an already loaded tool; "
+                                "the MCP tool takes precedence in the model-facing catalog.",
+                                tool.name,
+                                name,
+                            )
                     self.tools.extend(mcp_tools)
                     for tool in mcp_tools:
                         self._optimize_tool_description(tool)

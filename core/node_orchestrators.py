@@ -272,6 +272,41 @@ class AgentTurnOrchestrator:
     def __init__(self, owner: AgentTurnOwner) -> None:
         self.owner = owner
 
+    @staticmethod
+    def _emit_rejected_tool_calls(
+        rejected_tool_calls: list[dict[str, Any]],
+        *,
+        allowed_tool_names: list[str] | None = None,
+    ) -> None:
+        """Tell the UI that calls dropped by the allowed-tool filter will never run.
+
+        Such calls produce no ToolMessage, so a tool card already rendered from the
+        streamed response would hang until the run ends and then claim the run was
+        interrupted. The event carries ids/names/args so the UI can finalize exactly
+        those cards with the real reason instead of a generic interruption.
+        """
+        if not rejected_tool_calls:
+            return
+        try:
+            writer = get_stream_writer()
+            writer(
+                {
+                    "type": "tool_calls_rejected",
+                    "reason": "tool_not_allowed_for_turn",
+                    "tool_calls": [
+                        {
+                            "id": str(tool_call.get("id") or ""),
+                            "name": str(tool_call.get("name") or ""),
+                            "args": canonicalize_tool_args(tool_call.get("args")),
+                        }
+                        for tool_call in rejected_tool_calls
+                    ],
+                    "allowed_tool_names": [str(name) for name in (allowed_tool_names or [])],
+                }
+            )
+        except RuntimeError:
+            return
+
     async def run(self, state):
         owner = self.owner
         node_timer = owner._log_node_start(
@@ -449,6 +484,23 @@ class AgentTurnOrchestrator:
                     chat_only=bool(state.get("chat_only", False)),
                 )
                 result.pop("_retry_user_input_turn", None)
+            rejected_tool_calls = result.pop("_rejected_tool_calls", None)
+            if rejected_tool_calls:
+                self._emit_rejected_tool_calls(
+                    rejected_tool_calls,
+                    allowed_tool_names=active_tool_names,
+                )
+                owner._log_run_event(
+                    state,
+                    "tool_calls_rejected",
+                    run_id=state.get("run_id", ""),
+                    step=state.get("steps", 0),
+                    rejected_tool_names=[
+                        str(tool_call.get("name") or "")
+                        for tool_call in rejected_tool_calls
+                    ],
+                    allowed_tool_names=list(active_tool_names),
+                )
             result_issue = result.get("open_tool_issue")
             if (
                 isinstance(result_issue, dict)

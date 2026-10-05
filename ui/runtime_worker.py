@@ -26,6 +26,7 @@ from core.multimodal import (
 )
 from core.run_logger import JsonlRunLogger
 from core.session_store import SessionSnapshot, SessionStore
+from core.std_streams import ensure_standard_streams
 from core.text_utils import TokenTracker
 from ui.runtime_payloads import (
     APPROVAL_MODE_ALWAYS,
@@ -54,6 +55,8 @@ def _runtime_module():
 
 
 def setup_runtime() -> AgentConfig:
+    # Windowed builds have no console; stdio MCP servers need a real stderr.
+    ensure_standard_streams()
     if getattr(sys, "frozen", False):
         os.chdir(os.getcwd())
     config = AgentConfig()

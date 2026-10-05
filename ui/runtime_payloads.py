@@ -97,9 +97,8 @@ def _tool_is_mcp(tool, metadata: ToolMetadata | None) -> bool:
     return bool((metadata and metadata.source == "mcp") or hasattr(tool, "_is_mcp") or ":" in tool.name)
 
 
-def _tool_group(tool, metadata: ToolMetadata | None) -> str:
-    if _tool_is_mcp(tool, metadata):
-        return "MCP"
+def _local_tool_group(metadata: ToolMetadata | None) -> str:
+    """Group a locally loaded tool, ignoring metadata owned by a same-named MCP tool."""
     if metadata and (metadata.mutating or metadata.destructive or metadata.requires_approval):
         return "Protected"
     return "Read-only"
@@ -126,7 +125,10 @@ def build_tools_snapshot(tool_registry) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     metadata_map = getattr(tool_registry, "tool_metadata", {})
     tools = getattr(tool_registry, "tools", [])
-    builtin_tools = getattr(tool_registry, "builtin_tools", tools)
+    builtin_catalog = getattr(tool_registry, "builtin_tools", None)
+    builtin_tools = tools if builtin_catalog is None else builtin_catalog
+    builtin_ids = {id(tool) for tool in builtin_catalog} if builtin_catalog is not None else set()
+    server_owners = getattr(tool_registry, "mcp_tool_servers", {}) or {}
     statuses = {
         str(status.get("server", "")): status
         for status in getattr(tool_registry, "mcp_server_status", [])
@@ -137,14 +139,12 @@ def build_tools_snapshot(tool_registry) -> list[dict[str, Any]]:
         for name, cfg in getattr(tool_registry, "mcp_config", {}).items()
         if name != "_builtin_tools"
     }
-    active_tool_names = {
-        tool.name
-        for tool in (
-            tool_registry.active_tools()
-            if hasattr(tool_registry, "active_tools")
-            else tools
-        )
-    }
+    active_tools = (
+        tool_registry.active_tools()
+        if hasattr(tool_registry, "active_tools")
+        else tools
+    )
+    active_tool_ids = {id(tool) for tool in active_tools}
     mcp_tool_names = {
         str(tool_name)
         for status in statuses.values()
@@ -163,12 +163,20 @@ def build_tools_snapshot(tool_registry) -> list[dict[str, Any]]:
         loaded_names = {str(name) for name in status.get("loaded_tools", [])}
         server_tools = []
         for tool in tools:
+            if id(tool) in builtin_ids:
+                # A built-in must never be counted as an MCP server tool, even when
+                # the server exposes a tool with the same name.
+                continue
             metadata = metadata_map.get(tool.name)
-            belongs_to_server = (
-                tool.name in loaded_names
-                or tool.name.startswith(f"{server_name}:")
-                or (_tool_is_mcp(tool, metadata) and tool.name.rsplit(":", 1)[-1] in loaded_names)
-            )
+            owner = str(server_owners.get(id(tool), "") or "")
+            if owner:
+                belongs_to_server = owner == str(server_name)
+            else:
+                belongs_to_server = (
+                    tool.name in loaded_names
+                    or tool.name.startswith(f"{server_name}:")
+                    or (_tool_is_mcp(tool, metadata) and tool.name.rsplit(":", 1)[-1] in loaded_names)
+                )
             if belongs_to_server:
                 server_tools.append(
                     {
@@ -199,8 +207,11 @@ def build_tools_snapshot(tool_registry) -> list[dict[str, Any]]:
         items = []
         for tool in builtin_tools:
             metadata = metadata_map.get(tool.name)
-            is_mcp = _tool_is_mcp(tool, metadata) or tool.name in mcp_tool_names
-            if not is_mcp and _tool_group(tool, metadata) == group_name:
+            if id(tool) in builtin_ids:
+                is_mcp = False
+            else:
+                is_mcp = _tool_is_mcp(tool, metadata) or tool.name in mcp_tool_names
+            if not is_mcp and _local_tool_group(metadata) == group_name:
                 items.append((tool, metadata))
         for tool, metadata in sorted(items, key=lambda item: item[0].name):
             rows.append(
@@ -209,7 +220,7 @@ def build_tools_snapshot(tool_registry) -> list[dict[str, Any]]:
                     "kind": "tool",
                     "name": tool.name,
                     "description": tool.description or "No description",
-                    "enabled": tool.name in active_tool_names,
+                    "enabled": id(tool) in active_tool_ids,
                 }
             )
     return rows

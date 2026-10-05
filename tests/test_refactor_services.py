@@ -243,6 +243,25 @@ class RefactorServicesTests(unittest.TestCase):
 
         self.assertEqual(detect_os.call_count, 1)
 
+    def test_runtime_prompt_policy_lists_mcp_tools_without_server_names(self):
+        builder = RuntimePromptPolicyBuilder(config=self._make_config())
+        context = RuntimePromptContext(
+            current_task="Найди новости",
+            tools_available=True,
+            active_tool_names=("search", "fetch_content"),
+            mcp_tool_groups=(("ddg-search", ("search", "fetch_content")),),
+        )
+
+        joined = "\n".join(
+            str(message.content)
+            for message in builder.build_messages(context)
+            if isinstance(message, SystemMessage)
+        )
+
+        self.assertIn("MCP tools (call these tool names exactly as written): search, fetch_content", joined)
+        # Server names must never reach the model: it would call one as a tool.
+        self.assertNotIn("ddg-search", joined)
+
     def test_runtime_prompt_policy_updates_workspace_after_directory_change(self):
         first = Path("C:/projects/first")
         second = Path("C:/projects/second")
