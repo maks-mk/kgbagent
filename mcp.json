@@ -14,7 +14,7 @@
       "duckduckgo-mcp-server"
     ],
     "transport": "stdio",
-    "enabled": true,
+    "enabled": false,
     "policy": {
       "read_only": true
     }
@@ -23,7 +23,11 @@
     "command": "./ssh-mcp/ssh-mcp.exe",
     "args": [],
     "transport": "stdio",
-    "enabled": false
+    "enabled": false,
+    "cwd": "D:/py_projects/simple_ai_agent/agent+stategraph/lending",
+    "env": {
+      "SSH_MCP_LOCAL_ROOT": "D:/py_projects/simple_ai_agent/agent+stategraph/lending"
+    }
   },
   "parallel-search": {
     "type": "remote",

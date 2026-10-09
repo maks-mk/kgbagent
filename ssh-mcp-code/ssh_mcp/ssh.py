@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import codecs
 import errno
+import functools
+import math
 import os
 import re
 import select
@@ -30,6 +32,11 @@ DEFAULT_SESSION_READ_WAIT_SECONDS = 1.0
 DEFAULT_SESSION_WRITE_WAIT_SECONDS = 1.0
 DEFAULT_SESSION_STOP_WAIT_SECONDS = 2.0
 DEFAULT_VIEW_MAX_BYTES = 20_480  # 20 KiB, matches the local file-viewing tool's cutoff.
+# Bound remote command execution so a wedged ssh child (slow network, a remote
+# command waiting on input, a stuck sudo prompt) cannot block the tool result
+# forever. Callers can override per call via the 'timeout' argument.
+DEFAULT_EXEC_TIMEOUT_SECONDS = 60.0
+DEFAULT_REMOTE_SCRIPT_TIMEOUT_SECONDS = 120.0
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _ALLOWED_STRICT_HOST_KEY_CHECKING = {"yes", "no", "ask", "accept-new", "off"}
 _ALLOWED_OBSERVER_MODES = {"transcript", "tmux"}
@@ -143,6 +150,8 @@ def _float_argument(
         number = float(value)
     except (TypeError, ValueError) as exc:
         raise ValidationError(f"'{name}' must be a number.") from exc
+    if not math.isfinite(number):
+        raise ValidationError(f"'{name}' must be a finite number.")
     if number < minimum or (not allow_zero and number == 0):
         comparator = ">=" if allow_zero else ">"
         raise ValidationError(f"'{name}' must be {comparator} {minimum}.")
@@ -181,7 +190,7 @@ def _path_argument(
     value = _string_argument(arguments, name)
     if value is None:
         return None
-    path = Path(value).expanduser()
+    path = Path(_anchor_local_path(value, label=f"'{name}'", reject_root=False))
     if must_exist and not path.exists():
         raise ValidationError(f"'{name}' does not exist: {path}")
     if not must_exist and not path.parent.exists():
@@ -492,7 +501,13 @@ def _resolve_scp_binary(configured_binary: str) -> str:
 
 
 def _resolve_rsync_binary(configured_binary: str) -> str:
-    return _resolve_binary(configured_binary, label="rsync client")
+    try:
+        return _resolve_binary(configured_binary, label="rsync client")
+    except ValidationError as exc:
+        raise ValidationError(
+            f"{exc} ssh_sync needs a local rsync client; install one (MSYS2, Git for Windows, "
+            "WSL) and put it on PATH, or use ssh_scp for one-off transfers."
+        ) from exc
 
 
 def _default_state_dir() -> Path:
@@ -723,6 +738,8 @@ class ConnectionSettings:
     @classmethod
     def from_arguments(cls, arguments: Mapping[str, Any]) -> "ConnectionSettings":
         target = _string_argument(arguments, "target", required=True)
+        if target.startswith("-"):
+            raise ValidationError("'target' must not start with '-'.")
         port = _int_argument(arguments, "port", minimum=1, allow_zero=False)
         if port is not None and port > 65535:
             raise ValidationError("'port' must be <= 65535.")
@@ -763,8 +780,17 @@ class ConnectionSettings:
         *,
         tty: bool,
         keepalive: bool = False,
+        stdin_payload: bool = False,
     ) -> list[str]:
         argv = self.build_transport_argv(ssh_binary, port_flag="-p", tty=tty)
+        if not tty and not stdin_payload:
+            # '-n' redirects the local stdin from /dev/null and closes the
+            # remote stdin channel up front. Without it the Windows OpenSSH
+            # client never reports its DEVNULL stdin as EOF on the remote
+            # channel, so any remote command that reads stdin -- a sudo
+            # password prompt being the classic case -- blocks forever and
+            # wedges the single-threaded MCP server behind it.
+            argv.append("-n")
         if keepalive:
             # Inject keepalive unless the caller already set them via
             # extra_ssh_args — respect explicit user overrides.
@@ -781,48 +807,170 @@ class ConnectionSettings:
 
 
 def _build_remote_path(target: str, path: str) -> str:
+    # rsync always runs a remote shell, so its remote paths must be quoted.
+    # scp does not -- see _build_scp_remote_path.
     return f"{target}:{shlex.quote(path)}"
+
+
+# scp(1) speaks the SFTP protocol by default from OpenSSH 9.0 on, and the SFTP
+# protocol bypasses the remote shell entirely: the path must be passed through
+# verbatim. Older clients use the legacy protocol, where the remote shell
+# parses (and therefore needs quoted) paths.
+_SCP_SFTP_DEFAULT_MAJOR = 9
+
+LOCAL_ROOT_ENV = "SSH_MCP_LOCAL_ROOT"
+
+
+@functools.lru_cache(maxsize=None)
+def _openssh_major_version(ssh_binary: str) -> int | None:
+    """Major version of the OpenSSH client at ``ssh_binary``, or None if unknown.
+
+    The binary is resolved lazily and any failure degrades to "unknown" so that
+    scp keeps working even when `ssh` itself is not on PATH.
+    """
+    try:
+        resolved = _resolve_ssh_binary(ssh_binary)
+    except ValidationError:
+        return None
+    try:
+        completed = subprocess.run(
+            [resolved, "-V"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=5,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r"OpenSSH[^,\s]*?(\d+)\.", completed.stdout or "")
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _scp_uses_legacy_protocol(connection: "ConnectionSettings", ssh_binary: str) -> bool:
+    if any(arg == "-O" for arg in connection.extra_ssh_args):
+        # '-O' forces the legacy SCP protocol, which is shell-parsed remotely.
+        return True
+    major = _openssh_major_version(ssh_binary)
+    return major is not None and major < _SCP_SFTP_DEFAULT_MAJOR
+
+
+def _build_scp_remote_path(connection: "ConnectionSettings", path: str, *, ssh_binary: str) -> str:
+    if _scp_uses_legacy_protocol(connection, ssh_binary):
+        return f"{connection.target}:{shlex.quote(path)}"
+    return f"{connection.target}:{path}"
+
+
+def _local_root() -> Path:
+    """Directory that relative local paths are resolved against.
+
+    MCP clients launch the server with a working directory taken from the
+    server config (typically the directory holding ``mcp.json``), which is not
+    necessarily the project the user is working in, so it can be pinned
+    explicitly with ``SSH_MCP_LOCAL_ROOT``.
+    """
+    configured = os.environ.get(LOCAL_ROOT_ENV)
+    if configured is not None and configured.strip():
+        root = Path(configured.strip()).expanduser()
+        if not root.is_dir():
+            raise ValidationError(
+                f"{LOCAL_ROOT_ENV} must point to an existing directory: {root}"
+            )
+        return root.resolve()
+    return Path.cwd().resolve()
+
+
+def _reported_local_root() -> str:
+    """Local root as reported in tool results -- never fails the tool call.
+
+    Absolute local paths do not need the local root at all, so a bad
+    ``SSH_MCP_LOCAL_ROOT`` must not turn an already-completed transfer into an
+    error; the problem is surfaced in the field value instead.
+    """
+    try:
+        return str(_local_root())
+    except ValidationError as exc:
+        return f"<invalid {LOCAL_ROOT_ENV}: {exc}>"
+
+
+def _has_trailing_separator(path: str) -> bool:
+    separators = [os.sep]
+    if os.altsep is not None:
+        separators.append(os.altsep)
+    return path.endswith(tuple(separators))
 
 
 def _expand_local_path(path: str) -> str:
     expanded = str(Path(path).expanduser())
-    trailing_separators = [os.sep]
-    if os.altsep is not None:
-        trailing_separators.append(os.altsep)
-    if path.endswith(tuple(trailing_separators)) and not expanded.endswith(os.sep):
+    if _has_trailing_separator(path) and not expanded.endswith(os.sep):
         expanded += os.sep
     return expanded
 
 
+def _anchor_local_path(value: str, *, label: str, reject_root: bool) -> str:
+    """Return ``value`` as an absolute local path, anchored at the local root.
+
+    Absolute paths are returned unchanged -- the caller was explicit. A
+    relative path that resolves to the local root itself (or one of its
+    parents) is rejected when ``reject_root`` is set: callers cannot see the
+    server's working directory, so such a path is far more likely to be a
+    mistake (e.g. ``'.'`` silently copying the directory the agent was launched
+    from) than an intentional choice.
+    """
+    expanded = _expand_local_path(value)
+    candidate = Path(expanded)
+    if candidate.is_absolute():
+        return expanded
+    root = _local_root()
+    resolved = Path(os.path.normpath(str(root / candidate)))
+    if reject_root and (resolved == root or root.is_relative_to(resolved)):
+        raise ValidationError(
+            f"{label} '{value}' resolves to the local root '{root}' (or a parent of it). "
+            f"Relative paths are resolved against the local root ({LOCAL_ROOT_ENV}, by default "
+            "the server's working directory); pass a path inside it, or an explicit absolute "
+            "path if you really mean that directory."
+        )
+    resolved_text = str(resolved)
+    if _has_trailing_separator(expanded) and not resolved_text.endswith(os.sep):
+        resolved_text += os.sep
+    return resolved_text
+
+
 def _normalize_local_sources(paths: list[str], *, recursive: bool) -> list[str]:
     normalized: list[str] = []
+    root = _local_root()
     for raw_path in paths:
-        expanded = _expand_local_path(raw_path)
-        path = Path(expanded)
+        anchored = _anchor_local_path(raw_path, label="Local source path", reject_root=True)
+        path = Path(anchored)
         if not path.exists():
-            raise ValidationError(f"Local source path does not exist: {path}")
+            raise ValidationError(
+                f"Local source path does not exist: {path} (relative paths are resolved against "
+                f"the local root '{root}'; set {LOCAL_ROOT_ENV} or pass an absolute path)"
+            )
         if path.is_dir() and not recursive:
             raise ValidationError(
                 f"Local source path is a directory and requires 'recursive=true': {path}"
             )
-        normalized.append(expanded)
+        normalized.append(anchored)
     return normalized
 
 
 def _normalize_local_destination(path: str, *, require_directory: bool = False) -> str:
-    expanded = _expand_local_path(path)
-    destination = Path(expanded)
+    anchored = _anchor_local_path(path, label="Local destination", reject_root=False)
+    destination = Path(anchored)
     if require_directory:
         if not destination.exists() or not destination.is_dir():
             raise ValidationError(
                 "Local destination must be an existing directory when copying multiple sources: "
                 f"{destination}"
             )
-        return expanded
+        return anchored
     parent = destination if destination.exists() and destination.is_dir() else destination.parent
     if not parent.exists():
         raise ValidationError(f"Parent directory for local destination does not exist: {parent}")
-    return expanded
+    return anchored
 
 
 # ---------------------------------------------------------------------------
@@ -1984,9 +2132,15 @@ class SshToolService:
         input_text: str | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
+        if timeout is None:
+            timeout = DEFAULT_REMOTE_SCRIPT_TIMEOUT_SECONDS
         ssh_binary = _resolve_ssh_binary(self._configured_ssh_binary)
         remote_command = _build_script_command(script, args)
-        argv = connection.build_argv(ssh_binary, remote_command, tty=False)
+        # Scripts that write a remote file (ssh_create, ssh_edit write-back)
+        # receive the content on stdin, so '-n' must stay off for them.
+        argv = connection.build_argv(
+            ssh_binary, remote_command, tty=False, stdin_payload=input_text is not None
+        )
         return _run_without_pty_binary_safe(argv, timeout=timeout, input_text=input_text)
 
     def ssh_exec(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
@@ -1996,7 +2150,9 @@ class SshToolService:
         cwd = _string_argument(validated, "cwd")
         shell = _string_argument(validated, "shell")
         environment = _env_argument(validated)
-        timeout = _float_argument(validated, "timeout", default=None, minimum=0.0, allow_zero=False)
+        timeout = _float_argument(
+            validated, "timeout", default=DEFAULT_EXEC_TIMEOUT_SECONDS, minimum=0.0, allow_zero=False
+        )
         tty = _bool_argument(validated, "tty", default=False)
         ssh_binary = _resolve_ssh_binary(self._configured_ssh_binary)
         remote_command = build_exec_remote_command(
@@ -2029,22 +2185,26 @@ class SshToolService:
             argv.append("-r")
         if preserve_times:
             argv.append("-p")
+        ssh_binary = self._configured_ssh_binary
         if direction == "upload":
-            normalized_sources = _normalize_local_sources(sources, recursive=recursive)
-            normalized_destination = destination
-            argv.extend(normalized_sources)
-            argv.append(_build_remote_path(connection.target, normalized_destination))
+            resolved_local_paths = _normalize_local_sources(sources, recursive=recursive)
+            argv.extend(resolved_local_paths)
+            argv.append(_build_scp_remote_path(connection, destination, ssh_binary=ssh_binary))
         else:
-            normalized_sources = sources
             normalized_destination = _normalize_local_destination(
                 destination, require_directory=len(sources) > 1
             )
-            argv.extend(_build_remote_path(connection.target, source) for source in normalized_sources)
+            argv.extend(
+                _build_scp_remote_path(connection, source, ssh_binary=ssh_binary) for source in sources
+            )
             argv.append(normalized_destination)
+            resolved_local_paths = [normalized_destination]
         result = _run_without_pty(argv, timeout=timeout)
         result["ok"] = result["exit_code"] == 0 and not result["timed_out"]
         result["target"] = connection.target
         result["direction"] = direction
+        result["local_root"] = _reported_local_root()
+        result["resolved_local_paths"] = resolved_local_paths
         return result
 
     def ssh_sync(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
@@ -2077,16 +2237,18 @@ class SshToolService:
         argv.extend(["-e", shlex.join(ssh_transport_argv)])
         if direction == "upload":
             normalized_source = _normalize_local_sources([source], recursive=True)[0]
-            normalized_destination = destination
-            argv.extend([normalized_source, _build_remote_path(connection.target, normalized_destination)])
+            resolved_local_paths = [normalized_source]
+            argv.extend([normalized_source, _build_remote_path(connection.target, destination)])
         else:
-            normalized_source = source
             normalized_destination = _normalize_local_destination(destination)
-            argv.extend([_build_remote_path(connection.target, normalized_source), normalized_destination])
+            resolved_local_paths = [normalized_destination]
+            argv.extend([_build_remote_path(connection.target, source), normalized_destination])
         result = _run_without_pty(argv, timeout=timeout)
         result["ok"] = result["exit_code"] == 0 and not result["timed_out"]
         result["target"] = connection.target
         result["direction"] = direction
+        result["local_root"] = _reported_local_root()
+        result["resolved_local_paths"] = resolved_local_paths
         return result
 
     def ssh_view(self, arguments: Mapping[str, Any]) -> dict[str, Any]:

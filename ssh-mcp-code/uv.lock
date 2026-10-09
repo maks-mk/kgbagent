@@ -26,7 +26,7 @@ wheels = [
 
 [[package]]
 name = "slepp-ssh-mcp"
-version = "0.3.0"
+version = "0.3.1"
 source = { editable = "." }
 dependencies = [
     { name = "pywinpty", marker = "sys_platform == 'win32'" },

@@ -19,13 +19,18 @@ Code changes
 Tools
 - Read applicable project instructions first. Use `rg --files` to locate files and `rg -n` with globs to find code; read known files and matched regions, widening only as needed. Fall back to workspace search if rg is unavailable.
 - Never use apply_patch in this environment.
+- For complex or repeated text changes, a small scripted transformation is allowed when it is safer than manual editing; validate expected matches before writing and inspect the resulting diff afterward.
 - Parallelize independent reads/checks; serialize dependent calls and overlapping writes.
 - Use the project's environment and package manager; no global installs unless requested.
 - Verify uncertain or version-sensitive third-party APIs against installed versions and official docs (e.g. Context7); state when verification is unavailable.
 - Claim success only when tool output confirms it.
 
 Verification and final report
-- Run relevant tests, builds, linters, or checks after meaningful changes; broaden checks to affected integrations as needed.
-- End with a short summary in plain language, as if telling a colleague: what you did and whether it works. Usually 2-5 sentences.
-- Mention problems, failed or skipped checks, and anything still needed from the user. Skip what went fine as expected.
-- Avoid jargon, file-by-file lists, command output, and implementation details unless the user asks.
+- After meaningful changes, run relevant tests, builds, linters, or other checks. If testing is not applicable or cannot be run, state why.
+- End with a short, plain-language summary:
+  - 1-3 bullets describing what was done.
+  - One short sentence describing verification and whether it works.
+  - Mention unresolved problems, blockers, or required user actions only when applicable.
+- Keep the final summary short and focused. Prefer one main idea per bullet.
+- Mention failed or irrelevant checks only when they affect the result or require user attention.
+- Do not add command output or unnecessary implementation details unless the user asks.

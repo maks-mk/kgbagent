@@ -93,10 +93,13 @@ SESSION_STATE_PATH=.agent_state/session.json
 MODEL_PROFILE_CONFIG_PATH=.agent_state/config.json
 # JSONL run logs directory
 RUN_LOG_DIR=logs/runs
-# Включить подробный вывод отладочной информации
+# Проверки инвариантов состояния графа (лог INVARIANT VIOLATION) и режим "debug" в панели Config.
+# Уровень логирования НЕ меняет — для подробных логов используйте LOG_LEVEL=DEBUG.
 DEBUG=false
-# Logging overrides (optional)
+# Настройки логирования
+# LOG_LEVEL: уровень детализации логов (DEBUG — максимально подробно, INFO — стандарт, WARNING/ERROR — только проблемы)
 # LOG_LEVEL=INFO
+# LOG_FILE: путь к файлу лога (по умолчанию logs/agent.log)
 # LOG_FILE=logs/agent.log
 # Подробный отдельный лог reasoning/thinking stream в logs/reasoning_debug.log.
 # Включайте только для диагностики провайдеров/агрегаторов.

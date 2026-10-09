@@ -8,20 +8,10 @@
       "read_only": true
     }
   },
-  "ux-expert": {
-    "command": "npx",
+  "ddg-search": {
+    "command": "uvx",
     "args": [
-      "-y",
-      "@elsahafy/ux-mcp-server"
-    ],
-    "transport": "stdio",
-    "enabled": false
-  },
-  "sequential-thinking": {
-    "command": "npx",
-    "args": [
-      "-y",
-      "@modelcontextprotocol/server-sequential-thinking"
+      "duckduckgo-mcp-server"
     ],
     "transport": "stdio",
     "enabled": false,
@@ -33,7 +23,11 @@
     "command": "./ssh-mcp/ssh-mcp.exe",
     "args": [],
     "transport": "stdio",
-    "enabled": false
+    "enabled": true,
+    "cwd": "D:/py_projects/simple_ai_agent/agent+stategraph/lending",
+    "env": {
+      "SSH_MCP_LOCAL_ROOT": "D:/py_projects/simple_ai_agent/agent+stategraph/lending"
+    }
   },
   "parallel-search": {
     "type": "remote",

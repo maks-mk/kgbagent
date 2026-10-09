@@ -161,6 +161,24 @@ class ProviderRegistryTests(unittest.TestCase):
             build_reasoning_kwargs(payload, config, effort)
             self.assertEqual(payload["reasoning_effort"], expected)
 
+    def test_anymodel_namespaced_gpt6_model_exposes_reasoning_efforts(self):
+        import json
+
+        payload = json.loads((Path(__file__).parents[1] / "provider_registry.json").read_text(encoding="utf-8"))
+        for provider in payload["providers"]:
+            if provider["id"] == "openai":
+                provider["hosts"].append("anymodel.org")
+        registry = ProviderRegistry(payload)
+
+        for model in ("cx/gpt-6.1-sol", "gpt-6.1-sol"):
+            with self.subTest(model=model):
+                config = registry.match("https://anymodel.org/v1", model)
+                self.assertIsNotNone(config)
+                self.assertEqual(config["id"], "openai")
+                self.assertEqual(config["values"], {"low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max"})
+
+        self.assertIsNone(registry.match("https://anymodel.org/v1", "cx/llama-3.3"))
+
     def test_nvidia_deepseek_v4_registry_uses_documented_reasoning_effort(self):
         registry = ProviderRegistry.from_path(Path(__file__).parents[1] / "provider_registry.json")
 

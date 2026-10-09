@@ -1,13 +1,31 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+import threading
 import traceback
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from . import __version__
 from .ssh import ForwardNotFoundError, RemoteFileError, SessionNotFoundError, SshToolService, ValidationError
+
+DEFAULT_MAX_CONCURRENT_TOOL_CALLS = 4
+MAX_CONCURRENT_TOOL_CALLS_ENV = "SSH_MCP_MAX_CONCURRENCY"
+
+
+def _configured_max_concurrent_tool_calls() -> int:
+    raw = os.environ.get(MAX_CONCURRENT_TOOL_CALLS_ENV)
+    if raw is None or not raw.strip():
+        return DEFAULT_MAX_CONCURRENT_TOOL_CALLS
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return DEFAULT_MAX_CONCURRENT_TOOL_CALLS
+    return max(1, value)
+
 
 SERVER_NAME = "ssh-mcp"
 SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2024-11-05")
@@ -55,6 +73,17 @@ def _jsonrpc_error(code: int, message: str, *, request_id: Any, data: Mapping[st
     if data:
         payload["error"]["data"] = dict(data)
     return payload
+
+
+def _is_tool_call_request(message: Any) -> bool:
+    """Tool calls are the only long-running requests, so they run on a worker
+    thread; everything else stays on the reader thread to keep the JSON-RPC
+    initialize gate and cheap metadata responses strictly ordered."""
+    return (
+        isinstance(message, dict)
+        and "id" in message
+        and message.get("method") == "tools/call"
+    )
 
 
 _EXTRA_SSH_ARGS_SCHEMA: dict[str, Any] = {
@@ -129,7 +158,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "ssh_scp",
-        "description": "Copy files or directories between the local machine and one remote target via the local scp client.",
+        "description": "Copy files or directories between the local machine and one remote target via the local scp client. Local paths are resolved against the ssh-mcp local root: SSH_MCP_LOCAL_ROOT if set, otherwise the server process working directory (normally the directory holding mcp.json). Pass absolute paths to avoid ambiguity. A download destination that does not exist is treated as a target file name, so its parent directory must exist; create the directory first when the source name should be preserved.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
@@ -141,11 +170,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "type": "array",
                     "minItems": 1,
                     "items": {"type": "string"},
-                    "description": "For upload: local file or directory paths. For download: remote paths (without host prefix — the host is set by 'target').",
+                    "description": "For upload: local file or directory paths (absolute, or relative to the local root — see the tool description). For download: remote paths (without host prefix — the host is set by 'target').",
                 },
                 "destination": {
                     "type": "string",
-                    "description": "For upload: remote directory path. For download: local directory or file path.",
+                    "description": "For upload: remote directory path. For download: local directory or file path (same local-path rules as 'sources').",
                 },
                 "recursive": {"type": "boolean", "description": "Copy directories recursively. Required when any source is a directory."},
                 "preserve_times": {"type": "boolean", "description": "Preserve modification times and modes."},
@@ -160,7 +189,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "ssh_sync",
-        "description": "Incrementally sync files or directories between the local machine and one remote target via local rsync over SSH.",
+        "description": "Incrementally sync files or directories between the local machine and one remote target via local rsync over SSH. Requires a local 'rsync' client on PATH (Windows does not ship one — use ssh_scp instead when rsync is unavailable). Local paths are resolved against the ssh-mcp local root: SSH_MCP_LOCAL_ROOT if set, otherwise the server process working directory (normally the directory holding mcp.json). Pass absolute paths to avoid ambiguity.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
@@ -170,11 +199,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "direction": {"type": "string", "enum": ["upload", "download"]},
                 "source": {
                     "type": "string",
-                    "description": "For upload: local path. For download: remote path (without host prefix).",
+                    "description": "For upload: local path (absolute, or relative to the local root — see the tool description). For download: remote path (without host prefix).",
                 },
                 "destination": {
                     "type": "string",
-                    "description": "For upload: remote path. For download: local path.",
+                    "description": "For upload: remote path. For download: local path (same local-path rules as 'source').",
                 },
                 "delete": {"type": "boolean", "description": "Delete files in the destination that are not in the source."},
                 "compress": {"type": "boolean", "description": "Compress data during transfer. Default: true."},
@@ -639,6 +668,11 @@ class McpServer:
         self._stdout = stdout or sys.stdout.buffer
         self._tool_service = tool_service or SshToolService()
         self._initialized = False
+        self._write_lock = threading.Lock()
+        self._tool_executor = ThreadPoolExecutor(
+            max_workers=_configured_max_concurrent_tool_calls(),
+            thread_name_prefix="ssh-mcp-tool",
+        )
         self._tool_handlers: dict[str, Callable[[Mapping[str, Any]], dict[str, Any]]] = {
             "ssh_exec": self._tool_service.ssh_exec,
             "ssh_scp": self._tool_service.ssh_scp,
@@ -678,11 +712,28 @@ class McpServer:
                         )
                     )
                     continue
+                if _is_tool_call_request(message):
+                    self._tool_executor.submit(self._run_tool_call, message)
+                    continue
                 response = self._handle_message(message)
                 if response is not None:
                     self._write_message(response)
         finally:
+            self._tool_executor.shutdown(wait=True, cancel_futures=True)
             self._tool_service.close()
+
+    def _run_tool_call(self, message: Mapping[str, Any]) -> None:
+        try:
+            response = self._handle_message(message)
+        except BaseException as exc:  # pragma: no cover - defensive fallback
+            print(traceback.format_exc(), file=sys.stderr, flush=True)
+            response = _jsonrpc_error(
+                JSONRPC_INTERNAL_ERROR,
+                f"Internal server error: {exc}",
+                request_id=message.get("id"),
+            )
+        if response is not None:
+            self._write_message(response)
 
     def _handle_message(self, message: Any) -> dict[str, Any] | None:
         if not isinstance(message, dict):
@@ -822,8 +873,9 @@ class McpServer:
 
     def _write_message(self, message: Mapping[str, Any]) -> None:
         encoded = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        self._stdout.write(encoded + b"\n")
-        self._stdout.flush()
+        with self._write_lock:
+            self._stdout.write(encoded + b"\n")
+            self._stdout.flush()
 
 
 class JsonRpcRequestError(Exception):

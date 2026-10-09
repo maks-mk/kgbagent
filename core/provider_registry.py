@@ -82,11 +82,22 @@ def _model_matches(model_name: str | None, models: Mapping[str, Any] | None) -> 
     normalized = _clean_text(model_name).lower()
     if not normalized:
         return False
-    if normalized in models.get("exact", []):
-        return True
-    if any(normalized.startswith(prefix) for prefix in models.get("prefix", [])):
-        return True
-    return any(marker in normalized for marker in models.get("contains", []))
+    # Gateways often prefix the upstream model with a vendor namespace
+    # ("cx/gpt-6.1-sol"), so rules match the full name and the part after
+    # the last "/" as well.
+    candidates = [normalized]
+    if "/" in normalized:
+        stripped = normalized.rsplit("/", 1)[-1].strip()
+        if stripped and stripped not in candidates:
+            candidates.append(stripped)
+    for candidate in candidates:
+        if candidate in models.get("exact", []):
+            return True
+        if any(candidate.startswith(prefix) for prefix in models.get("prefix", [])):
+            return True
+        if any(marker in candidate for marker in models.get("contains", [])):
+            return True
+    return False
 
 
 class ProviderRegistry:

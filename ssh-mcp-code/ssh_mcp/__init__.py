@@ -4,7 +4,7 @@ from .windows_env import ensure_complete_environment
 
 __all__ = ["__version__"]
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 # The client that launches this stdio server may forward only a subset of its
 # environment, dropping variables Windows OpenSSH requires to start (notably

@@ -51,6 +51,25 @@ def _strip_ansi_for_display(text: Any) -> str:
     return _ANSI_ESCAPE_RE.sub("", str(text or ""))
 
 
+_ESCAPED_WHITESPACE_RE = re.compile(r"\\r\\n|\\r|\\n|\\t")
+_ESCAPED_WHITESPACE_MAP = {"\\r\\n": "\n", "\\r": "\n", "\\n": "\n", "\\t": "\t"}
+
+
+def _decode_escaped_whitespace(text: str) -> str:
+    """Turn literal ``\\n``/``\\r``/``\\t`` in tool output into real characters.
+
+    Results that arrive as escaped JSON strings would otherwise render the
+    backslash sequences verbatim in the card. Only whitespace escapes are
+    decoded so the output stays plain text with just line breaks and
+    indentation - no syntax highlighting or colouring is involved. Plain text
+    (file contents, Windows paths) is left untouched because there ``\\n``/``\\t``
+    are not escapes.
+    """
+    if "\\" not in text or not text.lstrip().startswith(("[", "{")):
+        return text
+    return _ESCAPED_WHITESPACE_RE.sub(lambda match: _ESCAPED_WHITESPACE_MAP[match.group(0)], text)
+
+
 class CliExecWidget(QFrame):
     def __init__(self, command: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -716,7 +735,7 @@ class ToolCardWidget(QFrame):
         if isinstance(content, (dict, list)):
             rendered = json.dumps(content, ensure_ascii=False, indent=2)
         else:
-            rendered = _strip_ansi_for_display(content)
+            rendered = _decode_escaped_whitespace(_strip_ansi_for_display(content))
         if rendered.strip():
             return rendered
         return _strip_ansi_for_display(summary)
