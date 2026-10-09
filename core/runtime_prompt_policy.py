@@ -134,9 +134,16 @@ class RuntimePromptPolicyBuilder:
             "RUNTIME CONTRACT:",
             "CLI only; no GUI.",
             self._build_execution_environment_line(environment),
-            *location_lines,
-            f"Local time: {environment.timezone_name} ({environment.utc_offset}); date={datetime.now().strftime('%Y-%m-%d')}.",
         ]
+        shell_syntax_line = self._build_shell_syntax_line(environment)
+        if shell_syntax_line:
+            lines.append(shell_syntax_line)
+        lines.extend(
+            [
+                *location_lines,
+                f"Local time: {environment.timezone_name} ({environment.utc_offset}); date={datetime.now().strftime('%Y-%m-%d')}.",
+            ]
+        )
         current_task = compact_text(str(context.current_task or "").strip(), 240)
         if current_task:
             lines.append(f"Current task: {current_task}")
@@ -150,6 +157,21 @@ class RuntimePromptPolicyBuilder:
             f"shell={environment.shell_family}; "
             f"paths={environment.path_style}."
         )
+
+    def _build_shell_syntax_line(self, environment: RuntimeExecutionEnvironment | None = None) -> str:
+        environment = environment or self._detect_execution_environment()
+        shell = environment.shell_family
+        if shell == "powershell":
+            return (
+                "Shell syntax: commands run directly in PowerShell. Write PowerShell syntax natively "
+                "(no bash heredocs, no `&&` chains in Windows PowerShell 5.1, no /dev/null). "
+                "Do not wrap commands in `powershell -Command ...`; the tool already runs PowerShell."
+            )
+        if shell in {"bash", "zsh", "sh", "fish"}:
+            return f"Shell syntax: commands run directly in {shell}; use POSIX syntax."
+        if shell == "cmd":
+            return "Shell syntax: commands run directly in cmd.exe; use cmd syntax."
+        return ""
 
     def _build_strict_mode_message(self) -> str:
         if not self.config.strict_mode:

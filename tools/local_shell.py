@@ -499,7 +499,7 @@ async def cli_exec(
         ),
     ] = DEFAULT_TIMEOUT,
 ) -> str:
-    """Run one non-interactive shell command in the workspace. Stateless: include cd/chains in the same command. Supports pipes, redirects, &&. Use run_background_process for servers/watchers; avoid prompts and interactive TUI commands."""
+    """Run one non-interactive shell command in the workspace. Stateless: include cd/chains in the same command. Supports pipes, redirects, &&. Use run_background_process for servers/watchers; avoid prompts and interactive TUI commands. On Windows this tool runs PowerShell directly: write PowerShell syntax, do not wrap commands in `powershell -Command ...`."""
     if _SAFETY_POLICY and not _SAFETY_POLICY.allow_shell:
         return format_error(ErrorType.ACCESS_DENIED, "Shell execution is disabled by SafetyPolicy.")
 
