@@ -1538,8 +1538,8 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertNotIn("extra_body", captured)
-        self.assertNotIn("reasoning_effort", captured)
-        self.assertEqual(captured["reasoning"]["effort"], "medium")
+        self.assertNotIn("reasoning", captured)
+        self.assertEqual(captured["reasoning_effort"], "medium")
 
     def test_create_llm_for_freetheai_gemini_uses_provider_level_reasoning(self):
         captured = {}

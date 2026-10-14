@@ -20,11 +20,17 @@ from core import constants
 from core.config import AgentConfig
 from core.message_utils import iter_message_tool_calls, stringify_content
 from core.multimodal import (
+    IMAGE_CONTENT_OMITTED_PLACEHOLDER,
     IMAGE_INPUT_PROFILE_KEYS,
+    TOOL_RESULT_IMAGE_OMITTED_PLACEHOLDER,
+    content_has_image_blocks,
     human_message_has_image_content,
+    materialize_tool_result_image_blocks,
     materialize_user_message_content_for_model,
     normalize_model_capabilities,
+    provider_supports_tool_result_images,
     strip_image_content_from_message_content,
+    strip_tool_result_image_blocks,
 )
 from core.tool_args import canonicalize_tool_args
 from core.runtime_prompt_policy import (
@@ -276,6 +282,40 @@ class ContextBuilder:
                         normalized_message = normalized_message.model_copy(update={"tool_call_id": mapped_tool_id})
                         remapped_count += 1
 
+            if isinstance(normalized_message, ToolMessage) and content_has_image_blocks(normalized_message.content):
+                # A tool result may carry images (read_images). Anthropic and Gemini
+                # accept them inline; OpenAI accepts them only through the Responses
+                # API. Where they cannot be delivered, the blocks are replaced with a
+                # text note before the payload is built.
+                provider_can_attach = provider_supports_tool_result_images(
+                    self.config.provider,
+                    getattr(self.config, "llm_api_mode", "chat"),
+                )
+                model_can_attach = image_input_supported or not self._image_capability_known
+                if not (provider_can_attach and model_can_attach):
+                    # Name the actual blocker: a text-only model must not be told
+                    # that the provider dropped the image, or it will keep retrying.
+                    omission_note = (
+                        TOOL_RESULT_IMAGE_OMITTED_PLACEHOLDER
+                        if model_can_attach
+                        else IMAGE_CONTENT_OMITTED_PLACEHOLDER
+                    )
+                    sanitized_content, removed_blocks = strip_tool_result_image_blocks(
+                        normalized_message.content,
+                        note=omission_note,
+                    )
+                    if removed_blocks:
+                        normalized_message = normalized_message.model_copy(update={"content": sanitized_content})
+                        filtered_image_message_count += 1
+                        filtered_image_block_count += removed_blocks
+                else:
+                    materialized_content = materialize_tool_result_image_blocks(
+                        normalized_message.content,
+                        provider=self.config.provider,
+                    )
+                    if materialized_content != normalized_message.content:
+                        normalized_message = normalized_message.model_copy(update={"content": materialized_content})
+
             if isinstance(normalized_message, HumanMessage) and human_message_has_image_content(normalized_message.content):
                 if self._image_capability_known and not image_input_supported:
                     sanitized_content, removed_blocks = strip_image_content_from_message_content(
@@ -300,9 +340,12 @@ class ContextBuilder:
                 and isinstance(normalized_message, AIMessage)
                 and self._message_is_responses_native(normalized_message)
             )
-            if self.config.provider == "openai" and not preserve_responses_content and not (
-                isinstance(normalized_message, HumanMessage) and human_message_has_image_content(normalized_message.content)
-            ):
+            # Human and tool messages keep their image blocks: flattening them to text
+            # would silently drop the media the provider still has to receive.
+            keeps_image_blocks = isinstance(normalized_message, (HumanMessage, ToolMessage)) and (
+                content_has_image_blocks(normalized_message.content)
+            )
+            if self.config.provider == "openai" and not preserve_responses_content and not keeps_image_blocks:
                 raw_content = getattr(normalized_message, "content", None)
                 normalized_content = stringify_content(raw_content)
                 if normalized_content != raw_content:

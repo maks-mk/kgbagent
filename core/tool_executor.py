@@ -27,7 +27,7 @@ class ToolExecutionOutcome:
     parsed_result: ToolExecutionResult
     had_error: bool
     issue: Dict[str, Any] | None
-    content: str
+    content: str | list[Dict[str, Any]]
 
 
 class ToolExecutor:
@@ -84,13 +84,13 @@ class ToolExecutor:
         tool_name: str,
         tool_args: Dict[str, Any],
         tool_call_id: str,
-        content: str,
+        content: str | list[Dict[str, Any]],
         issue_details: Dict[str, Any] | None = None,
         tool_duration_seconds: float | None = None,
         apply_validation: bool = True,
         had_error: bool = False,
     ) -> ToolExecutionOutcome:
-        if apply_validation:
+        if apply_validation and isinstance(content, str):
             validation_error = validate(
                 content,
                 {
@@ -105,22 +105,25 @@ class ToolExecutor:
                     content = validation_error
                 had_error = True
 
-        limit = self.config.safety.max_tool_output
-        is_mcp = self._metadata_for_tool(tool_name).source == "mcp"
-        compressed = self._output_compressor.compress(
-            content=content,
-            tool_name=tool_name,
-            tool_args=tool_args if isinstance(tool_args, dict) else None,
-            limit=limit,
-            is_mcp=is_mcp,
-            user_query=self._latest_user_query(state),
-        )
-        content = self._output_compressor.reduce_to_limit(
-            content=compressed if compressed is not None else content,
-            tool_name=tool_name,
-            limit=limit,
-            is_mcp=is_mcp,
-        )
+        # Content blocks (e.g. images from read_images) are media, not text:
+        # compressing or truncating them would corrupt the payload.
+        if isinstance(content, str):
+            limit = self.config.safety.max_tool_output
+            is_mcp = self._metadata_for_tool(tool_name).source == "mcp"
+            compressed = self._output_compressor.compress(
+                content=content,
+                tool_name=tool_name,
+                tool_args=tool_args if isinstance(tool_args, dict) else None,
+                limit=limit,
+                is_mcp=is_mcp,
+                user_query=self._latest_user_query(state),
+            )
+            content = self._output_compressor.reduce_to_limit(
+                content=compressed if compressed is not None else content,
+                tool_name=tool_name,
+                limit=limit,
+                is_mcp=is_mcp,
+            )
         parsed_result = parse_tool_execution_result(content)
         if not parsed_result.ok:
             had_error = True
@@ -304,7 +307,7 @@ class ToolExecutor:
     @staticmethod
     def _build_tool_message(
         *,
-        content: str,
+        content: str | list[Dict[str, Any]],
         tool_call_id: str,
         tool_name: str,
         tool_args: Dict[str, Any],

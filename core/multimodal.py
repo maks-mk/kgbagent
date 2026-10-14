@@ -15,6 +15,10 @@ IMAGE_CONTENT_BLOCK_TYPES = {"image", "image_url", "input_image"}
 IMAGE_CONTENT_OMITTED_PLACEHOLDER = (
     "Previous image input omitted because the current model does not support image input."
 )
+TOOL_RESULT_IMAGE_OMITTED_PLACEHOLDER = (
+    "Image content omitted because the active provider does not accept images inside tool results."
+)
+TOOL_RESULT_IMAGE_UNREADABLE_TEMPLATE = "Image '{path}' is no longer readable and was replaced with text."
 IMAGE_INPUT_PROFILE_KEYS = ("image_input", "imageInputs", "image_inputs")
 DEFAULT_MODEL_CAPABILITIES = {"image_input_supported": False}
 
@@ -99,11 +103,42 @@ def _image_dimensions(path: str | Path) -> tuple[int, int]:
     return width, height
 
 
+def image_dimensions(path: str | Path) -> tuple[int, int]:
+    """Image width/height, or (0, 0) when the size cannot be read."""
+    return _image_dimensions(path)
+
+
 def _image_mime_type(path: str | Path) -> str:
     guessed, _encoding = mimetypes.guess_type(str(path))
     if guessed and guessed.startswith("image/"):
         return guessed
     return "image/png"
+
+
+_IMAGE_FORMAT_MIME_TYPES = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+    "bmp": "image/bmp",
+    "webp": "image/webp",
+    "tif": "image/tiff",
+    "tiff": "image/tiff",
+    "ico": "image/x-icon",
+    "svg": "image/svg+xml",
+}
+
+
+def image_mime_type_for_file(path: str | Path) -> str:
+    """MIME type of the actual image format, falling back to the file extension.
+
+    Providers validate the declared media type, so a decoded format is more
+    reliable than the extension of an arbitrarily named file.
+    """
+    qt_format = bytes(QImageReader(str(path)).format() or b"").decode("ascii", "ignore").strip().lower()
+    if qt_format:
+        return _IMAGE_FORMAT_MIME_TYPES.get(qt_format, f"image/{qt_format}")
+    return _image_mime_type(path)
 
 
 def can_read_image_file(path: str | Path) -> bool:
@@ -274,7 +309,7 @@ def extract_user_turn_data(content: Any) -> tuple[str, list[dict[str, Any]]]:
     return "".join(text_parts), normalize_image_attachments(attachments)
 
 
-def human_message_has_image_content(content: Any) -> bool:
+def content_has_image_blocks(content: Any) -> bool:
     if isinstance(content, str):
         return False
     for item in content if isinstance(content, list) else [content]:
@@ -283,9 +318,14 @@ def human_message_has_image_content(content: Any) -> bool:
             if item_type in IMAGE_CONTENT_BLOCK_TYPES or (not item_type and "image_url" in item):
                 return True
             nested_content = item.get("content")
-            if nested_content is not None and human_message_has_image_content(nested_content):
+            if nested_content is not None and content_has_image_blocks(nested_content):
                 return True
     return False
+
+
+# Image blocks have the same shape in every message role; the alias keeps the
+# human-message call sites readable.
+human_message_has_image_content = content_has_image_blocks
 
 
 def strip_image_content_from_message_content(content: Any) -> tuple[Any, int]:
@@ -339,6 +379,28 @@ def strip_image_content_from_message_content(content: Any) -> tuple[Any, int]:
     return sanitized_items, removed_blocks
 
 
+def strip_tool_result_image_blocks(content: Any, *, note: str = TOOL_RESULT_IMAGE_OMITTED_PLACEHOLDER) -> tuple[Any, int]:
+    """Drop image blocks from a tool result and state their absence in the text.
+
+    Removing the blocks silently would leave the model convinced the image is
+    still in context, so the tool message keeps a text note about the omission.
+    """
+    stripped, removed_blocks = strip_image_content_from_message_content(content)
+    if not removed_blocks:
+        return content, 0
+
+    if isinstance(stripped, str):
+        text = stripped.strip()
+        if not text or text == IMAGE_CONTENT_OMITTED_PLACEHOLDER:
+            return note, removed_blocks
+        return f"{text}\n\n{note}", removed_blocks
+
+    if isinstance(stripped, list):
+        return [*stripped, {"type": "text", "text": note}], removed_blocks
+
+    return stripped, removed_blocks
+
+
 def _as_anthropic_image_block(base64_data: str, mime_type: str) -> dict[str, Any]:
     return {
         "type": "image",
@@ -357,6 +419,33 @@ def _as_openai_image_url_block(base64_data: str, mime_type: str) -> dict[str, An
             "url": f"data:{mime_type};base64,{base64_data}",
         },
     }
+
+
+def image_content_block_for_provider(base64_data: str, mime_type: str, *, provider: str = "") -> dict[str, Any]:
+    """Return the image block shape the given provider expects in a request payload."""
+    provider_name = str(provider or "").strip().lower()
+    if provider_name == "openai":
+        return _as_openai_image_url_block(base64_data, mime_type)
+    if provider_name == "anthropic":
+        return _as_anthropic_image_block(base64_data, mime_type)
+    return {
+        "type": "image",
+        "base64": base64_data,
+        "mime_type": mime_type,
+    }
+
+
+def provider_supports_tool_result_images(provider: str, api_mode: str = "chat") -> bool:
+    """Whether image blocks survive inside a tool result for this provider.
+
+    Anthropic and Gemini read images from tool results natively. OpenAI only
+    accepts them through the Responses API: chat completions requires tool
+    content to be a plain string, so blocks must be stripped there.
+    """
+    provider_name = str(provider or "").strip().lower()
+    if provider_name == "openai":
+        return str(api_mode or "chat").strip().lower() == "responses"
+    return provider_name in {"anthropic", "gemini"}
 
 
 def materialize_user_message_content_for_model(content: Any, *, provider: str = "") -> Any:
@@ -387,21 +476,57 @@ def materialize_user_message_content_for_model(content: Any, *, provider: str = 
 
         base64_data = base64.b64encode(file_path.read_bytes()).decode("ascii")
         mime_type = str(item.get("mime_type") or _image_mime_type(file_path))
-        if provider_name == "openai":
-            materialized.append(_as_openai_image_url_block(base64_data, mime_type))
-            continue
-        if provider_name == "anthropic":
-            materialized.append(_as_anthropic_image_block(base64_data, mime_type))
-            continue
-        materialized.append(
-            {
-                "type": "image",
-                "base64": base64_data,
-                "mime_type": mime_type,
-            }
-        )
+        materialized.append(image_content_block_for_provider(base64_data, mime_type, provider=provider_name))
 
     return materialized
+
+
+def materialize_tool_result_image_blocks(content: Any, *, provider: str = "") -> Any:
+    """Materialize path-based image blocks returned by a tool for the target provider.
+
+    Unlike a human attachment, a tool result can outlive the file it read: the
+    agent may rename or delete it before the next request. Such a block is
+    replaced with a text note so a stale path can never break the payload.
+    """
+    if not isinstance(content, list):
+        return content
+
+    materialized: list[Any] = []
+    changed = False
+    for item in content:
+        if not isinstance(item, dict) or str(item.get("type") or "").strip().lower() != "image":
+            materialized.append(item)
+            continue
+
+        path = str(item.get("path") or "").strip()
+        file_path = Path(path) if path else None
+        if file_path is None or not file_path.is_file():
+            materialized.append(
+                {
+                    "type": "text",
+                    "text": TOOL_RESULT_IMAGE_UNREADABLE_TEMPLATE.format(path=path or "<unknown>"),
+                }
+            )
+            changed = True
+            continue
+
+        try:
+            base64_data = base64.b64encode(file_path.read_bytes()).decode("ascii")
+        except OSError:
+            materialized.append(
+                {
+                    "type": "text",
+                    "text": TOOL_RESULT_IMAGE_UNREADABLE_TEMPLATE.format(path=path),
+                }
+            )
+            changed = True
+            continue
+
+        mime_type = str(item.get("mime_type") or _image_mime_type(file_path))
+        materialized.append(image_content_block_for_provider(base64_data, mime_type, provider=provider))
+        changed = True
+
+    return materialized if changed else content
 
 
 def normalize_request_payload(payload: Any) -> dict[str, Any]:

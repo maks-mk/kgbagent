@@ -66,6 +66,7 @@ class AgentNodes(
     PARALLEL_SAFE_TOOL_NAMES = frozenset(
         {
             "read_file",
+            "read_images",
             "list_directory",
             "fetch_content",
             "crawl_site",
@@ -78,6 +79,7 @@ class AgentNodes(
     READ_ONLY_LOOP_TOLERANT_TOOL_NAMES = frozenset(
         {
             "read_file",
+            "read_images",
             "list_directory",
             "fetch_content",
             "crawl_site",

@@ -1,12 +1,12 @@
 {
   "schema_version": 2,
-  "data_version": 2,
-  "verified_on": "2026-10-01",
-  "verification_basis": "Same provider facts as provider_registry.json (schema_version 1, data_version 6), plus MiniMax official API added in data_version 2. MiniMax was verified empirically on 2026-10-01 with /v1/responses streaming probes against api.minimaxi.com (MiniMax-M3): reasoning is only separated into response.reasoning_text.* events when a reasoning effort is present, otherwise the model writes its chain of thought into the assistant message text. All other provider behavior was not re-verified.",
+  "data_version": 3,
+  "verified_on": "2026-09-12",
+  "verification_basis": "Same provider facts as provider_registry.json (schema_version 1, data_version 6) except the Fireworks AI entry, which was re-verified against docs.fireworks.ai on 2026-10-12 (ollama_fireworks split into ollama and fireworks), and the MiniMax entry, added and verified against platform.minimax.io on 2026-10-12. All other provider behavior was not re-verified.",
   "providers": [
     {
       "id": "openai",
-      "hosts": ["api.openai.com", "api.ashna.ai", "tooken.club", "anymodel.org"],
+      "hosts": ["api.openai.com", "api.ashna.ai"],
       "rules": [
         {
           "models": { "prefix": ["gpt-6"] },
@@ -145,6 +145,25 @@
       ]
     },
     {
+      "id": "minimax",
+      "hosts": ["api.minimax.io", "api.minimaxi.com"],
+      "rules": [
+        {
+          "models": { "contains": ["minimax-m3.1"] },
+          "param": "reasoning_effort",
+          "values": { "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+          "notes": "MiniMax official OpenAI-compatible Chat Completions (api.minimax.io/v1, api.minimaxi.com/v1), MiniMax-M3.1-Flash-Preview. Top-level reasoning_effort=low|medium|high|xhigh|max, default max when omitted. Thinking cannot be disabled: none and thinking.type=disabled return 400, so none is intentionally not mapped. Must be listed before the generic minimax-m3 rule below."
+        },
+        {
+          "models": { "contains": ["minimax-m3"] },
+          "mode": "toggle",
+          "param": "extra_body.thinking.type",
+          "toggle": { "on": "adaptive", "off": "disabled" },
+          "notes": "MiniMax official Chat Completions, MiniMax-M3. Thinking is a toggle via thinking.type=adaptive|disabled (on by default when omitted); reasoning_effort does not tune M3 depth on this endpoint (effective for M3.1-Flash-Preview only). M2.x models (M2, M2.1, M2.5, M2.7 and -highspeed) intentionally have no rule: thinking cannot be disabled and has no effort levels (thinking param is accepted but ignored). Not represented: the Responses API (reasoning.effort; M3 reasoning is off by default there) and the Anthropic-compatible endpoint."
+        }
+      ]
+    },
+    {
       "id": "openrouter",
       "hosts": ["openrouter.ai"],
       "match_type": "suffix",
@@ -157,14 +176,56 @@
       ]
     },
     {
-      "id": "ollama_fireworks",
-      "hosts": ["ollama.com", "api.fireworks.ai"],
+      "id": "ollama",
+      "hosts": ["ollama.com"],
       "match_type": "suffix",
       "rules": [
         {
           "param": "reasoning_effort",
           "values": { "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high" },
-          "notes": "Ollama Cloud and Fireworks AI. Both use top-level reasoning_effort=low|medium|high with the same normalization (minimal→low, xhigh→high)."
+          "notes": "Ollama Cloud. Top-level reasoning_effort=low|medium|high (minimal→low, xhigh→high). Split out from the former shared ollama_fireworks entry; not re-verified against Ollama docs."
+        }
+      ]
+    },
+    {
+      "id": "fireworks",
+      "hosts": ["api.fireworks.ai"],
+      "match_type": "suffix",
+      "rules": [
+        {
+          "models": { "contains": ["gpt-oss", "minimax-m2"] },
+          "param": "reasoning_effort",
+          "values": { "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "high" },
+          "notes": "Fireworks Chat Completions. GPT-OSS (Harmony) and MiniMax M2 accept only reasoning_effort=low|medium|high; none/false/integers are rejected with 400 (M2 reasoning is always on). none is intentionally not mapped, so it is skipped."
+        },
+        {
+          "models": { "contains": ["deepseek-v4", "kimi-k3"] },
+          "param": "reasoning_effort",
+          "values": { "none": "none", "minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max" },
+          "notes": "Fireworks Chat Completions for DeepSeek V4 and Kimi K3. Native support for low|high|max. medium normalizes to high, xhigh normalizes to max."
+        },
+        {
+          "models": { "contains": ["deepseek-v4.1"] },
+          "param": "reasoning_effort",
+          "values": { "none": "none", "minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "high", "max": "high" },
+          "notes": "Fireworks Chat Completions for DeepSeek V4.1. Server-side maps medium, high, xhigh, max to high."
+        },
+        {
+          "models": { "contains": ["glm-5.2"] },
+          "param": "reasoning_effort",
+          "values": { "none": "none", "minimal": "high", "low": "high", "medium": "high", "high": "high", "xhigh": "max", "max": "max" },
+          "notes": "Fireworks Chat Completions for GLM 5.2. Native support focuses on high|max. Lower levels (low/medium) default/normalize to high, xhigh maps to max."
+        },
+        {
+          "models": { "contains": ["qwen3.8"] },
+          "param": "reasoning_effort",
+          "values": { "none": "none", "minimal": "low", "low": "low", "medium": "medium", "high": "xhigh", "xhigh": "xhigh", "max": "xhigh" },
+          "notes": "Fireworks Chat Completions for Qwen3.8. Maps low/medium/high+ requests to server token budgets (4096/16384/262144)."
+        },
+        {
+          "param": "reasoning_effort",
+          "values": { "none": "none", "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+          "notes": "Fireworks Chat Completions, generic fallback rule. Top-level reasoning_effort accepts low|medium|high|xhigh|max|none. Do not send together with the top-level thinking parameter. Verified against docs.fireworks.ai on 2026-10-12."
         }
       ]
     },
@@ -214,18 +275,6 @@
           "param": "reasoning_effort",
           "values": { "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high" },
           "notes": "B.AI (api.b.ai) and TokenBay (api.tokenbay.com). Both use top-level reasoning_effort=low|medium|high with the same normalization (minimal→low, xhigh→high)."
-        }
-      ]
-    },
-    {
-      "id": "minimax",
-      "hosts": ["api.minimaxi.com", "api.minimax.io"],
-      "rules": [
-        {
-          "models": { "contains": ["minimax"] },
-          "param": "reasoning_effort",
-          "values": { "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
-          "notes": "MiniMax official API (api.minimaxi.com, api.minimax.io) in Responses mode. The reasoning payload must always be sent: without it MiniMax-M3 does not use the response.reasoning_text.* channel and writes its chain of thought directly into the assistant message text, so private deliberation becomes visible in chat. Every level is forwarded 1:1 because MiniMax does not document distinct effort levels and the probes accepted none|minimal|low|medium|high|xhigh|max. Scoped to MiniMax model names so legacy text models on the same host do not receive unknown parameters."
         }
       ]
     },

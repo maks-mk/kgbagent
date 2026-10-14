@@ -107,13 +107,22 @@ class ToolGroupWidget(QFrame):
         return singular if abs(int(value)) == 1 else plural
 
     @staticmethod
+    def _card_target_count(card: ToolCardWidget) -> int:
+        """Count touched files, so a call reading several images is not reported as one."""
+        args = card.payload.get("args")
+        paths = args.get("paths") if isinstance(args, dict) else None
+        if isinstance(paths, (list, tuple)):
+            return max(1, sum(1 for item in paths if str(item).strip()))
+        return 1
+
+    @staticmethod
     def _tool_role(card: ToolCardWidget) -> str:
         name = str(card.payload.get("name", "") or "").strip()
         if name in {"write_file", "Write"}:
             return "write"
         if name in {"edit_file", "SearchReplace"}:
             return "edit"
-        if name in {"read_file", "Read"}:
+        if name in {"read_file", "Read", "read_images"}:
             return "read"
         if name in {"execute", "RunCommand", "cli_exec"}:
             return "command"
@@ -170,8 +179,9 @@ class ToolGroupWidget(QFrame):
         if titles:
             action_title, completed_title, singular, plural = titles
             title = completed_title if completed else action_title
-            noun = self._pluralize(total, singular, plural)
-            return f"{title} {total} {noun}"
+            counted = sum(self._card_target_count(tool) for tool in self._tools)
+            noun = self._pluralize(counted, singular, plural)
+            return f"{title} {counted} {noun}"
         action_titles = {
             "search": "Searching",
             "network": "Searching",

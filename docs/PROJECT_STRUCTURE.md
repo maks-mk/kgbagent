@@ -130,7 +130,7 @@ Provider-адаптеры, вынесенные из `agent.py`. Изолиру�
 Инструменты, доступные агенту.
 
 - `tool_registry.py` - центральный реестр tools, metadata и MCP-интеграции.
-- `filesystem.py` - filesystem tools: `read_file`, `write_file`, `edit_file`, `list_directory`, `safe_delete_file`, `safe_delete_directory`, `download_file`.
+- `filesystem.py` - filesystem tools: `read_file`, `read_images`, `write_file`, `edit_file`, `list_directory`, `safe_delete_file`, `safe_delete_directory`, `download_file` (`read_images` возвращает image-блоки, которые провайдер видит как изображения).
 - `local_shell.py` - `cli_exec`, streaming stdout/stderr в реальном времени, разбор команд и семантика кодов возврата (`tools/shell_semantics.py`), политика таймаутов (`CLI_EXEC_MAX_TIMEOUT_MS`, по умолчанию 600 с) и сохранение полного вывода больших команд в `.agent_state/cli_exec`.
 - `shell_semantics.py` - сегментация командной строки (`;`, `&&`, `||`, `|`, кавычки) и интерпретация «протокольных» кодов возврата (`grep`/`rg`/`vulture`/`pytest`/`diff` и др.), чтобы `rg` внутри аргументов не считался shell-командой.
 - `shell_output.py` - ограниченный head+tail-захват stdout/stderr, запись полного вывода в артефакт и форматирование конверта `<persisted-output>`.

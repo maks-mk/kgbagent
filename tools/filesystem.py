@@ -19,6 +19,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from core.config import DEFAULT_MAX_FILE_SIZE
 from core.errors import ErrorType, format_error
+from core.multimodal import can_read_image_file, image_dimensions, image_mime_type_for_file
 from core.safety_policy import SafetyPolicy
 from tools.filesystem_impl.manager import FilesystemManager as _FilesystemManager
 
@@ -85,6 +86,13 @@ def resolve_workspace_path(path: str) -> Path:
     manager = cast(Any, fs_manager)
     manager.cwd = _sync_backend_working_directory()
     return manager._resolve_path(path)
+
+
+def resolve_readable_path(path: str) -> Path:
+    """Resolve a path the way read-only tools do (read-only roots stay reachable)."""
+    manager = cast(Any, fs_manager)
+    manager.cwd = _sync_backend_working_directory()
+    return manager._resolve_path(path, for_read=True)
 
 
 def max_filesystem_file_size() -> int:
@@ -252,6 +260,23 @@ class DeleteDirectoryInput(BaseModel):
     recursive: bool = Field(default=False, description="Delete non-empty directory recursively when true.")
 
 
+class ReadImagesInput(BaseModel):
+    """Input for read_images; one path or a list of paths is accepted."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    paths: str | list[str] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("paths", "path", *_PATH_ALIASES, "files", "images"),
+        description="Image file path, or a list of image file paths, to show to the model.",
+    )
+    max_images: int | None = Field(
+        default=None,
+        validation_alias=AliasChoices("max_images", "max_files", "limit"),
+        description="Optional lower cap on how many images this call returns.",
+    )
+
+
 @tool("read_file")
 def read_file_tool(path: str, offset: int = 0, limit: int = 2000, show_line_numbers: bool = False) -> str:
     """Read a file with pagination."""
@@ -371,6 +396,143 @@ def edit_file_tool(
 def list_directory_tool(path: str = ".", include_hidden: bool = False) -> str:
     """List files and directories."""
     return _get_synced_backend().list_files(path, include_hidden)
+
+
+# Each attached image costs vision tokens and stays in the conversation, so one
+# call is bounded; the model can call again for the remaining paths.
+_IMAGE_READ_LIMIT = 4
+# Providers reject vector formats as inline images; failing here is clearer than
+# an opaque provider error.
+_UNSUPPORTED_IMAGE_MIME_TYPES = {"image/svg+xml"}
+
+
+def _normalize_image_paths(raw: Any) -> list[str]:
+    if isinstance(raw, str):
+        items: list[Any] = [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        items = list(raw)
+    else:
+        return []
+
+    paths: list[str] = []
+    for item in items:
+        cleaned = _cleanup_edit_path(item)
+        if cleaned:
+            paths.append(cleaned)
+    return paths
+
+
+def _read_image_block(path_field: str) -> tuple[dict[str, Any] | None, str, ErrorType]:
+    """Validate one requested path and return (image block, note, error type)."""
+    try:
+        target = resolve_readable_path(path_field)
+    except ValueError as exc:
+        return None, f"{path_field}: {exc}", ErrorType.ACCESS_DENIED
+    except Exception as exc:
+        return None, f"{path_field}: {exc}", ErrorType.EXECUTION
+
+    if not target.exists():
+        return None, f"{path_field}: file not found.", ErrorType.NOT_FOUND
+    if not target.is_file():
+        return None, f"{path_field}: not a file.", ErrorType.VALIDATION
+
+    mime_type = image_mime_type_for_file(target)
+    if mime_type in _UNSUPPORTED_IMAGE_MIME_TYPES:
+        return (
+            None,
+            f"{path_field}: {mime_type} cannot be attached as an image; convert it to PNG or JPEG first.",
+            ErrorType.VALIDATION,
+        )
+    if not can_read_image_file(target):
+        return None, f"{path_field}: not a readable image file.", ErrorType.VALIDATION
+
+    try:
+        size = target.stat().st_size
+    except OSError as exc:
+        return None, f"{path_field}: {exc}", ErrorType.EXECUTION
+    if size == 0:
+        return None, f"{path_field}: file is empty.", ErrorType.VALIDATION
+
+    max_size = max_filesystem_file_size()
+    if size > max_size:
+        return (
+            None,
+            f"{path_field}: file is too large ({size} bytes). Max: {max_size}.",
+            ErrorType.LIMIT_EXCEEDED,
+        )
+
+    block: dict[str, Any] = {
+        "type": "image",
+        "path": str(target),
+        "mime_type": mime_type,
+        "file_name": target.name,
+        "size_bytes": int(size),
+    }
+    width, height = image_dimensions(target)
+    if width and height:
+        block["width"] = width
+        block["height"] = height
+    return block, "", ErrorType.VALIDATION
+
+
+@tool("read_images", args_schema=ReadImagesInput)
+def read_images_tool(
+    paths: str | list[str] | None = None,
+    max_images: int | None = None,
+    path: str | list[str] | None = None,
+    file_path: str | list[str] | None = None,
+    filepath: str | list[str] | None = None,
+    files: str | list[str] | None = None,
+    images: str | list[str] | None = None,
+    **kwargs: Any,
+) -> list[dict[str, Any]] | str:
+    """Read image files (PNG, JPEG, GIF, WEBP, BMP, TIFF) from disk and attach them to the conversation so they become visible. Accepts one path or a list of paths, up to 4 images per call."""
+    requested: list[str] = []
+    for candidate in (paths, path, file_path, filepath, files, images):
+        requested = _normalize_image_paths(candidate)
+        if requested:
+            break
+    if not requested:
+        return format_error(
+            ErrorType.VALIDATION,
+            "Missing required field: paths (an image file path or a list of image file paths).",
+        )
+
+    limit = _IMAGE_READ_LIMIT
+    if isinstance(max_images, int) and not isinstance(max_images, bool) and max_images > 0:
+        limit = min(limit, max_images)
+    selected = requested[:limit]
+
+    blocks: list[dict[str, Any]] = []
+    notes: list[str] = []
+    failures: list[ErrorType] = []
+    for raw_path in selected:
+        block, note, error_type = _read_image_block(raw_path)
+        if block is None:
+            notes.append(note)
+            failures.append(error_type)
+            continue
+        blocks.append(block)
+
+    if not blocks:
+        error_type = failures[0] if all(item == failures[0] for item in failures) else ErrorType.VALIDATION
+        return format_error(error_type, f"No images attached. {' '.join(notes)}")
+
+    summary_lines = [f"Attached {len(blocks)} image(s) to this tool result; they are visible now."]
+    for block in blocks:
+        dimensions = f"{block['width']}x{block['height']}" if block.get("width") and block.get("height") else ""
+        details = ", ".join(
+            part for part in (block["mime_type"], dimensions, f"{block['size_bytes']} bytes") if part
+        )
+        summary_lines.append(f"- {block['path']} ({details})")
+    if notes:
+        summary_lines.append(f"Skipped {len(notes)} path(s): {' '.join(notes)}")
+    if len(requested) > len(selected):
+        summary_lines.append(
+            f"{len(requested) - len(selected)} more image(s) were not included; call read_images again with the remaining paths."
+        )
+
+    return [{"type": "text", "text": "\n".join(summary_lines)}, *blocks]
 
 
 @tool("safe_delete_file", args_schema=DeleteFileInput)

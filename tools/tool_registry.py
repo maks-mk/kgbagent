@@ -334,6 +334,7 @@ class ToolRegistry:
                     "write_file_tool",
                     "edit_file_tool",
                     "list_directory_tool",
+                    "read_images_tool",
                     "safe_delete_file",
                     "safe_delete_directory",
                     "download_file",
@@ -348,6 +349,7 @@ class ToolRegistry:
                         name="edit_file", mutating=True, requires_approval=True
                     ),
                     "list_directory_tool": ToolMetadata(name="list_directory", read_only=True),
+                    "read_images_tool": ToolMetadata(name="read_images", read_only=True),
                     "safe_delete_file": ToolMetadata(
                         name="safe_delete_file",
                         mutating=True,

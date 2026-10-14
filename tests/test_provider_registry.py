@@ -210,15 +210,24 @@ class ProviderRegistryTests(unittest.TestCase):
 
         config = registry.match("https://api.minimaxi.com/v1", "MiniMax-M3")
         self.assertEqual(config["id"], "minimax")
-        self.assertEqual(config["param"], "reasoning.effort")
+        self.assertEqual(config["param"], "reasoning_effort")
 
         # MiniMax only moves its chain of thought into the reasoning channel when a
-        # reasoning payload is present, so no level may be dropped from the mapping.
-        for effort in ("none", "minimal", "low", "medium", "high", "xhigh", "max"):
+        # reasoning payload is present, so every level declared by the rule must be
+        # forwarded 1:1 instead of being normalized or dropped.
+        for effort in ("low", "medium", "high", "xhigh", "max"):
             with self.subTest(effort=effort):
                 payload = {"model": "MiniMax-M3"}
                 build_reasoning_kwargs(payload, config, effort)
-                self.assertEqual(payload, {"model": "MiniMax-M3", "reasoning": {"effort": effort}})
+                self.assertEqual(payload, {"model": "MiniMax-M3", "reasoning_effort": effort})
+
+        # Levels outside the rule's mapping are not declared as supported by MiniMax
+        # and must not produce a reasoning payload at all.
+        for effort in ("none", "minimal"):
+            with self.subTest(effort=effort):
+                payload = {"model": "MiniMax-M3"}
+                build_reasoning_kwargs(payload, config, effort)
+                self.assertEqual(payload, {"model": "MiniMax-M3"})
 
         self.assertEqual(registry.match("https://api.minimax.io/v1", "MiniMax-M3")["id"], "minimax")
         self.assertIsNone(registry.match("https://api.minimaxi.com/v1", "abab6.5s-chat"))

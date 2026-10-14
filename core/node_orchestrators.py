@@ -265,7 +265,7 @@ class ToolBatchOwner(NodeOrchestratorOwner, Protocol):
         args: dict[str, Any],
         state: AgentState | None = None,
         tool_call_id: str = "",
-    ) -> str: ...
+    ) -> Any: ...
 
 
 class AgentTurnOrchestrator:

@@ -13,6 +13,32 @@ from core.errors import format_error, ErrorType
 from core.tool_results import parse_tool_execution_result
 from core.tool_executor import ToolExecutor
 
+# Message-role-agnostic content blocks that carry media to the provider.
+_MULTIMODAL_CONTENT_BLOCK_TYPES = frozenset({"image", "image_url", "input_image", "file"})
+
+
+def _is_multimodal_tool_content(value: Any) -> bool:
+    """True when a tool returned LangChain content blocks holding image/file media.
+
+    Tool output is normally flattened to text, but a vision tool (e.g.
+    ``read_images``) must hand its blocks to the provider untouched. Only a list
+    where every item is a known content block and at least one block carries
+    media qualifies: a plain list of dicts (an MCP JSON payload) keeps the legacy
+    JSON string form.
+    """
+    if not isinstance(value, list) or not value:
+        return False
+    has_media = False
+    for item in value:
+        if not isinstance(item, dict):
+            return False
+        block_type = str(item.get("type") or "").strip().lower()
+        if block_type in _MULTIMODAL_CONTENT_BLOCK_TYPES:
+            has_media = True
+        elif block_type != "text":
+            return False
+    return has_media
+
 
 class ToolsMixin:
     """Tools node: dispatches tool execution via ToolBatchCoordinator."""
@@ -102,7 +128,7 @@ class ToolsMixin:
         args: dict,
         state: AgentState | None = None,
         tool_call_id: str = "",
-    ) -> str:
+    ) -> str | list[Dict[str, Any]]:
         # Fast O(1) lookup
         tool = self.tools_map.get(name)
         if not tool:
@@ -126,14 +152,16 @@ class ToolsMixin:
 
             with invoke_scope:
                 raw_result = await tool.ainvoke(args)
-            if isinstance(raw_result, (dict, list)):
+            if _is_multimodal_tool_content(raw_result):
+                content: str | list[Dict[str, Any]] = raw_result
+            elif isinstance(raw_result, (dict, list)):
                 try:
                     content = json.dumps(raw_result, ensure_ascii=False, separators=(",", ":"))
                 except (TypeError, ValueError):
                     content = str(raw_result)
             else:
                 content = str(raw_result)
-            if not content.strip():
+            if isinstance(content, str) and not content.strip():
                 self._log_run_event(
                     state,
                     "tool_call_empty_result",

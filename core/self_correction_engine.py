@@ -31,7 +31,7 @@ class RepairPlan:
     def retryable(self) -> bool:
         return not self.terminal_reason and self.strategy != "external_block"
 
-_PATH_LIKE_FIELDS = frozenset({"path", "file_path", "dir_path", "source", "destination", "cwd"})
+_PATH_LIKE_FIELDS = frozenset({"path", "file_path", "dir_path", "source", "destination", "cwd", "paths"})
 _EDIT_TARGET_FIELDS = frozenset({"old_string", "new_string"})
 _CANONICAL_PATH_TOOL_NAMES = frozenset(
     {

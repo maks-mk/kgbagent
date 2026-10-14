@@ -13,6 +13,7 @@ env/
 # Build & distribution
 build/
 dist/
+*.spec
 *.egg-info/
 *.egg
 

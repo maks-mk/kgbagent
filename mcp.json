@@ -49,6 +49,7 @@
     "write_file": true,
     "read_skills": false,
     "stop_background_process": false,
-    "cli_exec": true
+    "cli_exec": true,
+    "read_images": false
   }
 }

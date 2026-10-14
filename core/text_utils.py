@@ -440,11 +440,31 @@ def abbreviate_path(path_str: str, max_length: int = 60) -> str:
     return truncate_value(path_str, max_length)
 
 
+def _first_path_item(value: Any) -> Any:
+    if isinstance(value, (list, tuple)):
+        return _first_non_empty_item(value)
+    return value
+
+
+def _paths_summary(value: Any, max_length: int = 120) -> str:
+    """Render every requested path so multi-file calls stay visible in the UI."""
+    if value is None:
+        return ""
+    items = list(value) if isinstance(value, (list, tuple)) else [value]
+    parts = [abbreviate_path(str(item)) for item in items if item is not None and str(item).strip()]
+    return truncate_value(", ".join(parts), max_length) if parts else ""
+
+
 def _format_path_tool(tool_name: str, tool_args: Dict[str, Any]) -> str | None:
     path_value = tool_args.get("file_path") or tool_args.get("path") or tool_args.get("dir_path")
-    if path_value:
-        return f"{tool_name}({abbreviate_path(str(path_value))})"
-    return None
+    if not path_value:
+        # read_images accepts several images per call; showing only the first one
+        # hides what was actually read.
+        paths_summary = _paths_summary(tool_args.get("paths"), max_length=80)
+        if paths_summary:
+            return f"{tool_name}({paths_summary})"
+        return None
+    return f"{tool_name}({abbreviate_path(str(path_value))})"
 
 
 def _format_query_tool(tool_name: str, tool_args: Dict[str, Any]) -> str | None:
@@ -508,6 +528,7 @@ DISPLAY_RULES: tuple[tuple[set[str], Callable[[str, Dict[str, Any]], str | None]
             "edit_file",
             "safe_delete_file",
             "safe_delete_directory",
+            "read_images",
             "Read",
             "Write",
             "SearchReplace",
@@ -541,7 +562,9 @@ def classify_tool_args_state(tool_name: str, tool_args: Dict[str, Any]) -> str:
         return "pending"
 
     anchor_keys: tuple[str, ...] = ()
-    if tool_name in {
+    if tool_name == "read_images":
+        anchor_keys = ("path", "file_path", "paths")
+    elif tool_name in {
         "read_file",
         "write_file",
         "edit_file",
@@ -640,11 +663,18 @@ def tool_target_summary(tool_name: str, tool_args: Dict[str, Any]) -> str:
         "edit_file",
         "safe_delete_file",
         "safe_delete_directory",
+        "read_images",
         "Read",
         "Write",
         "SearchReplace",
     }:
+        if normalized_name == "read_images":
+            paths_summary = _paths_summary(args.get("paths"))
+            if paths_summary:
+                return paths_summary
         path_value = args.get("file_path") or args.get("path") or args.get("dir_path")
+        if not path_value:
+            path_value = _first_path_item(args.get("paths"))
         return abbreviate_path(str(path_value)) if path_value else ""
     if normalized_name in {"ls", "LS", "list_directory"}:
         path_value = args.get("path")
@@ -684,6 +714,7 @@ def build_tool_ui_labels(
         "edit_file": "Editing file",
         "safe_delete_file": "Deleting file",
         "safe_delete_directory": "Deleting directory",
+        "read_images": "Reading images",
         "Read": "Reading file",
         "Write": "Writing file",
         "SearchReplace": "Editing file",
@@ -711,6 +742,7 @@ def build_tool_ui_labels(
         "edit_file": "Preparing edit",
         "safe_delete_file": "Preparing file deletion",
         "safe_delete_directory": "Preparing directory deletion",
+        "read_images": "Preparing image read",
         "Read": "Preparing file read",
         "Write": "Preparing file write",
         "SearchReplace": "Preparing edit",

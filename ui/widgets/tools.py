@@ -351,7 +351,7 @@ class ToolCardWidget(QFrame):
             return "write"
         if normalized in {"edit_file", "SearchReplace"}:
             return "edit"
-        if normalized in {"read_file", "Read"}:
+        if normalized in {"read_file", "Read", "read_images"}:
             return "read"
         if normalized in {"execute", "RunCommand", "cli_exec"}:
             return "command"
@@ -574,6 +574,11 @@ class ToolCardWidget(QFrame):
             target = ""
         if not target:
             path_value = normalized_args.get("file_path") or normalized_args.get("path") or normalized_args.get("dir_path")
+            if not path_value:
+                # read_images takes a list of paths; show all of them, not the raw list.
+                paths_value = normalized_args.get("paths")
+                if isinstance(paths_value, (list, tuple)):
+                    path_value = ", ".join(str(item) for item in paths_value if str(item).strip())
             target = self._compact_single_line(path_value)
         if not target:
             return []

@@ -12,11 +12,14 @@
 - `Running 2 commands` → `Ran 2 commands`;
 - `Reading 1 file` → `Read 1 file`.
 
+Считаются объекты, а не вызовы: один вызов `read_images` с двумя изображениями даёт `Read 2 files`.
+
 Для групп смешанных или неизвестных инструментов используется нейтральное `Running N tools` → `Completed N tools`.
 
 ## Основные инструменты
 
 - `read_file` → `Reading` → `Read`
+- `read_images` → `Reading images` → `Read images` (`Preparing image read` до получения аргументов)
 - `write_file` → `Writing` → `Wrote`
 - `edit_file` → `Editing` → `Edited`
 - `list_directory` → `Listing` → `Listed`
@@ -42,6 +45,9 @@
 - `Running python -m pytest` → `Ran python -m pytest`
 - `Searching Python asyncio` → `Searched Python asyncio`
 - `Reading Skills pdf, design` → `Read Skills pdf, design`
+- `Reading img/one.png, img/two.png` → `Read img/one.png, img/two.png`
+
+Если инструмент принимает несколько путей, показываются все запрошенные пути через запятую, а не только первый.
 
 Путь, команда, запрос, URL и статистика изменений не являются частью названия инструмента.
 
