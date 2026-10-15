@@ -783,13 +783,12 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                     PROVIDER="gemini",
                     GEMINI_API_KEY="gm-test",
                     GEMINI_MODEL="gemini-2.5-flash",
-                    TEMPERATURE=0.4,
                     TOP_P=0.9,
                     TOP_K=32,
                 )
             )
 
-        self.assertEqual(captured["temperature"], 0.4)
+        self.assertNotIn("temperature", captured)
         self.assertNotIn("top_p", captured)
         self.assertNotIn("top_k", captured)
 
@@ -806,7 +805,6 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                     PROVIDER="gemini",
                     GEMINI_API_KEY="gm-test",
                     GEMINI_MODEL="models/gemini-3.6-flash-001",
-                    TEMPERATURE=0.4,
                 )
             )
 
@@ -1142,7 +1140,6 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                     OPENAI_API_KEY="sk-test",
                     OPENAI_MODEL="gpt-6-astra",
                     OPENAI_BASE_URL="https://api.openai.com/v1",
-                    TEMPERATURE=0.4,
                 )
             )
 
@@ -1163,11 +1160,10 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                     OPENAI_API_KEY="sk-test",
                     OPENAI_MODEL="gpt-4o",
                     OPENAI_BASE_URL="https://api.openai.com/v1",
-                    TEMPERATURE=0.4,
                 )
             )
 
-        self.assertEqual(captured["temperature"], 0.4)
+        self.assertNotIn("temperature", captured)
 
     async def test_register_llm_cleanup_callback_closes_async_client(self):
         registry = ToolRegistry(self._make_config())

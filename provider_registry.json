@@ -67,7 +67,7 @@
     },
     {
       "id": "deepseek",
-      "hosts": ["api.deepseek.com", "tokenharbor.ai"],
+      "hosts": ["api.deepseek.com", "tokenharbor.ai", "api.reformboss.com"],
       "rules": [
         {
           "models": { "contains": ["deepseek-v4-flash", "deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"] },
@@ -80,7 +80,7 @@
     },
     {
       "id": "moonshot",
-      "hosts": ["api.moonshot.ai", "api.moonshot.cn", "api.artbloom.tech"],
+      "hosts": ["api.moonshot.ai", "api.moonshot.cn", "api.artbloom.tech", "api.reformboss.com"],
       "rules": [
         {
           "models": { "prefix": ["kimi-k3"] },
@@ -119,7 +119,7 @@
     },
     {
       "id": "zhipu",
-      "hosts": ["open.bigmodel.cn", "api.z.ai"],
+      "hosts": ["open.bigmodel.cn", "api.z.ai", "api.reformboss.com"],
       "rules": [
         {
           "models": { "contains": ["glm-5.3", "glm-5.3-flash"] },

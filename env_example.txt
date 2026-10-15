@@ -32,7 +32,6 @@ GEMINI_THINKING_BUDGET=4096
 # (supported Claude 4.7+/5 models additionally offer xhigh). Use adaptive to omit explicit effort.
 # ANTHROPIC_REASONING=high
 # Fixed-budget thinking for Claude 4.5; Opus 4.5 combines it with low, medium, or high effort.
-# Sampling temperature is omitted whenever thinking is enabled.
 # ANTHROPIC_THINKING_BUDGET=4096
 # Prompt caching for agent calls (5m TTL): auto = direct Claude API only;
 # on = also opt in for a compatible Claude proxy; off = disable.
@@ -45,7 +44,7 @@ GEMINI_THINKING_BUDGET=4096
 # OPENAI_BASE_URL=https://api.openai.com/v1
 # HTTP-заголовки для эмуляции Codex CLI или кастомных заголовков: файл codex_headers.json в корне проекта.
 # Имя/путь файла можно переопределить (относительно корня проекта или .exe, либо абсолютный путь).
-# HEADERS_FILE=headers.json
+# HEADERS_FILE=codex_headers.json
 # API mode: chat (/v1/chat/completions) or responses (/v1/responses).
 # "chat" is the default and works with all OpenAI-compatible providers.
 # "responses" enables the OpenAI Responses API (gpt-5, o-series reasoning, etc.).
@@ -70,7 +69,8 @@ MODEL_REASONING_EFFORT=medium
 # ===========================
 # 2) Основные настройки агента
 # ===========================
-TEMPERATURE=0.2
+# Sampling (temperature) не настраивается: агент всегда использует
+# значение по умолчанию от провайдера/модели.
 MAX_LOOPS=50
 # Optional: перезаписать настройки per-tool loop guard.
 # Если оставить пустыми, значения вычисляются от MAX_LOOPS:

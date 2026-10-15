@@ -57,7 +57,7 @@ class ProviderRegistryTests(unittest.TestCase):
         self.assertEqual(registry.match("https://api.openrouter.ai/api/v1")["id"], "openrouter")
         self.assertIsNone(registry.match("https://api.evil-openrouter.ai/v1"))
 
-    def test_disabled_provider_is_skipped_and_first_host_match_wins(self):
+    def test_disabled_provider_is_skipped_and_host_match_considers_remaining_providers(self):
         registry = ProviderRegistry(
             _registry(
                 _provider(id="disabled", enabled=False, hosts=["openrouter.ai"]),
@@ -66,6 +66,42 @@ class ProviderRegistryTests(unittest.TestCase):
         )
 
         self.assertEqual(registry.match("https://api.openrouter.ai/v1")["id"], "active")
+
+    def test_same_host_providers_are_scanned_until_a_rule_matches_the_model(self):
+        """Aggregators serve models of several vendors under one hostname."""
+        registry = ProviderRegistry(
+            _registry(
+                _provider(
+                    id="deepseek",
+                    hosts=["api.reformboss.com"],
+                    rules=[
+                        {
+                            "models": {"contains": ["deepseek-v4"]},
+                            "param": "reasoning_effort",
+                            "values": {"high": "high"},
+                        }
+                    ],
+                ),
+                _provider(
+                    id="zhipu",
+                    hosts=["api.reformboss.com"],
+                    rules=[
+                        {
+                            "models": {"contains": ["glm-5.3"]},
+                            "param": "reasoning_effort",
+                            "values": {"high": "high", "max": "max"},
+                        }
+                    ],
+                ),
+            )
+        )
+
+        glm = registry.match("https://api.reformboss.com/v1", "glm-5.3")
+        self.assertEqual(glm["id"], "zhipu")
+        self.assertEqual(glm["values"]["max"], "max")
+        deepseek = registry.match("https://api.reformboss.com/v1", "deepseek-v4-flash")
+        self.assertEqual(deepseek["id"], "deepseek")
+        self.assertIsNone(registry.match("https://api.reformboss.com/v1", "claude-4.5"))
 
     def test_match_uses_model_name_to_select_rule(self):
         registry = ProviderRegistry(

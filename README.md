@@ -75,7 +75,7 @@ Copy-Item env_example.txt .env
 venv\Scripts\python.exe main.py
 ```
 
-Для Claude 4.6+ используйте adaptive thinking с effort (`ANTHROPIC_REASONING=low|medium|high|max`, а `xhigh` только для поддерживаемых моделей 4.7+/5). Для Claude 4.5 используется `ANTHROPIC_THINKING_BUDGET`; Opus 4.5 дополнительно поддерживает effort `low|medium|high`. При включённом thinking `temperature` не отправляется согласно ограничениям Anthropic. Полный список параметров находится в [документации конфигурации](./docs/CONFIGURATION.md).
+Для Claude 4.6+ используйте adaptive thinking с effort (`ANTHROPIC_REASONING=low|medium|high|max`, а `xhigh` только для поддерживаемых моделей 4.7+/5). Для Claude 4.5 используется `ANTHROPIC_THINKING_BUDGET`; Opus 4.5 дополнительно поддерживает effort `low|medium|high`. Sampling-параметр `temperature` агент не отправляет — всегда используется значение по умолчанию от провайдера. Полный список параметров находится в [документации конфигурации](./docs/CONFIGURATION.md).
 
 ---
 

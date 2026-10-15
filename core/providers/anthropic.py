@@ -90,7 +90,6 @@ def _build_anthropic_compatible_stream_adapter(base_cls: type) -> type:
     return CompatibleStreamChatAnthropic
 
 from core.anthropic_capabilities import (
-    anthropic_model_disallows_sampling,
     anthropic_model_reasoning_efforts,
     anthropic_model_requires_thinking,
     anthropic_model_uses_adaptive_thinking,
@@ -226,9 +225,8 @@ def create_anthropic_chat_model(
         mode = "budget" if budget is not None else "disabled"
         effort = None
 
-    if mode in {"disabled", "unsupported_model"} and not anthropic_model_disallows_sampling(config.anthropic_model):
-        kwargs["temperature"] = config.temperature
-
+    # Sampling is left to the provider default: the agent never sends
+    # ``temperature``, so each model uses its own default sampling.
     if effort:
         # ``effort`` is ChatAnthropic's public alias for Anthropic's
         # ``output_config.effort`` request field.

@@ -21,7 +21,7 @@ GUI сохраняет общий порог Session size в `.agent_state/confi
 | `ANTHROPIC_BASE_URL` | — | Необязательный URL Anthropic-compatible API (без `/v1` — SDK добавляет его сам) |
 | `ANTHROPIC_MAX_TOKENS` | `8192` | Максимум выходных токенов Anthropic |
 | `ANTHROPIC_THINKING_BUDGET` | `4096` | Fixed-budget thinking для Claude Haiku/Sonnet/Opus 4.5; для Opus 4.5 может использоваться вместе с effort `low`, `medium` или `high` |
-| `ANTHROPIC_REASONING` | — | Управление Anthropic reasoning: `off`/`none`, `adaptive` или effort. Для Opus 4.5 доступны `low`, `medium`, `high`; для Claude 4.6+ и 5 набор зависит от модели, включая `max`, а `xhigh` — только для поддерживаемых моделей 4.7+/5. Для effort runtime передаёт adaptive `thinking` и `output_config.effort`. При включённом thinking sampling-параметр `temperature` не передаётся. |
+| `ANTHROPIC_REASONING` | — | Управление Anthropic reasoning: `off`/`none`, `adaptive` или effort. Для Opus 4.5 доступны `low`, `medium`, `high`; для Claude 4.6+ и 5 набор зависит от модели, включая `max`, а `xhigh` — только для поддерживаемых моделей 4.7+/5. Для effort runtime передаёт adaptive `thinking` и `output_config.effort`. |
 | `LLM_API_MODE` | `chat` | Режим API для OpenAI-провайдера: `chat` (по умолчанию) или `responses`. `responses` явно задаёт `use_responses_api=True` и `store=False` (см. [Responses-режим и stateless replay](#responses-режим-и-stateless-replay)); в режиме `chat` адаптер не передаёт этот флаг, поэтому SDK может выбрать endpoint по модели и payload |
 | `ENABLE_MODEL_REASONING` | `true` | Включает provider-side reasoning/thinking для поддерживаемых моделей |
 | `MODEL_REASONING_EFFORT` | `medium` | Усилие reasoning для OpenAI/OpenAI-compatible моделей (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) |
@@ -30,7 +30,7 @@ GUI сохраняет общий порог Session size в `.agent_state/confi
 | `ACTIVE_MODEL_PROFILE_ID` | — | ID активного профиля модели (для ротации ключей) |
 | `SHOW_MODEL_THOUGHTS` | `false` | Legacy-флаг отображения reasoning (runtime выставляет false) |
 
-Для модели `gpt-6-astra` OpenAI-адаптер не отправляет `temperature`, поскольку она использует фиксированный sampling.
+Sampling-параметр `temperature` агент не отправляет ни одному провайдеру — всегда используется значение по умолчанию от провайдера/модели (переменная `TEMPERATURE` удалена).
 
 ### Responses-режим и stateless replay
 
@@ -76,7 +76,6 @@ TTL — стандартные 5 минут. Разовые вызовы сум�
 
 | Переменная | Описание |
 |---|---|
-| `TEMPERATURE` | Температура модели |
 | `MAX_LOOPS` | Максимум шагов на один запрос (default: 50) |
 | `TOOL_LOOP_WINDOW` | Окно истории для детекции дублей tool calls |
 | `TOOL_LOOP_LIMIT_MUTATING` | Лимит повторов для мутирующих инструментов |

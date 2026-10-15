@@ -808,32 +808,6 @@ def _build_reasoning_debug_chat_openai(base_cls: type) -> type:
 # ---------------------------------------------------------------------------
 
 
-# Models that reject the ``temperature`` parameter: reasoning-only models with
-# fixed sampling. Sending it causes a 400 from the API (e.g. kimi-k3 returns
-# "field Temperature invalid, only 1 is allowed for this model").
-_FIXED_SAMPLING_OPENAI_MODELS = frozenset({"kimi-k3"})
-
-# Whole families with fixed sampling. Matched against the model name without the
-# provider prefix and without a trailing ``-NNN`` date suffix, accepting both the
-# dotted and dashed spelling (``gpt-6.1-sol``, ``gpt-6-1-sol``).
-_FIXED_SAMPLING_OPENAI_FAMILIES = ("gpt-6",)
-
-
-def _openai_uses_fixed_sampling(model_name: str | None) -> bool:
-    """Match OpenAI-compatible models that reject custom sampling controls."""
-    normalized = normalized_model_name(model_name).rsplit("/", 1)[-1]
-    if len(normalized) > 4 and normalized[-4] == "-" and normalized[-3:].isdigit():
-        normalized = normalized[:-4]
-    if normalized in _FIXED_SAMPLING_OPENAI_MODELS:
-        return True
-    return any(
-        normalized == family
-        or normalized.startswith(family + "-")
-        or normalized.startswith(family + ".")
-        for family in _FIXED_SAMPLING_OPENAI_FAMILIES
-    )
-
-
 def openai_reasoning_kwargs(
     kwargs: dict[str, Any],
     provider_config: dict[str, Any] | None,
@@ -866,6 +840,8 @@ def create_openai_chat_model(config: AgentConfig, *, api_key_override: str | Non
         api_key = config.openai_api_key.get_secret_value() if config.openai_api_key else None
     else:
         api_key = str(api_key_override or "")
+    # Sampling is left to the provider default: reasoning-era models reject
+    # ``temperature`` with a 400, so the agent never sends it.
     openai_kwargs: dict[str, Any] = {
         "model": config.openai_model,
         "api_key": api_key,
@@ -876,9 +852,6 @@ def create_openai_chat_model(config: AgentConfig, *, api_key_override: str | Non
         "max_retries": 0,
         "stream_usage": True,
     }
-    # The whole gpt-6 family and other fixed-sampling models reject ``temperature``.
-    if not _openai_uses_fixed_sampling(config.openai_model):
-        openai_kwargs["temperature"] = config.temperature
 
     # Explicit API mode selection: "responses" forces /v1/responses, "chat" forces
     # /v1/chat/completions. When omitted, LangChain auto-detects based on payload.
@@ -952,7 +925,7 @@ def create_openai_chat_model(config: AgentConfig, *, api_key_override: str | Non
             sorted((openai_kwargs.get("extra_body") or {}).keys())
             if isinstance(openai_kwargs.get("extra_body"), dict)
             else [],
-            sorted(k for k in openai_kwargs if k not in ("model", "temperature", "api_key", "base_url", "max_retries", "stream_usage")),
+            sorted(k for k in openai_kwargs if k not in ("model", "api_key", "base_url", "max_retries", "stream_usage")),
         )
     else:
         reasoning_logger.debug(

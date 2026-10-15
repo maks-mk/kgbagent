@@ -11,7 +11,6 @@ class AnthropicCapabilitiesTests(unittest.TestCase):
             capabilities.anthropic_model_uses_adaptive_thinking,
             capabilities.anthropic_model_requires_thinking,
             capabilities.anthropic_model_reasoning_efforts,
-            capabilities.anthropic_model_disallows_sampling,
         )
         models = (
             "claude-haiku-4-5-20251001",

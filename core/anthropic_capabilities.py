@@ -48,15 +48,6 @@ _EFFORT_MODELS = (
     "claude-opus-4-5",
     *_MAX_EFFORT_MODELS,
 )
-_NO_SAMPLING_MODELS = (
-    "claude-opus-4-7",
-    "claude-opus-4-8",
-    "claude-sonnet-5",
-    "claude-opus-5",
-    "claude-fable-5",
-    "claude-mythos-5",
-    "claude-mythos-preview",
-)
 _BASE_EFFORTS = ("low", "medium", "high")
 
 
@@ -106,7 +97,3 @@ def anthropic_model_reasoning_efforts(model: str | None) -> tuple[str, ...]:
     if _matches_family(model, _XHIGH_EFFORT_MODELS):
         efforts = (*efforts, "xhigh")
     return efforts
-
-
-def anthropic_model_disallows_sampling(model: str | None) -> bool:
-    return _matches_family(model, _NO_SAMPLING_MODELS)

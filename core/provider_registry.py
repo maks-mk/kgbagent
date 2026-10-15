@@ -121,22 +121,27 @@ class ProviderRegistry:
     def match(self, base_url: str | None, model_name: str | None = None) -> dict[str, Any] | None:
         """Resolve the first rule whose host and model match, or ``None``.
 
-        The first provider whose host matches is committed to (mirroring how the
-        v2 registry keeps one object per host set); the rules inside it are then
-        scanned top-to-bottom and the first one matching the model wins. A host
-        match with no matching rule (or a provider without rules) resolves to
-        ``None`` so no reasoning payload is sent.
+        Providers are scanned top-to-bottom and every provider whose host
+        matches is considered, so a single hostname can be served by several
+        providers (aggregators often proxy models from multiple vendors, e.g.
+        api.reformboss.com in deepseek, moonshot and zhipu). Within a provider,
+        rules are scanned top-to-bottom and the first one matching the model
+        wins; put catch-all rules (without ``models``) last. A host match with
+        no matching rule in any provider (or a provider without rules)
+        resolves to ``None`` so no reasoning payload is sent.
         """
         hostname = _hostname_from_base_url(base_url or "")
         if not hostname:
             debug_event("provider_registry_match_skipped", base_url=base_url, hostname="")
             return None
 
+        host_matched = False
         for provider in self._providers:
             if not provider.get("enabled", True):
                 continue
             if not _host_matches(hostname, provider["hosts"], provider["match_type"]):
                 continue
+            host_matched = True
             for rule in provider["rules"]:
                 if not _model_matches(model_name, rule.get("models")):
                     continue
@@ -168,8 +173,8 @@ class ProviderRegistry:
                 provider_id=provider["id"],
                 model=model_name,
             )
-            return None
-        debug_event("provider_registry_no_match", base_url=base_url, hostname=hostname)
+        if not host_matched:
+            debug_event("provider_registry_no_match", base_url=base_url, hostname=hostname)
         return None
 
     @staticmethod

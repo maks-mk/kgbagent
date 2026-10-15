@@ -186,7 +186,6 @@ class AgentConfig(BaseSettings):
     llm_api_mode: Literal["chat", "responses"] = Field(default="chat", alias="LLM_API_MODE")
 
     # Common Logic
-    temperature: float = Field(default=0.2, alias="TEMPERATURE")
     max_loops: int = Field(default=50, alias="MAX_LOOPS", description="Limit steps per request")
     tool_loop_window: Optional[int] = Field(default=None, alias="TOOL_LOOP_WINDOW")
     tool_loop_limit_mutating: Optional[int] = Field(default=None, alias="TOOL_LOOP_LIMIT_MUTATING")
