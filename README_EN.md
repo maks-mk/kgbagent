@@ -49,7 +49,7 @@ The project does not try to compete with AI IDEs by feature count and does not t
 - Approval pauses before mutating and destructive actions
 - Agent Skills support: extend agent capabilities via external instructions in the `skills/` folder (automatically indexed, loaded on demand)
 - Automatic context summarization for long sessions
-- Customizable HTTP headers for OpenAI-compatible and Anthropic LLM requests via `headers.json` (client/proxy emulation)
+- Customizable HTTP headers for OpenAI-compatible and Anthropic LLM requests via `codex_headers.json` (client/proxy emulation)
 - Multiple model profiles with switching directly in the GUI
 - Durable checkpoints: sessions persist between launches
 - Optional image input when the selected model supports vision
@@ -83,7 +83,7 @@ venv\Scripts\python.exe main.py
 .\build.bat
 ```
 
-Uses the local `venv` and `PyInstaller` in `--onefile --windowed` mode, producing `dist/kgb.exe`. Python is not required on the target machine, but configuration remains external: place `prompt.txt`, your `.env`, and, when used, `mcp.json`, `provider_registry.json` and `headers.json` next to the executable. The directory must be writable for state and logs. Local MCP servers still require their own runtimes and packages (such as Node.js/npx or uv/uvx); these are not bundled.
+Uses the local `venv` and `PyInstaller` in `--onefile --windowed` mode, producing `dist/kgb.exe`. Python is not required on the target machine, but configuration remains external: place `prompt.txt`, your `.env`, and, when used, `mcp.json`, `provider_registry.json` and `codex_headers.json` next to the executable. The directory must be writable for state and logs. Local MCP servers still require their own runtimes and packages (such as Node.js/npx or uv/uvx); these are not bundled.
 
 ---
 
@@ -184,7 +184,7 @@ For a portable build, copy `rg.exe` next to the agent executable. If `rg` is not
 | Document | Contents |
 |---|---|
 | [Architecture](./docs/ARCHITECTURE.md) | Runtime Flow, Prompt Layers, Sessions & Checkpoints |
-| [Configuration](./docs/CONFIGURATION.md) | All `.env` variables (providers, runtime, feature flags, limits, retry, persistence, diagnostics), provider request headers via `headers.json` |
+| [Configuration](./docs/CONFIGURATION.md) | All `.env` variables (providers, runtime, feature flags, limits, retry, persistence, diagnostics), provider request headers via `codex_headers.json` |
 | [GUI](./docs/GUI_GUIDE.md) | Transcript, CLI output widget, Composer, hotkeys |
 | [Security](./docs/SECURITY.md) | Approvals, workspace boundary, `request_user_input` |
 | [Model Profiles](./docs/MODEL_PROFILES.md) | Profile management, auto-loading models, API key rotation |

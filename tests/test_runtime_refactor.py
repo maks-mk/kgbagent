@@ -70,6 +70,38 @@ from ui.runtime import (
 from ui.streaming import StreamEvent, StreamProcessResult, StreamProcessor
 
 
+APPROVAL_DECISION_CASES = (
+    (True, True),
+    (False, False),
+    ({"approved": True}, True),
+    ({"approved": False}, False),
+    ({"approved": "false"}, False),
+    ({"approved": "no"}, False),
+    ({"approved": "true"}, False),
+    ({"approved": ""}, False),
+    ({"approved": 1}, False),
+    ({"approved": 0}, False),
+    ({"approved": -1}, False),
+    ({"approved": 1.0}, False),
+    ({"approved": [True]}, False),
+    ({"approved": []}, False),
+    ({"approved": {"value": True}}, False),
+    ({"approved": {}}, False),
+    ({"approved": None}, False),
+    ({"approved": "false", "action": "approve"}, False),
+    ({"approved": False, "action": "approve"}, False),
+    ({"approved": None, "action": "approve"}, False),
+    ({"approved": True, "action": "reject"}, True),
+    ({"action": "approve"}, True),
+    ({"action": " APPROVED "}, True),
+    ({"action": "yes"}, True),
+    ({"action": "y"}, True),
+    ({"action": "reject"}, False),
+    ({}, False),
+    ("no", False),
+)
+
+
 class FakeLLM:
     def __init__(self, responses):
         self.responses = list(responses)
@@ -561,6 +593,65 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(issue)
         self.assertEqual(tool.calls, [{"path": "report.md", "content": "# Отчёт\n\nГотово"}])
         self.assertEqual(tool_message.status, "success")
+
+    async def test_loop_guards_share_budget_and_exclude_pending_call_at_execution(self):
+        for name, limit in (("read_file", 3), ("write_file", 2)):
+            for window in (0, 1, 2, 3, 100):
+                for count in (0, 1, 2, 3, 4):
+                    with self.subTest(name=name, window=window, count=count):
+                        config = self._make_config(
+                            ENABLE_APPROVALS=False,
+                            TOOL_LOOP_WINDOW=window,
+                            TOOL_LOOP_LIMIT_READONLY=3,
+                            TOOL_LOOP_LIMIT_MUTATING=2,
+                        )
+                        tool = FakeTool(name, "Success: done")
+                        nodes = AgentNodes(config=config, llm=FakeLLM([]), tools=[tool], llm_with_tools=FakeLLM([]))
+                        args = {"path": "demo.txt"}
+                        if name == "write_file":
+                            args["content"] = "body"
+                        state = self._initial_state()
+                        history = state["messages"]
+                        for index in range(count):
+                            call_id = f"previous-{index}"
+                            history.extend([
+                                AIMessage(content="", tool_calls=[{"name": name, "args": args, "id": call_id}]),
+                                ToolMessage(content="ERROR[EXECUTION]: failed", tool_call_id=call_id, name=name),
+                            ])
+                        # Config clamps a requested zero window to one message.
+                        recent_count = min(count, max(1, window) // 2)
+                        blocked = recent_count >= limit
+                        preflight = nodes._preflight_recovery_loop_issue(
+                            history,
+                            current_turn_id=1,
+                            open_tool_issue={"kind": "tool_error"},
+                            recovery_state={"active_strategy": {"id": "budget", "tool_name": name, "patched_args": args}},
+                        )
+                        self.assertEqual(preflight is not None, blocked)
+                        if blocked:
+                            self.assertEqual(preflight["details"]["loop_count"], recent_count)
+                            self.assertEqual(preflight["details"]["loop_limit"], limit)
+                            self.assertTrue(preflight["details"]["preflight_blocked"])
+
+                        state["messages"] = history + [
+                            AIMessage(content="", tool_calls=[{"name": name, "args": args, "id": "pending"}]),
+                        ]
+                        with mock.patch.object(nodes, "_log_run_event") as log_event:
+                            result = await nodes.tools_node(state)
+                        self.assertEqual(tool.calls, [] if blocked else [args])
+                        self.assertEqual(result["messages"][0].tool_call_id, "pending")
+                        self.assertEqual(result["messages"][0].status, "error" if blocked else "success")
+                        # Execution errors go back to the model, not graph-level recovery.
+                        self.assertIsNone(result["open_tool_issue"])
+                        loop_events = [
+                            call.kwargs for call in log_event.call_args_list
+                            if call.args[1] == "tool_call_loop_blocked"
+                        ]
+                        self.assertEqual(len(loop_events), int(blocked))
+                        if blocked:
+                            self.assertIn("LOOP_DETECTED", result["messages"][0].content)
+                            self.assertEqual(loop_events[0]["loop_count"], recent_count)
+                            self.assertEqual(loop_events[0]["loop_limit"], limit)
 
     async def test_agent_node_skips_llm_when_recovery_strategy_repeats_exhausted_tool_call(self):
         config = self._make_config(TOOL_LOOP_LIMIT_READONLY=2)
@@ -1518,7 +1609,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("extra_body", captured)
         self.assertEqual(captured["reasoning_effort"], "high")
 
-    def test_create_llm_for_minimax_official_api_sends_reasoning_effort(self):
+    def test_create_llm_for_minimax_official_api_sends_thinking_toggle(self):
         captured = {}
 
         class FakeChatOpenAI:
@@ -1531,6 +1622,55 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                     PROVIDER="openai",
                     OPENAI_API_KEY="sk-test",
                     OPENAI_MODEL="MiniMax-M3",
+                    OPENAI_BASE_URL="https://api.minimaxi.com/v1",
+                    MODEL_REASONING_EFFORT="medium",
+                )
+            )
+
+        self.assertNotIn("reasoning", captured)
+        self.assertNotIn("reasoning_effort", captured)
+        self.assertEqual(
+            captured["extra_body"],
+            {"thinking": {"type": "adaptive"}},
+        )
+
+    def test_create_llm_for_minimax_official_api_explicitly_disables_thinking(self):
+        captured = {}
+
+        class FakeChatOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with mock.patch.dict(sys.modules, {"langchain_openai": mock.Mock(ChatOpenAI=FakeChatOpenAI)}):
+            create_llm(
+                self._make_config(
+                    PROVIDER="openai",
+                    OPENAI_API_KEY="sk-test",
+                    OPENAI_MODEL="MiniMax-M3",
+                    OPENAI_BASE_URL="https://api.minimaxi.com/v1",
+                    MODEL_REASONING_EFFORT="medium",
+                    ENABLE_MODEL_REASONING=False,
+                )
+            )
+
+        self.assertEqual(
+            captured["extra_body"],
+            {"thinking": {"type": "disabled"}},
+        )
+
+    def test_create_llm_for_minimax_m3_1_official_api_sends_reasoning_effort(self):
+        captured = {}
+
+        class FakeChatOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with mock.patch.dict(sys.modules, {"langchain_openai": mock.Mock(ChatOpenAI=FakeChatOpenAI)}):
+            create_llm(
+                self._make_config(
+                    PROVIDER="openai",
+                    OPENAI_API_KEY="sk-test",
+                    OPENAI_MODEL="MiniMax-M3.1-Flash-Preview",
                     OPENAI_BASE_URL="https://api.minimaxi.com/v1",
                     MODEL_REASONING_EFFORT="medium",
                     LLM_API_MODE="responses",
@@ -2004,6 +2144,56 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             )
         finally:
             await runtime2.aclose()
+
+    def test_approval_decision_requires_explicit_boolean_or_supported_action(self):
+        nodes = AgentNodes(config=self._make_config(), llm=FakeLLM([]), tools=[])
+        for decision, expected in APPROVAL_DECISION_CASES + (
+            (None, False), (1, False), (0, False), ([True], False), ("approve", False)
+        ):
+            with self.subTest(decision=decision):
+                self.assertIs(nodes._approval_decision_is_approved(decision), expected)
+
+    async def test_approval_resume_validates_decision_and_keeps_tool_message_order(self):
+        for decision, expected in APPROVAL_DECISION_CASES:
+            with self.subTest(decision=decision):
+                config = self._make_config(ENABLE_APPROVALS=True)
+                tool = FakeTool("danger_tool", "Изменение применено.")
+                nodes = AgentNodes(
+                    config=config,
+                    llm=FakeLLM([]),
+                    tools=[tool],
+                    llm_with_tools=ProviderSafeFakeLLM([
+                        AIMessage(content="", tool_calls=[{
+                            "name": "danger_tool", "args": {"action": "apply"}, "id": "tc-strict"
+                        }]),
+                        AIMessage(content="Готово." if expected else "Действие не выполнено."),
+                    ]),
+                    tool_metadata={
+                        "danger_tool": ToolMetadata(
+                            name="danger_tool", mutating=True, destructive=True, requires_approval=True
+                        )
+                    },
+                )
+                app = create_agent_workflow(nodes, config, tools_enabled=True).compile(checkpointer=MemorySaver())
+                thread_config = {"configurable": {"thread_id": "approval-strict"}, "recursion_limit": 36}
+                interrupted = await app.ainvoke(self._initial_state("Сделай изменение"), config=thread_config)
+                self.assertIn("__interrupt__", interrupted)
+                self.assertEqual(tool.calls, [])
+
+                resumed = await app.ainvoke(
+                    Command(resume={interrupted["__interrupt__"][0].id: decision}), config=thread_config
+                )
+                self.assertNotIn("__interrupt__", resumed)
+                self.assertEqual(tool.calls, [{"action": "apply"}] if expected else [])
+                messages = resumed["messages"]
+                call_index = next(i for i, message in enumerate(messages) if isinstance(message, AIMessage) and message.tool_calls)
+                tool_message = messages[call_index + 1]
+                self.assertIsInstance(tool_message, ToolMessage)
+                self.assertEqual(tool_message.tool_call_id, "tc-strict")
+                if not expected:
+                    self.assertIn("ACCESS_DENIED", str(tool_message.content))
+                    self.assertIsNone(resumed["open_tool_issue"])
+                self.assertIsInstance(messages[-1], AIMessage)
 
     async def test_approval_interrupt_requires_resume_before_mutating_tool_runs(self):
         config = self._make_config(ENABLE_APPROVALS=True)
@@ -4146,6 +4336,99 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         persisted = SessionStore(session_path).load_active_session()
         self.assertIsNotNone(persisted)
         self.assertEqual(persisted.session_id, worker.current_session.session_id)
+
+    async def test_worker_initialize_keeps_unpersisted_session_when_preserved(self):
+        tmp = self._workspace_tempdir()
+        session_path = tmp / "session.json"
+        store = SessionStore(session_path)
+        old_session = store.new_session(
+            checkpoint_backend="sqlite",
+            checkpoint_target="demo.sqlite",
+            title="Older chat",
+        )
+        store.save_active_session(old_session)
+        project_path = tmp / "project-folder"
+        project_path.mkdir()
+        # "New Session" / "Open project folder" produce an unpersisted chat: it is
+        # written as the active snapshot but never added to the session index, so a
+        # later session selection can only find the previously indexed chat.
+        pending_session = store.new_session(
+            checkpoint_backend="sqlite",
+            checkpoint_target="demo.sqlite",
+            project_path=project_path,
+            title="New Chat",
+            persisted=False,
+        )
+        store.save_active_session(pending_session, touch=False)
+
+        worker = gui_runtime.AgentRunWorker()
+        config = self._make_config(SESSION_STATE_PATH=session_path)
+        fake_app = type("FakeApp", (), {"get_state": lambda self, _config: type("State", (), {"values": {}})()})()
+        tool_registry = type(
+            "ToolRegistryStub",
+            (),
+            {
+                "checkpoint_info": {"resolved_backend": "sqlite", "target": "demo.sqlite"},
+                "tools": [],
+                "tool_metadata": {},
+                "mcp_server_status": [],
+                "get_runtime_status_lines": lambda self: [],
+            },
+        )()
+
+        with (
+            mock.patch.object(gui_runtime, "setup_runtime", return_value=config),
+            mock.patch.object(gui_runtime, "build_agent_app", new=mock.AsyncMock(return_value=(fake_app, tool_registry))),
+            mock.patch.object(gui_runtime, "repair_session_if_needed", new=mock.AsyncMock()),
+            mock.patch.object(gui_runtime.Path, "cwd", return_value=project_path),
+        ):
+            await worker._initialize_async(preserve_session=pending_session)
+
+        self.assertEqual(worker.current_session.session_id, pending_session.session_id)
+        self.assertEqual(worker.current_session.thread_id, pending_session.thread_id)
+        persisted = SessionStore(session_path).load_active_session()
+        self.assertIsNotNone(persisted)
+        self.assertEqual(persisted.session_id, pending_session.session_id)
+        # The unpersisted chat stays invisible to session selection, which is exactly
+        # why the rebuild must be handed the snapshot instead of re-selecting one.
+        self.assertEqual(store.get_last_active_session().session_id, old_session.session_id)
+
+    async def test_tool_availability_rebuild_preserves_current_session(self):
+        worker = gui_runtime.AgentRunWorker()
+        pending_session = SessionSnapshot(
+            session_id="pending-session",
+            thread_id="thread-pending",
+            checkpoint_backend="sqlite",
+            checkpoint_target="demo.sqlite",
+            created_at="2026-03-31T10:00:00+00:00",
+            updated_at="2026-03-31T10:00:00+00:00",
+            project_path="D:/demo/workspace",
+            is_persisted=False,
+        )
+        worker.current_session = pending_session
+        worker.tool_registry = SimpleNamespace(
+            active_tools=lambda: [SimpleNamespace(name="read_file")],
+            set_tool_enabled=lambda name, enabled: True,
+            mcp_config={},
+        )
+        worker._shutdown_async = mock.AsyncMock()
+        worker._initialize_async = mock.AsyncMock()
+        queued: list = []
+
+        # ``_run`` is synchronous and schedules the coroutine on the worker loop; the
+        # stub collects them so the test can await the rebuild sequence in order.
+        def fake_run(coro):
+            queued.append(coro)
+
+        worker._run = fake_run
+
+        worker._apply_tool_availability_changes(
+            [{"kind": "tool", "name": "read_file", "enabled": False}]
+        )
+        await asyncio.gather(*queued)
+
+        worker._shutdown_async.assert_awaited_once_with()
+        worker._initialize_async.assert_awaited_once_with(preserve_session=pending_session)
 
     async def test_worker_switch_session_updates_active_snapshot(self):
         tmp = self._workspace_tempdir()

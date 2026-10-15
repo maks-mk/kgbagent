@@ -89,10 +89,41 @@ def attachments_root(base_dir: str | Path | None = None) -> Path:
     return root / ".agent_state" / "attachments"
 
 
+def _attachment_directory_name(session_id: str) -> str:
+    name = str(session_id or "").strip() or "__draft__"
+    if not all(char.isalnum() or char in "_-" for char in name):
+        raise ValueError("Invalid session id for attachment storage.")
+    return name
+
+
 def session_attachments_dir(session_id: str, *, base_dir: str | Path | None = None) -> Path:
-    directory = attachments_root(base_dir) / (str(session_id or "").strip() or "__draft__")
+    directory = attachments_root(base_dir) / _attachment_directory_name(session_id)
     directory.mkdir(parents=True, exist_ok=True)
     return directory
+
+
+def delete_session_attachments(session_id: str, *, base_dir: str | Path | None = None) -> bool:
+    """Remove files owned by one session without following a session-directory symlink."""
+    directory_name = _attachment_directory_name(session_id)
+    if directory_name == "__draft__":
+        raise ValueError("Draft attachments cannot be deleted as a session.")
+
+    root = attachments_root(base_dir).resolve()
+    target = root / directory_name
+    if target.is_symlink():
+        target.unlink()
+        return True
+    if not target.exists():
+        return False
+
+    resolved_target = target.resolve()
+    if resolved_target.parent != root:
+        raise ValueError("Attachment directory is outside the session attachment root.")
+    if resolved_target.is_dir():
+        shutil.rmtree(resolved_target)
+    else:
+        resolved_target.unlink()
+    return True
 
 
 def _image_dimensions(path: str | Path) -> tuple[int, int]:

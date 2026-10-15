@@ -9,7 +9,7 @@
 - `prompt.txt` - общий системный промпт агента.
 - `prompt_dev.txt` - альтернативный dev/devops-промпт; для использования задайте `PROMPT_PATH=prompt_dev.txt` (автоматически к `prompt.txt` не добавляется).
 - `mcp.json` - конфигурация MCP-серверов и overrides встроенных инструментов.
-- `headers.json` - необязательные HTTP-заголовки OpenAI-compatible/Anthropic запросов.
+- `codex_headers.json` - необязательные HTTP-заголовки OpenAI-compatible/Anthropic запросов (по умолчанию, используется секция `default_headers`); другой файл, например `headers.json`, задаётся через `HEADERS_FILE`.
 - `requirements.txt` - Python-зависимости.
 - `env_example.txt` - пример переменных окружения.
 - `provider_registry.json` - registry OpenAI-compatible провайдеров и их reasoning kwargs.
@@ -22,7 +22,7 @@
 
 - `PROJECT_STRUCTURE.md` - данный документ: карта модулей и архитектура.
 - `ARCHITECTURE.md` - Runtime Flow, Prompt Layers, Sessions & Checkpoints. Версия приложения берется из `core/constants.py` (`AGENT_VERSION`).
-- `CONFIGURATION.md` - все переменные `.env` (провайдеры, runtime, фиче-флаги, лимиты, retry, персистентность, диагностика) и provider-заголовки из `headers.json`.
+- `CONFIGURATION.md` - все переменные `.env` (провайдеры, runtime, фиче-флаги, лимиты, retry, персистентность, диагностика) и provider-заголовки из `codex_headers.json`.
 - `GUI_GUIDE.md` - Transcript, CLI output widget, Composer, горячие клавиши.
 - `SECURITY.md` - Approvals, workspace boundary, `request_user_input`.
 - `MODEL_PROFILES.md` - управление профилями моделей, автозагрузка, ротация API-ключей.
@@ -62,7 +62,7 @@
 - `reasoning_debug.py` - отдельное debug-логирование reasoning/thinking и status-сигналов.
 - `run_logger.py` - JSONL-логирование отдельных запусков агента.
 - `logging_config.py` - настройка логирования приложения.
-- `http_headers.py` - загрузчик `load_provider_headers()` для OpenAI-compatible и Anthropic запросов (`headers.json`); `load_openai_headers()` — совместимый alias.
+- `http_headers.py` - загрузчик `load_provider_headers()` для OpenAI-compatible и Anthropic запросов (`codex_headers.json` по умолчанию, переопределяется `HEADERS_FILE`); `load_openai_headers()` — совместимый alias.
 - `anthropic_capabilities.py` - возможности семейств Claude и ограничения thinking/effort.
 - `reasoning_controls.py` - общая логика управления reasoning.
 

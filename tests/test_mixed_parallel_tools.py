@@ -231,6 +231,59 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
             "run_id": "test-run",
         }
 
+    async def test_batch_classifies_each_position_once_for_logging_and_execution(self):
+        batches = (
+            ["read_file", "read_file"],
+            ["write_file", "write_file"],
+            ["read_file", "read_file", "write_file", "read_file", "cli_exec"],
+        )
+        for names in batches:
+            for cap in (1, 2):
+                with self.subTest(names=names, cap=cap):
+                    owner = self._make_owner({"read_file": True, "write_file": False, "cli_exec": False})
+                    owner.config.max_parallel_tool_calls = cap
+                    classified = set()
+                    events = []
+                    policy = owner._tool_call_is_parallel_safe
+
+                    def classify_once(call):
+                        self.assertNotIn(id(call), classified)
+                        classified.add(id(call))
+                        return policy(call)
+
+                    async def process(call, *args):
+                        index = call["args"]["index"]
+                        events.append(("start", index))
+                        await asyncio.sleep(0)
+                        events.append(("end", index))
+                        return ToolMessage(content=str(index), tool_call_id=call["id"]), False, None
+
+                    owner._tool_call_is_parallel_safe = classify_once
+                    owner._process_tool_call = process
+                    # Classification is per position, not by a provider-supplied ID.
+                    state = self._make_state([_tc(name, "duplicate-id", {"index": i}) for i, name in enumerate(names)])
+                    with mock.patch.object(owner, "_log_run_event") as log_event:
+                        result = await ToolBatchCoordinator(owner).run(state)
+                    self.assertEqual(len(classified), len(names))
+                    self.assertEqual([message.content for message in result["messages"]], [str(i) for i in range(len(names))])
+                    start_log = next(call.kwargs for call in log_event.call_args_list if call.args[1] == "tools_node_start")
+                    parallel_count = sum(name != "write_file" for name in names)
+                    self.assertEqual(start_log["parallel_count"], parallel_count)
+                    self.assertEqual(start_log["sequential_count"], len(names) - parallel_count)
+                    mode = "sequential" if cap == 1 or not parallel_count else "mixed" if parallel_count < len(names) else "all"
+                    self.assertEqual(start_log["parallel_mode"], mode)
+                    active = 0
+                    for event, index in events:
+                        active += 1 if event == "start" else -1
+                        self.assertLessEqual(active, cap)
+                    self.assertEqual(active, 0)
+                    for index, name in enumerate(names):
+                        if name == "write_file":
+                            for before in range(index):
+                                self.assertLess(events.index(("end", before)), events.index(("start", index)))
+                            for after in range(index + 1, len(names)):
+                                self.assertLess(events.index(("end", index)), events.index(("start", after)))
+
     async def test_all_parallel_safe_uses_gather(self):
         """When every call is parallel-safe, all run concurrently."""
         owner = self._make_owner({"read_file": True, "list_directory": True})

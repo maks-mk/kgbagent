@@ -163,32 +163,35 @@ TTL — стандартные 5 минут. Разовые вызовы сум�
 
 ## HTTP-заголовки для provider-запросов
 
-Для эмуляции совместимого клиента или добавления пользовательских заголовков в запросы к OpenAI-compatible и Anthropic LLM используется файл `headers.json` в корне проекта.
+Для эмуляции совместимого клиента или добавления пользовательских заголовков в запросы к OpenAI-compatible и Anthropic LLM используется файл `codex_headers.json` в корне проекта.
 
-Имя/путь файла можно переопределить переменной `HEADERS_FILE` (по умолчанию `headers.json`). Значение резолвится относительно `BASE_DIR` — корня проекта при запуске из исходников и каталога рядом с `.exe` при frozen-сборке (PyInstaller); абсолютный путь используется как есть.
+Имя/путь файла можно переопределить переменной `HEADERS_FILE` (по умолчанию `codex_headers.json`). Значение читается из переменной окружения процесса, а при её отсутствии — из `.env` и `.agent_state/config.json` (приоритет переменной окружения выше, как и у остальных настроек). Пустое значение игнорируется. Значение резолвится относительно `BASE_DIR` — корня проекта при запуске из исходников и каталога рядом с `.exe` при frozen-сборке (PyInstaller); абсолютный путь используется как есть.
+
+**Формат файла:**
+- Плоский JSON-объект — используется как есть (как в `headers.json` или `headers/headers_qwen.json`).
+- Составной JSON-объект с секцией `default_headers` — применяется только эта секция. Остальные секции `codex_headers.json` (auth, cookie, transport, websocket) игнорируются: они содержат per-session значения, которые перезаписали бы реальные учётные данные.
 
 **Поведение:**
 - Файл отсутствует → provider SDK отправляет свои стандартные заголовки.
 - Файл присутствует → его строковые значения переопределяют/добавляют заголовки SDK. Битый или не-объектный JSON игнорируется (возвращается пустой словарь).
 
-**Пример `headers.json` (эмуляция OpenAI-compatible клиента):**
+**Пример составного `codex_headers.json` (эмуляция Codex CLI):**
 ```json
 {
-  "User-Agent": "QwenCode/0.12.6 (win32; x64)",
-  "x-stainless-lang": "js",
-  "x-stainless-package-version": "5.11.0",
-  "x-stainless-os": "Windows",
-  "x-stainless-arch": "x64",
-  "x-stainless-runtime": "node",
-  "x-stainless-runtime-version": "v24.3.0",
-  "accept-language": "*",
-  "sec-fetch-mode": "cors"
+  "default_headers": {
+    "User-Agent": "codex_cli_rs/0.160.1 (Windows 10.0.19045; x86_64) unknown",
+    "originator": "codex_cli_rs",
+    "X-OpenAI-Internal-Codex-Residency": "us",
+    "OpenAI-Beta": "responses=experimental"
+  }
 }
 ```
 
+Заголовок `OpenAI-Beta: responses=experimental` отправляется на каждый OpenAI-compatible запрос, поэтому он уместен только вместе с `LLM_API_MODE=responses` (endpoint `/v1/responses`); в режиме `chat` его следует убрать. Заголовки применяются и к Anthropic-запросам, где такие значения просто игнорируются.
+
 **Применение:**
 - Заголовки используются в `core/model_fetcher.py` для OpenAI-compatible model discovery, а также в `core/providers/openai_reasoning.py` и `core/providers/anthropic.py` для LLM-запросов.
-- Для Anthropic model discovery используются обязательные API-заголовки, но пользовательские значения из `headers.json` не добавляются.
+- Для Anthropic model discovery используются обязательные API-заголовки, но пользовательские значения из `codex_headers.json` не добавляются.
 - Для Gemini-запросов заголовки не применяются.
 
 **Модуль:** `core/http_headers.py` — загрузчик `load_provider_headers()`; `load_openai_headers()` сохранён как обратно совместимый alias.

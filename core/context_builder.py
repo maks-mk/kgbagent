@@ -43,6 +43,9 @@ from core.state import AgentState, OpenToolIssue, RecoveryState
 logger = logging.getLogger("agent")
 
 _GEMINI_FUNCTION_CALL_THOUGHT_SIGNATURES_KEY = "__gemini_function_call_thought_signatures__"
+_TOOL_RESULT_IMAGE_FORWARD_NOTE = (
+    "The images from the tool result above are attached to this message in order."
+)
 
 IsInternalRetry = Callable[[BaseMessage], bool]
 PromptLoader = Callable[[], str]
@@ -194,10 +197,14 @@ class ContextBuilder:
         normalized_content_count = 0
         filtered_image_message_count = 0
         filtered_image_block_count = 0
+        forwarded_image_message_count = 0
+        forwarded_image_block_count = 0
+        pending_carrier_insert_index: int | None = None
         stripped_reasoning_block_count = 0
         stripped_reasoning_kwarg_count = 0
         reordered_responses_tool_turn_count = 0
         image_input_supported = bool(self._model_capabilities.get("image_input_supported"))
+        pending_forwarded_image_blocks: List[Dict[str, Any]] = []
 
         for message in messages:
             normalized_message: BaseMessage = message
@@ -293,21 +300,42 @@ class ContextBuilder:
                 )
                 model_can_attach = image_input_supported or not self._image_capability_known
                 if not (provider_can_attach and model_can_attach):
-                    # Name the actual blocker: a text-only model must not be told
-                    # that the provider dropped the image, or it will keep retrying.
-                    omission_note = (
-                        TOOL_RESULT_IMAGE_OMITTED_PLACEHOLDER
-                        if model_can_attach
-                        else IMAGE_CONTENT_OMITTED_PLACEHOLDER
-                    )
-                    sanitized_content, removed_blocks = strip_tool_result_image_blocks(
-                        normalized_message.content,
-                        note=omission_note,
-                    )
-                    if removed_blocks:
-                        normalized_message = normalized_message.model_copy(update={"content": sanitized_content})
-                        filtered_image_message_count += 1
-                        filtered_image_block_count += removed_blocks
+                    if provider_can_attach or not model_can_attach:
+                        # Name the actual blocker: a text-only model must not be told
+                        # that the provider dropped the image, or it will keep retrying.
+                        omission_note = (
+                            TOOL_RESULT_IMAGE_OMITTED_PLACEHOLDER
+                            if model_can_attach
+                            else IMAGE_CONTENT_OMITTED_PLACEHOLDER
+                        )
+                        sanitized_content, removed_blocks = strip_tool_result_image_blocks(
+                            normalized_message.content,
+                            note=omission_note,
+                        )
+                        if removed_blocks:
+                            normalized_message = normalized_message.model_copy(update={"content": sanitized_content})
+                            filtered_image_message_count += 1
+                            filtered_image_block_count += removed_blocks
+                    else:
+                        # Chat Completions accepts images only in user messages, so
+                        # forward the blocks to a synthetic HumanMessage instead of
+                        # dropping them. The stripped tool result keeps a note that
+                        # names the following message as the image carrier.
+                        sanitized_content, removed_blocks = strip_tool_result_image_blocks(
+                            normalized_message.content,
+                            note=_TOOL_RESULT_IMAGE_FORWARD_NOTE,
+                        )
+                        if removed_blocks:
+                            forwarded_blocks = self._forwardable_tool_result_image_blocks(normalized_message.content)
+                            normalized_message = normalized_message.model_copy(update={"content": sanitized_content})
+                            if forwarded_blocks:
+                                pending_forwarded_image_blocks.extend(forwarded_blocks)
+                                pending_carrier_insert_index = len(sanitized) + 1
+                                forwarded_image_message_count += 1
+                                forwarded_image_block_count += len(forwarded_blocks)
+                            else:
+                                filtered_image_message_count += 1
+                                filtered_image_block_count += removed_blocks
                 else:
                     materialized_content = materialize_tool_result_image_blocks(
                         normalized_message.content,
@@ -315,6 +343,16 @@ class ContextBuilder:
                     )
                     if materialized_content != normalized_message.content:
                         normalized_message = normalized_message.model_copy(update={"content": materialized_content})
+
+            if isinstance(normalized_message, HumanMessage) and pending_forwarded_image_blocks:
+                carrier_content = materialize_user_message_content_for_model(
+                    pending_forwarded_image_blocks,
+                    provider=self.config.provider,
+                )
+                merged_content = self._prepend_content_blocks(normalized_message.content, carrier_content)
+                normalized_message = normalized_message.model_copy(update={"content": merged_content})
+                pending_forwarded_image_blocks = []
+                pending_carrier_insert_index = None
 
             if isinstance(normalized_message, HumanMessage) and human_message_has_image_content(normalized_message.content):
                 if self._image_capability_known and not image_input_supported:
@@ -358,6 +396,19 @@ class ContextBuilder:
                     continue
             sanitized.append(normalized_message)
 
+        if pending_forwarded_image_blocks:
+            carrier_content = materialize_user_message_content_for_model(
+                pending_forwarded_image_blocks,
+                provider=self.config.provider,
+            )
+            carrier_message = HumanMessage(content=carrier_content)
+            insert_index = (
+                pending_carrier_insert_index
+                if pending_carrier_insert_index is not None
+                else len(sanitized)
+            )
+            sanitized.insert(insert_index, carrier_message)
+
         if remapped_count:
             self._log_run_event(
                 state,
@@ -383,6 +434,15 @@ class ContextBuilder:
                 filtered_message_count=filtered_image_message_count,
                 filtered_image_block_count=filtered_image_block_count,
             )
+        if forwarded_image_block_count:
+            self._log_run_event(
+                state,
+                "provider_tool_result_images_forwarded_to_user_message",
+                run_id=None if state is None else state.get("run_id", ""),
+                provider=self.config.provider,
+                forwarded_message_count=forwarded_image_message_count,
+                forwarded_image_block_count=forwarded_image_block_count,
+            )
         if stripped_reasoning_block_count or stripped_reasoning_kwarg_count:
             self._log_run_event(
                 state,
@@ -401,6 +461,32 @@ class ContextBuilder:
                 reordered_tool_turn_count=reordered_responses_tool_turn_count,
             )
         return sanitized
+
+    @staticmethod
+    def _prepend_content_blocks(content: Any, blocks: List[Any]) -> Any:
+        if not blocks:
+            return content
+        if isinstance(content, str):
+            if not content.strip():
+                return list(blocks)
+            return [*blocks, {"type": "text", "text": content}]
+        if isinstance(content, list):
+            return [*blocks, *content]
+        return [*blocks, content]
+
+    @staticmethod
+    def _forwardable_tool_result_image_blocks(content: Any) -> List[Dict[str, Any]]:
+        if not isinstance(content, list):
+            return []
+        forwardable: List[Dict[str, Any]] = []
+        for item in content:
+            if not isinstance(item, dict) or str(item.get("type") or "").strip().lower() != "image":
+                continue
+            path = str(item.get("path") or "").strip()
+            if not path or not Path(path).is_file():
+                continue
+            forwardable.append(dict(item))
+        return forwardable
 
     def _reorder_trailing_responses_function_calls(
         self,

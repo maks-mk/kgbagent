@@ -116,7 +116,7 @@ class ApprovalMixin:
             return decision
         if isinstance(decision, dict):
             if "approved" in decision:
-                return bool(decision.get("approved"))
+                return decision["approved"] is True
             action = str(decision.get("action", "")).strip().lower()
             return action in {"approve", "approved", "yes", "y"}
         # Неизвестный формат (строка, число, None и т.п.) — отказ.

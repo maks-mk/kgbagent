@@ -9,7 +9,7 @@ from uuid import uuid4
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from PySide6.QtGui import QImage
 
 from core.config import AgentConfig
@@ -358,10 +358,51 @@ class ReadImagesContextBuilderTests(unittest.TestCase):
 
         output = sanitized[1]
         self.assertIsInstance(output, ToolMessage)
-        # Chat completions carry tool output as a plain string, so after the blocks
-        # are stripped the payload is flattened and only the omission note remains.
-        self.assertIn(TOOL_RESULT_IMAGE_OMITTED_PLACEHOLDER, self._text_of(output))
+        # Chat completions cannot carry images in tool output; the blocks are
+        # forwarded to a synthetic user message instead of being dropped.
         self.assertNotIn("data:image", self._text_of(output))
+
+        carrier = sanitized[2]
+        self.assertIsInstance(carrier, HumanMessage)
+        image_blocks = [item for item in carrier.content if isinstance(item, dict) and item.get("type") == "image_url"]
+        self.assertEqual(len(image_blocks), 1)
+        self.assertTrue(image_blocks[0]["image_url"]["url"].startswith("data:image/png;base64,"))
+
+    def test_openai_chat_mode_forwards_tool_images_with_the_carrier_note(self):
+        ai_message, tool_message, _block = self._tool_turn()
+        builder = self._builder(self._make_config(PROVIDER="openai", LLM_API_MODE="chat"))
+
+        sanitized = builder.sanitize_messages([ai_message, tool_message])
+
+        self.assertIn("attached to this message", self._text_of(sanitized[1]))
+
+    def test_openai_chat_mode_strips_tool_images_for_text_only_models(self):
+        ai_message, tool_message, _block = self._tool_turn()
+        builder = self._builder(
+            self._make_config(PROVIDER="openai", LLM_API_MODE="chat"),
+            image_input_supported=False,
+        )
+
+        sanitized = builder.sanitize_messages([ai_message, tool_message])
+
+        self.assertEqual(len(sanitized), 2)
+        output = sanitized[1]
+        self.assertIsInstance(output, ToolMessage)
+        self.assertIn(IMAGE_CONTENT_OMITTED_PLACEHOLDER, self._text_of(output))
+        self.assertNotIn("data:image", self._text_of(output))
+
+    def test_openai_chat_mode_merges_forwarded_tool_images_into_the_next_user_message(self):
+        ai_message, tool_message, _block = self._tool_turn()
+        user_message = HumanMessage(content="what is on the image?")
+        builder = self._builder(self._make_config(PROVIDER="openai", LLM_API_MODE="chat"))
+
+        sanitized = builder.sanitize_messages([ai_message, tool_message, user_message])
+
+        self.assertEqual(len(sanitized), 3)
+        carrier = sanitized[2]
+        self.assertIsInstance(carrier, HumanMessage)
+        self.assertEqual(carrier.content[0]["type"], "image_url")
+        self.assertEqual(carrier.content[-1], {"type": "text", "text": "what is on the image?"})
 
     def test_openai_responses_mode_materializes_tool_images_as_data_uri(self):
         ai_message, tool_message, _block = self._tool_turn()

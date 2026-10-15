@@ -22,7 +22,7 @@
 
 Логика реализована в `core/model_fetcher.py`. Результаты кешируются по провайдеру, API key и, где применимо, Base URL.
 
-> `headers.json` применяется к OpenAI-compatible model discovery и к LLM-запросам OpenAI-compatible/Anthropic. Anthropic model discovery использует обязательные API-заголовки без пользовательских overrides — см. раздел «HTTP-заголовки» в [`CONFIGURATION.md`](./CONFIGURATION.md).
+> `codex_headers.json` применяется к OpenAI-compatible model discovery и к LLM-запросам OpenAI-compatible/Anthropic. Anthropic model discovery использует обязательные API-заголовки без пользовательских overrides — см. раздел «HTTP-заголовки» в [`CONFIGURATION.md`](./CONFIGURATION.md).
 
 ---
 

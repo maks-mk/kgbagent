@@ -87,6 +87,19 @@ def _provider_model(config: AgentConfig) -> tuple[str, str]:
     return "OpenAI", config.openai_model
 
 
+def _llm_api_mode(config: AgentConfig) -> str:
+    """Effective LLM API mode for the current provider.
+
+    The Responses API is an OpenAI-only transport: Gemini and Anthropic adapters
+    always use the chat protocol, so reporting the raw ``LLM_API_MODE`` value would
+    claim "responses" for providers that never send a request to that endpoint.
+    """
+    mode = str(getattr(config, "llm_api_mode", "chat") or "chat").strip().lower()
+    if mode != "responses":
+        return "chat"
+    return "responses" if config.provider == "openai" else "chat"
+
+
 def _short_id(value: str, length: int = 16) -> str:
     if len(value) <= length:
         return value
@@ -244,6 +257,7 @@ def build_runtime_snapshot(config: AgentConfig, tool_registry, snapshot: Session
         "version": AGENT_VERSION,
         "provider": provider_label,
         "model": model_name,
+        "llm_api_mode": _llm_api_mode(config),
         "backend": backend,
         "tools_count": (
             len(tool_registry.active_tools())

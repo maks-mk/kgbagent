@@ -105,6 +105,80 @@ class ToolApprovalPolicyTests(unittest.TestCase):
         self.assertTrue(tool_requires_approval("cli_exec", {"command": "Remove-Item demo.txt"}))
         self.assertTrue(tool_requires_approval("cli_exec", {"command": ""}))
 
+    def test_shell_approval_covers_mutating_aliases_in_every_pipeline_segment(self):
+        """A read-only first segment must not vouch for a mutating alias later."""
+        for command in (
+            "Get-Content src.txt | ac target.txt",
+            "Get-Content src.txt | ni target.txt",
+            "Get-Content src.txt | tee target.txt",
+            "Get-Content src.txt | sc target.txt",
+            "Get-Content src.txt | cp a.txt b.txt",
+            "Get-Content src.txt | clc target.txt",
+            "Get-Content src.txt ; rm target.txt",
+            "Get-Content src.txt & ni target.txt",
+            "ls | ren a b",
+            "cat src.txt | mv a b",
+            "rg --files | tee files.txt",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(shell_command_requires_approval(command), command)
+
+    def test_shell_approval_covers_destructive_aliases_in_every_pipeline_segment(self):
+        for command in (
+            "Get-Content src.txt | ri src.txt",
+            "Get-Content src.txt | del src.txt",
+            "Get-Content src.txt | rd src.txt",
+            "Get-Content src.txt | erase src.txt",
+        ):
+            with self.subTest(command=command):
+                profile = classify_shell_command(command)
+                self.assertTrue(shell_command_requires_approval(command), command)
+                self.assertTrue(profile["destructive"], command)
+
+    def test_shell_approval_covers_script_blocks_that_mutate(self):
+        for command in (
+            "Get-Content src.txt | % { iex $_ }",
+            "Get-Content src.txt | %{ Add-Content out.txt 1 }",
+            "ls | %{ ni demo.txt }",
+            "$x = Get-Content src.txt | Remove-Item src.txt",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(shell_command_requires_approval(command), command)
+
+    def test_shell_approval_allows_read_only_pipelines_with_expressions(self):
+        for command in (
+            "Get-Process | Select-Object Id,ProcessName",
+            "Get-ChildItem | Where-Object { $_.Length -gt 0 }",
+            "rg --files 2>$null",
+            "rg --files 2>&1",
+            "Get-Content a.txt | Select-Object -First 3",
+            "$x = 1",
+            "$x = 'abc'",
+            "$x = 1; Get-Process",
+            "(Get-Process).Count",
+            "ping google.com; curl -I https://ya.ru",
+            "rg -n foo | Select-Object -First 5",
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(shell_command_requires_approval(command), command)
+
+    def test_shell_approval_stays_conservative_for_literal_only_and_empty_commands(self):
+        for command in ("", "   "):
+            with self.subTest(command=command):
+                profile = classify_shell_command(command)
+                self.assertFalse(profile["inspect_only"], command)
+                self.assertTrue(shell_command_requires_approval(command), command)
+
+    def test_shell_approval_aliases_resolve_to_the_underlying_cmdlet(self):
+        # ``ls``/``cat`` are aliases for the whitelisted Get-* cmdlets and stay
+        # read-only; ``rm``/``ri`` resolve to Remove-Item and must not.
+        for command in ("ls", "cat README.md", "gci", "gc README.md"):
+            with self.subTest(command=command):
+                self.assertFalse(shell_command_requires_approval(command), command)
+        for command in ("rm demo.txt", "ri demo.txt", "del demo.txt"):
+            with self.subTest(command=command):
+                self.assertTrue(shell_command_requires_approval(command), command)
+
 
 if __name__ == "__main__":
     unittest.main()

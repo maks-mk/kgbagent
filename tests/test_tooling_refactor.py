@@ -275,7 +275,10 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         tools_by_name = {tool.name: tool for tool in registry.tools}
         cli_tool = tools_by_name["cli_exec"]
-        self.assertLess(len(cli_tool.description), 260)
+        # The budget guards against descriptions bloating the prompt. It was
+        # raised from 260 when the Windows/PowerShell syntax guidance was added,
+        # because that instruction cannot be dropped for token reasons.
+        self.assertLess(len(cli_tool.description), 300)
         self.assertNotIn("\n", cli_tool.description)
         schema = cli_tool.args_schema.model_json_schema()
         self.assertNotIn("description", schema)

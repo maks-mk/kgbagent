@@ -205,32 +205,51 @@ class ProviderRegistryTests(unittest.TestCase):
         self.assertEqual(payload["reasoning_effort"], "high")
         self.assertEqual(payload["extra_body"]["thinking"]["type"], "enabled")
 
-    def test_minimax_registry_always_sends_reasoning_effort(self):
+    def test_minimax_registry_uses_thinking_toggle_for_m3(self):
         registry = ProviderRegistry.from_path(Path(__file__).parents[1] / "provider_registry.json")
 
         config = registry.match("https://api.minimaxi.com/v1", "MiniMax-M3")
         self.assertEqual(config["id"], "minimax")
-        self.assertEqual(config["param"], "reasoning_effort")
+        self.assertEqual(config["mode"], "toggle")
+        self.assertEqual(config["param"], "extra_body.thinking.type")
+        self.assertEqual(config["toggle"], {"on": "adaptive", "off": "disabled"})
 
-        # MiniMax only moves its chain of thought into the reasoning channel when a
-        # reasoning payload is present, so every level declared by the rule must be
-        # forwarded 1:1 instead of being normalized or dropped.
-        for effort in ("low", "medium", "high", "xhigh", "max"):
-            with self.subTest(effort=effort):
-                payload = {"model": "MiniMax-M3"}
-                build_reasoning_kwargs(payload, config, effort)
-                self.assertEqual(payload, {"model": "MiniMax-M3", "reasoning_effort": effort})
+        # M3 depth is not tuned by reasoning_effort, it is a plain on/off toggle.
+        payload = {"model": "MiniMax-M3"}
+        build_reasoning_kwargs(payload, config, "high")
+        self.assertEqual(payload, {"model": "MiniMax-M3", "extra_body": {"thinking": {"type": "adaptive"}}})
 
-        # Levels outside the rule's mapping are not declared as supported by MiniMax
-        # and must not produce a reasoning payload at all.
-        for effort in ("none", "minimal"):
-            with self.subTest(effort=effort):
-                payload = {"model": "MiniMax-M3"}
-                build_reasoning_kwargs(payload, config, effort)
-                self.assertEqual(payload, {"model": "MiniMax-M3"})
+        payload = {"model": "MiniMax-M3"}
+        build_reasoning_kwargs(payload, config, "high", enabled=False)
+        self.assertEqual(payload, {"model": "MiniMax-M3", "extra_body": {"thinking": {"type": "disabled"}}})
 
         self.assertEqual(registry.match("https://api.minimax.io/v1", "MiniMax-M3")["id"], "minimax")
         self.assertIsNone(registry.match("https://api.minimaxi.com/v1", "abab6.5s-chat"))
+
+        # M2.x models have no rule at all: thinking cannot be switched off and
+        # has no effort levels.
+        self.assertIsNone(registry.match("https://api.minimaxi.com/v1", "minimax-m2.5"))
+
+    def test_minimax_registry_uses_reasoning_effort_for_m3_1(self):
+        registry = ProviderRegistry.from_path(Path(__file__).parents[1] / "provider_registry.json")
+
+        for model in ("minimax-m3.1", "MiniMax-M3.1-Flash-Preview"):
+            with self.subTest(model=model):
+                config = registry.match("https://api.minimaxi.com/v1", model)
+                self.assertEqual(config["id"], "minimax")
+                self.assertEqual(config["param"], "reasoning_effort")
+
+                # Every declared level is forwarded 1:1; thinking cannot be
+                # disabled on this endpoint, so "none" is intentionally unmapped.
+                for effort in ("low", "medium", "high", "xhigh", "max"):
+                    with self.subTest(effort=effort):
+                        payload = {"model": model}
+                        build_reasoning_kwargs(payload, config, effort)
+                        self.assertEqual(payload, {"model": model, "reasoning_effort": effort})
+
+                payload = {"model": model}
+                build_reasoning_kwargs(payload, config, "none")
+                self.assertEqual(payload, {"model": model})
 
     def test_build_reasoning_kwargs_toggle_preserves_typed_values(self):
         config = ProviderRegistry(

@@ -43,6 +43,7 @@ from core.reasoning_debug import preview_value
 from core.providers.openai_reasoning import (
     _build_reasoning_debug_chat_openai,
     _normalize_responses_text_delta,
+    _openai_uses_fixed_sampling,
     _safe_openai_model_dump,
     create_openai_chat_model,
 )
@@ -630,6 +631,94 @@ class LlmApiModeTests(unittest.TestCase):
         model = create_openai_chat_model(cfg)
         payload = model._get_request_payload([{"role": "user", "content": "hi"}])
         self.assertTrue(model._use_responses_api(payload))
+
+    def test_chat_mode_stays_on_chat_completions_with_tools(self):
+        """gpt-6* models must not be auto-routed to /v1/responses when chat is picked.
+
+        LangChain switches to the Responses API on its own for a gpt-6* model whose
+        payload carries tools, so an unset use_responses_api flag made the agent turn
+        hit /v1/responses and 404 on gateways that only expose /v1/chat/completions,
+        while tool-less calls (the chat title) still succeeded.
+        """
+        cfg = self._make_config("chat")
+        cfg.openai_model = "gpt-6.1-sol"
+        cfg.openai_base_url = "https://freemodel.in/v1"
+        model = create_openai_chat_model(cfg)
+        self.assertIs(model.use_responses_api, False)
+        payload = {"tools": [{"type": "function", "name": "get_weather"}]}
+        self.assertFalse(model._use_responses_api(payload))
+
+    def test_responses_mode_keeps_tools_on_responses(self):
+        """The explicit chat fix must not downgrade the responses mode."""
+        cfg = self._make_config("responses")
+        cfg.openai_model = "gpt-6.1-sol"
+        model = create_openai_chat_model(cfg)
+        payload = {"tools": [{"type": "function", "name": "get_weather"}]}
+        self.assertTrue(model._use_responses_api(payload))
+
+
+class OpenAIFixedSamplingTests(unittest.TestCase):
+    """``temperature`` must be omitted for models that reject custom sampling."""
+
+    def _make_config(self, model_name: str) -> "AgentConfig":
+        import os
+        import tempfile
+        from pathlib import Path
+
+        import core.config as config_module
+        from core.config import AgentConfig
+
+        env = {
+            "PROVIDER": "openai",
+            "OPENAI_API_KEY": "sk-test",
+            "OPENAI_MODEL": model_name,
+            "OPENAI_BASE_URL": "https://api.openai.com/v1",
+        }
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with mock.patch.object(config_module, "BASE_DIR", Path(tmp_dir)):
+                with mock.patch.dict(os.environ, env, clear=False):
+                    return AgentConfig(_env_file=None)
+
+    def test_gpt6_family_is_detected_as_fixed_sampling(self):
+        for model_name in (
+            "gpt-6",
+            "gpt-6.1-sol",
+            "gpt-6-1-sol",
+            "tkn/gpt-6-1-sol",
+            "cx/gpt-6.1-sol",
+            "gpt-6-astra",
+            "gpt-6.1",
+        ):
+            with self.subTest(model=model_name):
+                self.assertTrue(_openai_uses_fixed_sampling(model_name))
+
+    def test_known_fixed_sampling_model_is_still_detected(self):
+        self.assertTrue(_openai_uses_fixed_sampling("kimi-k3"))
+
+    def test_other_models_are_not_fixed_sampling(self):
+        for model_name in ("gpt-5", "gpt-5.1-codex", "gpt-4o", "gpt-60-turbo"):
+            with self.subTest(model=model_name):
+                self.assertFalse(_openai_uses_fixed_sampling(model_name))
+
+    def test_temperature_omitted_for_gpt6_family(self):
+        cfg = self._make_config("gpt-6.1-sol")
+        cfg.temperature = 0.7
+        model = create_openai_chat_model(cfg)
+        self.assertNotIn("temperature", model.model_kwargs)
+        payload = model._get_request_payload([{"role": "user", "content": "hi"}])
+        self.assertNotIn("temperature", payload)
+
+    def test_temperature_kept_for_regular_models(self):
+        """gpt-4o has no fixed sampling, so the configured value must survive.
+
+        LangChain drops ``temperature`` on its own for gpt-5* reasoning models, which
+        would make that family a useless control for this rule.
+        """
+        cfg = self._make_config("gpt-4o")
+        cfg.temperature = 0.7
+        model = create_openai_chat_model(cfg)
+        payload = model._get_request_payload([{"role": "user", "content": "hi"}])
+        self.assertEqual(payload.get("temperature"), 0.7)
 
 
 class OpenAIStreamCacheHitTests(unittest.TestCase):

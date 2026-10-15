@@ -19,6 +19,7 @@ from core.model_profiles import ModelProfileStore, find_active_profile, normaliz
 from core.multimodal import (
     DEFAULT_MODEL_CAPABILITIES,
     build_user_message_content,
+    delete_session_attachments,
     normalize_request_payload,
     request_has_content,
     request_task_text,
@@ -369,7 +370,11 @@ class AgentRunWorker(QObject):
             logger.exception("Reinitialization failed:")
             self.initialization_failed.emit(str(exc))
 
-    async def _initialize_async(self, force_new_session: bool = False) -> None:
+    async def _initialize_async(
+        self,
+        force_new_session: bool = False,
+        preserve_session: SessionSnapshot | None = None,
+    ) -> None:
         self.base_config = _runtime_module().setup_runtime()
         self.config = self.base_config
         self.profile_store = ModelProfileStore(self._profile_config_path())
@@ -400,7 +405,15 @@ class AgentRunWorker(QObject):
                 raise RuntimeError(str(status["error"]))
         self._set_effective_model_capabilities(getattr(self.tool_registry, "model_capabilities", None))
         self._configure_cli_output_bridge()
-        selected_session = self._select_session_for_project(force_new_session=force_new_session)
+        # A runtime rebuild that the user did not ask for (toggling a tool in the
+        # Inspector) must not re-run session selection: a chat created moments ago is
+        # still unpersisted and therefore missing from the session index, so selecting
+        # again would silently drop the user back onto the previously active chat.
+        selected_session = (
+            preserve_session
+            if preserve_session is not None
+            else self._select_session_for_project(force_new_session=force_new_session)
+        )
         self.current_session = self._activate_session_with_workdir_or_fallback(
             selected_session,
             fallback_event_type="session_restore_fallback",
@@ -473,8 +486,10 @@ class AgentRunWorker(QObject):
                     if item["kind"] == "server" and item["enabled"]
                 ]
                 self._pending_mcp_server_name = enabled_servers[-1] if enabled_servers else ""
+                # Keep the chat the user is looking at: a just-created session is not
+                # in the session index yet, so re-selecting would restore an older chat.
                 self._run(self._shutdown_async())
-                self._run(self._initialize_async())
+                self._run(self._initialize_async(preserve_session=self.current_session))
             else:
                 self._run(self._coordinator.emit_session_payload(include_transcript=False))
         except Exception as exc:
@@ -960,6 +975,50 @@ class AgentRunWorker(QObject):
         self.event_emitted.emit(StreamEvent("chat_reset", {}))
         await self._emit_session_payload(include_transcript=True)
 
+    async def _purge_session_data(self, snapshot: SessionSnapshot) -> None:
+        """Delete checkpoint, attachment, and per-session run-log data before unlisting a chat."""
+        errors: list[tuple[str, Exception]] = []
+
+        checkpoint_runtime = self.checkpoint_runtime
+        if checkpoint_runtime is None:
+            checkpoint_runtime = getattr(self.tool_registry, "checkpoint_runtime", None)
+        checkpointer = getattr(checkpoint_runtime, "checkpointer", None)
+        if checkpointer is None:
+            checkpointer = getattr(self.agent_app, "checkpointer", None)
+
+        if checkpointer is not None:
+            thread_id = str(snapshot.thread_id or "").strip()
+            if not thread_id:
+                errors.append(("checkpoint", ValueError("Missing thread id.")))
+            else:
+                delete_async = getattr(checkpointer, "adelete_thread", None)
+                delete_sync = getattr(checkpointer, "delete_thread", None)
+                try:
+                    if callable(delete_async):
+                        await delete_async(thread_id)
+                    elif callable(delete_sync):
+                        await asyncio.to_thread(delete_sync, thread_id)
+                    else:
+                        raise RuntimeError("The configured checkpointer cannot delete thread data.")
+                except Exception as exc:
+                    errors.append(("checkpoint", exc))
+
+        try:
+            await asyncio.to_thread(delete_session_attachments, snapshot.session_id)
+        except Exception as exc:
+            errors.append(("attachments", exc))
+
+        if self.ui_run_logger is not None:
+            try:
+                log_path = self.ui_run_logger.file_path_for(snapshot.session_id)
+                await asyncio.to_thread(log_path.unlink, missing_ok=True)
+            except Exception as exc:
+                errors.append(("run log", exc))
+
+        if errors:
+            failed_stores = ", ".join(dict.fromkeys(name for name, _exc in errors))
+            raise RuntimeError(f"Could not fully remove chat data from: {failed_stores}.") from errors[0][1]
+
     @Slot(str)
     def delete_session(self, session_id: str) -> None:
         if not session_id or self._is_busy or self._awaiting_approval:
@@ -968,6 +1027,28 @@ class AgentRunWorker(QObject):
 
     async def _delete_session_async(self, session_id: str) -> None:
         if not self.store or not self.current_session:
+            return
+
+        snapshot = self.store.get_session(session_id)
+        if snapshot is None:
+            self.event_emitted.emit(
+                StreamEvent("summary_notice", {"message": "Chat not found in history.", "kind": "session_delete"})
+            )
+            return
+
+        try:
+            await self._purge_session_data(snapshot)
+        except Exception as exc:
+            logger.warning("Failed to remove stored data for chat %s: %s", session_id, exc, exc_info=True)
+            self.event_emitted.emit(
+                StreamEvent(
+                    "summary_notice",
+                    {
+                        "message": "Could not delete the chat because some stored data could not be removed.",
+                        "kind": "session_delete",
+                    },
+                )
+            )
             return
 
         deleted = self.store.delete_session(session_id)
@@ -1015,19 +1096,56 @@ class AgentRunWorker(QObject):
         if not self.store or not self.current_session:
             return
 
-        deleted_ids = self.store.delete_project(project_path)
-        if not deleted_ids:
+        project_sessions = self.store.list_sessions(project_path)
+        if not project_sessions:
             self.event_emitted.emit(
                 StreamEvent("summary_notice", {"message": "Project not found in chat history.", "kind": "project_delete"})
             )
             return
 
+        deleted_ids: list[str] = []
+        cleanup_failures = 0
+        for entry in project_sessions:
+            snapshot = self.store.get_session(entry.session_id)
+            if snapshot is None:
+                cleanup_failures += 1
+                continue
+            try:
+                await self._purge_session_data(snapshot)
+            except Exception as exc:
+                cleanup_failures += 1
+                logger.warning(
+                    "Failed to remove stored data for chat %s while deleting project %s: %s",
+                    snapshot.session_id,
+                    project_path,
+                    exc,
+                    exc_info=True,
+                )
+                continue
+            if self.store.delete_session(snapshot.session_id):
+                deleted_ids.append(snapshot.session_id)
+            else:
+                cleanup_failures += 1
+
+        if not deleted_ids:
+            if cleanup_failures:
+                message = "Could not delete project chats because some stored data could not be removed."
+            else:
+                message = "Project not found in chat history."
+            self.event_emitted.emit(
+                StreamEvent("summary_notice", {"message": message, "kind": "project_delete"})
+            )
+            return
+
         active_deleted = self.current_session.session_id in set(deleted_ids)
         chats = "chat" if len(deleted_ids) == 1 else "chats"
+        message = f"Deleted {len(deleted_ids)} {chats} of the project from history."
+        if cleanup_failures:
+            message += f" {cleanup_failures} could not be fully deleted; try again."
         self.event_emitted.emit(
             StreamEvent(
                 "summary_notice",
-                {"message": f"Deleted {len(deleted_ids)} {chats} of the project from history.", "kind": "project_delete"},
+                {"message": message, "kind": "project_delete"},
             )
         )
 

@@ -5,9 +5,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import ValidationError
 
+from core.message_utils import recent_tool_calls
 from core.tool_policy import ToolMetadata, default_tool_metadata
 from core.state import OpenToolIssue, RecoveryState
-from core.tool_args import canonicalize_tool_args, inspect_tool_args_payload
+from core.tool_args import (
+    canonicalize_tool_args,
+    inspect_tool_args_payload,
+    tool_loop_budget,
+)
 from core.tool_issues import build_tool_issue
 from core.policy_engine import classify_shell_command, shell_command_requires_approval, tool_requires_approval
 from core.self_correction_engine import normalize_tool_args, repair_fingerprint
@@ -294,33 +299,6 @@ class ToolPreflightMixin:
     ) -> Dict[str, Any] | None:
         return self.tool_executor.merge_issues(issues, current_turn_id=current_turn_id)
 
-    def _recent_tool_calls(self, messages: List[Any]) -> List[Dict[str, Any]]:
-        from langchain_core.messages import AIMessage
-
-        recent_calls: List[Dict[str, Any]] = []
-        history_window = self.config.effective_tool_loop_window
-        history_slice = messages[-history_window:] if history_window > 0 else messages
-        for message in reversed(history_slice):
-            if isinstance(message, AIMessage) and message.tool_calls:
-                recent_calls.extend(message.tool_calls)
-        return recent_calls
-
-    def _recent_identical_tool_call_count(
-        self,
-        messages: List[Any],
-        *,
-        tool_name: str,
-        tool_args: Dict[str, Any],
-    ) -> int:
-        normalized_name = str(tool_name or "").strip()
-        normalized_args = canonicalize_tool_args(tool_args)
-        return sum(
-            1
-            for tool_call in self._recent_tool_calls(messages)
-            if str(tool_call.get("name") or "").strip() == normalized_name
-            and canonicalize_tool_args(tool_call.get("args")) == normalized_args
-        )
-
     def _preflight_recovery_loop_issue(
         self,
         messages: List[Any],
@@ -350,15 +328,13 @@ class ToolPreflightMixin:
         if not isinstance(patched_args, dict):
             return None
 
-        loop_count = self._recent_identical_tool_call_count(
-            messages,
+        loop_count, loop_limit = tool_loop_budget(
+            recent_tool_calls(messages, self.config.effective_tool_loop_window),
             tool_name=tool_name,
             tool_args=patched_args,
-        )
-        loop_limit = (
-            self.config.effective_tool_loop_limit_readonly
-            if tool_name in self.READ_ONLY_LOOP_TOLERANT_TOOL_NAMES
-            else self.config.effective_tool_loop_limit_mutating
+            readonly_tool_names=self.READ_ONLY_LOOP_TOLERANT_TOOL_NAMES,
+            readonly_limit=self.config.effective_tool_loop_limit_readonly,
+            mutating_limit=self.config.effective_tool_loop_limit_mutating,
         )
         if loop_count < loop_limit:
             return None

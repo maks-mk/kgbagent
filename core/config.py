@@ -136,11 +136,19 @@ class AgentConfig(BaseSettings):
     )
     run_log_dir: Path = Field(default=BASE_DIR / "logs" / "runs", alias="RUN_LOG_DIR")
     log_file: Path = Field(default=BASE_DIR / "logs" / "agent.log", alias="LOG_FILE")
+    # Provider HTTP headers file. Relative values are resolved against the agent
+    # root by core/http_headers.py; an absolute path is used as is.
+    headers_file: str = Field(default="codex_headers.json", alias="HEADERS_FILE")
     # Skills directory. Kept relative by default; a relative value is resolved
     # against the agent installation root in tools/skills.py so bundled skills
     # are found regardless of the user's working directory. Use an absolute
     # SKILLS_DIR to point at skills outside the agent folder.
     skills_dir: Path = Field(default=Path("skills"), alias="SKILLS_DIR")
+
+    @field_validator("headers_file", mode="before")
+    @classmethod
+    def normalize_headers_file(cls, v: Any) -> str:
+        return str(v).strip() if isinstance(v, str) and v.strip() else "codex_headers.json"
 
     # Provider Settings
     provider: Literal["gemini", "openai", "anthropic"] = Field(default="gemini", alias="PROVIDER")

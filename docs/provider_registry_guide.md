@@ -6,7 +6,7 @@
 
 Registry применяется только к профилям с `provider: openai`. Gemini настраивается отдельно через Google SDK-поля `thinking_budget`, `thinking_level` и `include_thoughts`, а Anthropic — через свои thinking-параметры. Все три провайдера поддерживают автоматическое снижение уровня reasoning до минимального при автосуммаризации памяти.
 
-> Кастомные HTTP-заголовки для OpenAI-compatible запросов (эмуляция QwenCode и др.) настраиваются отдельно через `headers.json` — см. раздел «HTTP-заголовки» в [`CONFIGURATION.md`](./CONFIGURATION.md).
+> Кастомные HTTP-заголовки для OpenAI-compatible запросов (эмуляция QwenCode и др.) настраиваются отдельно через `codex_headers.json` — см. раздел «HTTP-заголовки» в [`CONFIGURATION.md`](./CONFIGURATION.md).
 
 ## Где находится файл
 

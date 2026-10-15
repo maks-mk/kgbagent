@@ -923,6 +923,55 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(self.window.active_session_id, "session-1234567890abcdef")
         self.assertEqual(self.window.status_line_label.text(), "Ready")
 
+    def test_status_bar_shows_current_llm_api_mode(self):
+        payload = self._snapshot_payload()
+        self.window._handle_initialized(payload)
+
+        self.assertEqual(payload["snapshot"]["llm_api_mode"], "chat")
+        self.assertIn("API: chat", self.window.runtime_meta_label.text())
+        self.assertIn("LLM API mode: chat", self.window.runtime_meta_label.toolTip())
+
+        payload["snapshot"]["llm_api_mode"] = "responses"
+        self.window._handle_initialized(payload)
+
+        self.assertIn("API: responses", self.window.runtime_meta_label.text())
+        self.assertIn("LLM API mode: responses", self.window.runtime_meta_label.toolTip())
+
+    def test_runtime_snapshot_reports_chat_mode_for_non_openai_providers(self):
+        session = type(
+            "Session",
+            (),
+            {
+                "session_id": "session-1234567890abcdef",
+                "thread_id": "thread-abcdef1234567890",
+                "approval_mode": "prompt",
+                "project_path": "D:/demo/workspace",
+                "title": "Current chat",
+            },
+        )()
+
+        def build(provider):
+            config = type(
+                "Config",
+                (),
+                {
+                    "provider": provider,
+                    "openai_model": "gpt-4o",
+                    "gemini_model": "gemini-1.5-flash",
+                    "anthropic_model": "claude-sonnet-4-5",
+                    "llm_api_mode": "responses",
+                    "checkpoint_backend": "sqlite",
+                    "enable_approvals": True,
+                    "debug": False,
+                },
+            )()
+            return build_runtime_snapshot(config, FakeToolRegistry(), session)
+
+        # The Responses API only exists for OpenAI; other adapters always chat.
+        self.assertEqual(build("openai")["llm_api_mode"], "responses")
+        self.assertEqual(build("gemini")["llm_api_mode"], "chat")
+        self.assertEqual(build("anthropic")["llm_api_mode"], "chat")
+
     def test_failed_mcp_server_switch_is_unchecked_in_tools_panel(self):
         payload = self._snapshot_payload()
         server = next(item for item in payload["tools"] if item["kind"] == "server")

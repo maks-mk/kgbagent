@@ -25,13 +25,27 @@ def _ensure_connection_is_alive_compat(conn: Any) -> Any:
     return conn
 
 
+async def _close_after_failed_init(close_callback: Callable[[], Any]) -> None:
+    try:
+        result = close_callback()
+        if inspect.isawaitable(result):
+            await result
+    except BaseException:
+        # Cleanup must not replace the initialization error, including cancellation.
+        logger.warning("Failed to close SQLite checkpointer after initialization failure.", exc_info=True)
+
+
 async def _create_async_sqlite_checkpointer(db_path: Path) -> tuple[Any, Callable[[], Any]]:
     import aiosqlite
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
     conn = await aiosqlite.connect(str(db_path))
-    checkpointer = AsyncSqliteSaver(_ensure_connection_is_alive_compat(conn))
-    return checkpointer, conn.close
+    try:
+        checkpointer = AsyncSqliteSaver(_ensure_connection_is_alive_compat(conn))
+        return checkpointer, conn.close
+    except BaseException:
+        await _close_after_failed_init(conn.close)
+        raise
 
 
 @dataclass
@@ -100,13 +114,17 @@ async def create_checkpoint_runtime(config: AgentConfig) -> CheckpointRuntime:
         db_path = Path(config.checkpoint_sqlite_path).resolve()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         checkpointer, close_callback = await _create_async_sqlite_checkpointer(db_path)
-        await _maybe_setup(checkpointer)
-        return CheckpointRuntime(
-            backend=backend,
-            resolved_backend="sqlite",
-            target=str(db_path),
-            checkpointer=checkpointer,
-            close_callback=close_callback,
-        )
+        try:
+            await _maybe_setup(checkpointer)
+            return CheckpointRuntime(
+                backend=backend,
+                resolved_backend="sqlite",
+                target=str(db_path),
+                checkpointer=checkpointer,
+                close_callback=close_callback,
+            )
+        except BaseException:
+            await _close_after_failed_init(close_callback)
+            raise
 
     raise ValueError(f"Unsupported checkpoint backend: {backend}")

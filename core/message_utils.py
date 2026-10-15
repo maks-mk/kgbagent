@@ -2,7 +2,7 @@ import json
 import re
 from typing import Any
 
-from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from core.constants import REFLECTION_PROMPT
 
@@ -14,6 +14,21 @@ _LEGACY_INTERRUPTED_TOOL_ERROR_RE = re.compile(
 )
 _TOOL_MESSAGE_ERROR_STATUS = "error"
 _TOOL_MESSAGE_SUCCESS_STATUS = "success"
+
+
+def recent_tool_calls(
+    messages: list[Any], history_window: int, *, exclude_latest: bool = False
+) -> list[dict[str, Any]]:
+    """Collect recent calls, optionally excluding the pending assistant message."""
+    end = max(0, len(messages) - int(exclude_latest))
+    start = max(0, end - history_window) if history_window > 0 else 0
+    history = messages[start:end]
+    return [
+        tool_call
+        for message in reversed(history)
+        if isinstance(message, AIMessage)
+        for tool_call in message.tool_calls
+    ]
 
 
 def iter_message_tool_calls(message: Any):

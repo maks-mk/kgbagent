@@ -10,10 +10,14 @@ from langgraph.config import get_stream_writer
 from langgraph.errors import GraphBubbleUp
 
 from core.errors import ErrorType, format_error
-from core.message_utils import compact_text
+from core.message_utils import compact_text, recent_tool_calls
 from core.node_errors import EmptyLLMResponseError
 from core.self_correction_engine import normalize_tool_args
-from core.tool_args import canonicalize_tool_args, inspect_tool_args_payload
+from core.tool_args import (
+    canonicalize_tool_args,
+    inspect_tool_args_payload,
+    tool_loop_budget,
+)
 from core.tool_results import parse_tool_execution_result
 from core.state import transcript_message_delta
 from core.turn_outcomes import (
@@ -210,8 +214,6 @@ class ToolBatchOwner(NodeOrchestratorOwner, Protocol):
         self,
         tool_calls: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]: ...
-
-    def _tool_call_is_parallel_safe(self, tool_call: dict[str, Any]) -> bool: ...
 
     async def _process_tool_call(
         self,
@@ -737,16 +739,16 @@ class ToolBatchCoordinator:
             messages,
         )
 
-        recent_calls = []
-        history_window = owner.config.effective_tool_loop_window
-        history_slice = messages[-(history_window + 1):-1] if history_window > 0 else messages[:-1]
-        for message in reversed(history_slice):
-            if isinstance(message, AIMessage) and message.tool_calls:
-                recent_calls.extend(message.tool_calls)
+        # The pending assistant call is not a completed attempt in the loop budget.
+        recent_calls = recent_tool_calls(
+            messages, owner.config.effective_tool_loop_window, exclude_latest=True
+        )
 
         tool_calls = list(last_msg.tool_calls)
 
         parallel_calls, sequential_calls = owner._partition_tool_calls(tool_calls)
+        # Reuse the partition by object identity, not potentially duplicate provider IDs.
+        parallel_call_ids = {id(tool_call) for tool_call in parallel_calls}
         max_parallel_calls = owner.config.max_parallel_tool_calls
         parallel_mode = (
             "sequential" if max_parallel_calls == 1
@@ -833,7 +835,7 @@ class ToolBatchCoordinator:
 
             pending_parallel: list[tuple[int, dict[str, Any]]] = []
             for index, tool_call in enumerate(tool_calls):
-                if owner._tool_call_is_parallel_safe(tool_call):
+                if id(tool_call) in parallel_call_ids:
                     pending_parallel.append((index, tool_call))
                     continue
 
@@ -1103,15 +1105,13 @@ class ToolBatchCoordinator:
             )
             return outcome.tool_message, outcome.had_error, outcome.issue
 
-        loop_count = sum(
-            1
-            for recent_call in recent_calls
-            if recent_call.get("name") == tool_name and canonicalize_tool_args(recent_call.get("args")) == tool_args
-        )
-        loop_limit = (
-            owner.config.effective_tool_loop_limit_readonly
-            if tool_name in owner.READ_ONLY_LOOP_TOLERANT_TOOL_NAMES
-            else owner.config.effective_tool_loop_limit_mutating
+        loop_count, loop_limit = tool_loop_budget(
+            recent_calls,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            readonly_tool_names=owner.READ_ONLY_LOOP_TOLERANT_TOOL_NAMES,
+            readonly_limit=owner.config.effective_tool_loop_limit_readonly,
+            mutating_limit=owner.config.effective_tool_loop_limit_mutating,
         )
         if loop_count >= loop_limit:
             content = format_error(

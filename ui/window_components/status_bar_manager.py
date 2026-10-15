@@ -81,9 +81,14 @@ class StatusBarManager:
             self.window.model_chip.setToolTip("No models configured")
 
         tools_count = snapshot.get("tools_count", 0)
+        # Show which provider transport is live right now (chat vs responses API) so a
+        # silent switch in Settings is visible without opening the Inspector.
+        api_mode = str(snapshot.get("llm_api_mode") or "chat").strip().lower() or "chat"
+        provider = str(snapshot.get("provider") or "").strip() or "unknown"
         self.window.runtime_meta_label.setText(
-            f"Workdir: {cwd_display}   |   Model: {model}   |   Tools: {tools_count}"
+            f"Workdir: {cwd_display}   |   Model: {model}   |   Tools: {tools_count}   |   API: {api_mode}"
         )
         self.window.runtime_meta_label.setToolTip(
-            f"Workdir: {cwd}\nModel: {model}\nTools: {tools_count}"
+            f"Workdir: {cwd}\nModel: {model}\nTools: {tools_count}\n"
+            f"Provider: {provider}\nLLM API mode: {api_mode}"
         )

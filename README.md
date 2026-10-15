@@ -49,7 +49,7 @@
 - Approval-паузы перед мутирующими и деструктивными действиями
 - Поддержка Agent Skills: возможность расширения функционала агента через внешние инструкции в папке `skills/` (индексируются автоматически, подгружаются по требованию)
 - Автосуммаризация контекста при длинных сессиях
-- Настраиваемые HTTP-заголовки для OpenAI-compatible и Anthropic LLM через `headers.json` (эмуляция совместимых клиентов и прокси)
+- Настраиваемые HTTP-заголовки для OpenAI-compatible и Anthropic LLM через `codex_headers.json` (эмуляция совместимых клиентов и прокси)
 - Несколько профилей моделей с переключением прямо в GUI
 - Durable checkpoints — сессии сохраняются между запусками
 - Опциональный image input, если модель его поддерживает
@@ -85,7 +85,7 @@ venv\Scripts\python.exe main.py
 .\build.bat
 ```
 
-Использует локальный `venv` и `PyInstaller` в режиме `--onefile --windowed`; результат — `dist/kgb.exe`. Python на целевой машине не требуется, но конфигурация и данные остаются внешними: рядом с `.exe` разместите `prompt.txt`, свою `.env`, а при использовании — `mcp.json`, `provider_registry.json` и `headers.json`. Каталог должен быть доступен для записи состояния и логов. Для локальных MCP-серверов отдельно нужны их runtime и пакеты (например, Node.js/npx или uv/uvx); они не включаются в `.exe`.
+Использует локальный `venv` и `PyInstaller` в режиме `--onefile --windowed`; результат — `dist/kgb.exe`. Python на целевой машине не требуется, но конфигурация и данные остаются внешними: рядом с `.exe` разместите `prompt.txt`, свою `.env`, а при использовании — `mcp.json`, `provider_registry.json` и `codex_headers.json`. Каталог должен быть доступен для записи состояния и логов. Для локальных MCP-серверов отдельно нужны их runtime и пакеты (например, Node.js/npx или uv/uvx); они не включаются в `.exe`.
 
 ---
 
@@ -186,7 +186,7 @@ venv\Scripts\python.exe -m pytest
 | Документ | Содержание |
 |---|---|
 | [Архитектура](./docs/ARCHITECTURE.md) | Runtime Flow, Prompt Layers, Sessions & Checkpoints |
-| [Конфигурация](./docs/CONFIGURATION.md) | Все переменные `.env` (провайдеры, runtime, фиче-флаги, лимиты, retry, персистентность, диагностика), HTTP-заголовки `headers.json` для provider-запросов |
+| [Конфигурация](./docs/CONFIGURATION.md) | Все переменные `.env` (провайдеры, runtime, фиче-флаги, лимиты, retry, персистентность, диагностика), HTTP-заголовки `codex_headers.json` для provider-запросов |
 | [GUI](./docs/GUI_GUIDE.md) | Transcript, CLI output widget, Composer, горячие клавиши |
 | [Безопасность](./docs/SECURITY.md) | Approvals, workspace boundary, `request_user_input` |
 | [Профили моделей](./docs/MODEL_PROFILES.md) | Управление профилями, автозагрузка моделей, ротация API-ключей |

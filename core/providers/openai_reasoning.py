@@ -811,7 +811,12 @@ def _build_reasoning_debug_chat_openai(base_cls: type) -> type:
 # Models that reject the ``temperature`` parameter: reasoning-only models with
 # fixed sampling. Sending it causes a 400 from the API (e.g. kimi-k3 returns
 # "field Temperature invalid, only 1 is allowed for this model").
-_FIXED_SAMPLING_OPENAI_MODELS = frozenset({"gpt-6-astra", "kimi-k3"})
+_FIXED_SAMPLING_OPENAI_MODELS = frozenset({"kimi-k3"})
+
+# Whole families with fixed sampling. Matched against the model name without the
+# provider prefix and without a trailing ``-NNN`` date suffix, accepting both the
+# dotted and dashed spelling (``gpt-6.1-sol``, ``gpt-6-1-sol``).
+_FIXED_SAMPLING_OPENAI_FAMILIES = ("gpt-6",)
 
 
 def _openai_uses_fixed_sampling(model_name: str | None) -> bool:
@@ -819,7 +824,14 @@ def _openai_uses_fixed_sampling(model_name: str | None) -> bool:
     normalized = normalized_model_name(model_name).rsplit("/", 1)[-1]
     if len(normalized) > 4 and normalized[-4] == "-" and normalized[-3:].isdigit():
         normalized = normalized[:-4]
-    return normalized in _FIXED_SAMPLING_OPENAI_MODELS
+    if normalized in _FIXED_SAMPLING_OPENAI_MODELS:
+        return True
+    return any(
+        normalized == family
+        or normalized.startswith(family + "-")
+        or normalized.startswith(family + ".")
+        for family in _FIXED_SAMPLING_OPENAI_FAMILIES
+    )
 
 
 def openai_reasoning_kwargs(
@@ -864,14 +876,22 @@ def create_openai_chat_model(config: AgentConfig, *, api_key_override: str | Non
         "max_retries": 0,
         "stream_usage": True,
     }
-    # gpt-6-astra and other fixed-sampling models reject ``temperature``.
+    # The whole gpt-6 family and other fixed-sampling models reject ``temperature``.
     if not _openai_uses_fixed_sampling(config.openai_model):
         openai_kwargs["temperature"] = config.temperature
 
     # Explicit API mode selection: "responses" forces /v1/responses, "chat" forces
     # /v1/chat/completions. When omitted, LangChain auto-detects based on payload.
     api_mode = str(getattr(config, "llm_api_mode", "chat") or "chat").strip().lower()
-    if api_mode == "responses":
+    if api_mode == "chat":
+        # Must be explicit: when left as None, LangChain auto-selects the Responses
+        # API for gpt-6* models that carry tools (``model_name.startswith("gpt-6")
+        # and payload.get("tools")``), which sends the agent turn to /v1/responses
+        # even though the user picked chat. Gateways without that endpoint then fail
+        # with 404 "Unknown endpoint: POST /v1/responses", while tool-less calls
+        # (e.g. the chat title) keep working on /v1/chat/completions.
+        openai_kwargs["use_responses_api"] = False
+    else:
         openai_kwargs["use_responses_api"] = True
         # Replay the full conversation on every turn (see ContextBuilder), so
         # server-side persistence is redundant. Keeping the default ``store=True``
