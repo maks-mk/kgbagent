@@ -450,5 +450,66 @@ class CliExecPersistenceTests(_WorkspaceTestCase):
         self.assertEqual(captured_timeouts[0], 30)
 
 
+class WorkspaceVenvResolutionTests(_WorkspaceTestCase):
+    """cli_exec must not leak the agent's own venv into the child shell env."""
+
+    def _make_venv(self, workspace: Path, name: str) -> Path:
+        scripts = "Scripts" if os.name == "nt" else "bin"
+        interpreter = "python.exe" if os.name == "nt" else "python"
+        scripts_dir = workspace / name / scripts
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        (scripts_dir / interpreter).write_text("", encoding="utf-8")
+        return workspace / name
+
+    def test_workspace_venv_is_detected(self):
+        workspace = self._workspace_tempdir()
+        venv = self._make_venv(workspace, "venv")
+        self.assertEqual(local_shell.detect_workspace_venv(str(workspace)), venv)
+
+    def test_dot_venv_is_detected_when_venv_missing(self):
+        workspace = self._workspace_tempdir()
+        venv = self._make_venv(workspace, ".venv")
+        self.assertEqual(local_shell.detect_workspace_venv(str(workspace)), venv)
+
+    def test_venv_without_interpreter_is_ignored(self):
+        workspace = self._workspace_tempdir()
+        (workspace / "venv").mkdir(parents=True, exist_ok=True)
+        self.assertIsNone(local_shell.detect_workspace_venv(str(workspace)))
+
+    def test_env_without_workspace_venv_keeps_agent_venv(self):
+        workspace = self._workspace_tempdir()
+        self._bind_workspace(workspace)
+        with mock.patch.dict(
+            os.environ, {"VIRTUAL_ENV": r"D:\agent\venv", "PATH": r"C:\Windows"}
+        ):
+            env = local_shell._prepare_shell_env("python --version")
+        self.assertEqual(env["VIRTUAL_ENV"], r"D:\agent\venv")
+        self.assertEqual(env["PATH"], r"C:\Windows")
+
+    def test_env_with_workspace_venv_prepends_it_to_path(self):
+        workspace = self._workspace_tempdir()
+        workspace_venv = self._make_venv(workspace, "venv")
+        self._bind_workspace(workspace)
+        expected_scripts = local_shell.venv_scripts_dir(workspace_venv)
+        with mock.patch.dict(
+            os.environ, {"VIRTUAL_ENV": r"D:\agent\venv", "PATH": r"C:\Windows"}
+        ):
+            env = local_shell._prepare_shell_env("python --version")
+        self.assertEqual(env["VIRTUAL_ENV"], str(workspace_venv))
+        self.assertTrue(env["PATH"].startswith(str(expected_scripts)))
+        self.assertIn(r"C:\Windows", env["PATH"])
+
+    def test_env_keeps_agent_venv_when_it_is_the_workspace_venv(self):
+        workspace = self._workspace_tempdir()
+        workspace_venv = self._make_venv(workspace, "venv")
+        self._bind_workspace(workspace)
+        with mock.patch.dict(
+            os.environ, {"VIRTUAL_ENV": str(workspace_venv), "PATH": r"C:\Windows"}
+        ):
+            env = local_shell._prepare_shell_env("python --version")
+        self.assertEqual(env["VIRTUAL_ENV"], str(workspace_venv))
+        self.assertEqual(env["PATH"], r"C:\Windows")
+
+
 if __name__ == "__main__":
     unittest.main()

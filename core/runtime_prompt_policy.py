@@ -161,16 +161,23 @@ class RuntimePromptPolicyBuilder:
     def _build_shell_syntax_line(self, environment: RuntimeExecutionEnvironment | None = None) -> str:
         environment = environment or self._detect_execution_environment()
         shell = environment.shell_family
+        python_resolution_line = (
+            "Python resolution: in user projects, call the workspace interpreter "
+            "(venv/.venv) by full path (e.g. `./venv/Scripts/python.exe -m pip ...`) and "
+            "verify installs with it (`... -c \"import <pkg>\"`); bare `python`/`pip` without "
+            "a workspace venv belong to the agent's own venv — do not use them for user projects."
+        )
         if shell == "powershell":
             return (
                 "Shell syntax: commands run directly in PowerShell. Write PowerShell syntax natively "
                 "(no bash heredocs, no `&&` chains in Windows PowerShell 5.1, no /dev/null). "
-                "Do not wrap commands in `powershell -Command ...`; the tool already runs PowerShell."
+                "Do not wrap commands in `powershell -Command ...`; the tool already runs PowerShell. "
+                + python_resolution_line
             )
         if shell in {"bash", "zsh", "sh", "fish"}:
-            return f"Shell syntax: commands run directly in {shell}; use POSIX syntax."
+            return f"Shell syntax: commands run directly in {shell}; use POSIX syntax. " + python_resolution_line
         if shell == "cmd":
-            return "Shell syntax: commands run directly in cmd.exe; use cmd syntax."
+            return "Shell syntax: commands run directly in cmd.exe; use cmd syntax. " + python_resolution_line
         return ""
 
     def _build_strict_mode_message(self) -> str:

@@ -378,7 +378,10 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
             agent_responses=[AIMessage(content=summary_text), AIMessage(content="Continuing the audit.")],
             tools=[],
             model_supports_tools=False,
-            summary_threshold=600,
+            # Raised from 600 when the runtime contract gained the Python
+            # interpreter-resolution guidance: the fixed prompt overhead grew,
+            # so the retained-history budget of this scenario needs more room.
+            summary_threshold=700,
             summary_keep_last=4,
             summary_reserved_tokens=0,
         )

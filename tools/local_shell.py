@@ -1,6 +1,7 @@
 import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
+from pathlib import Path
 import base64
 import locale
 import os
@@ -240,12 +241,68 @@ def _prepare_shell_env(command: str) -> dict[str, str]:
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env.setdefault("PYTHONUTF8", "1")
 
+    # The agent itself typically runs inside its own venv; a child shell that
+    # inherits VIRTUAL_ENV/PATH silently resolves bare `python`/`pip` to the
+    # agent's venv instead of the user's project venv. When the workspace has
+    # its own venv, prefer its interpreter by prepending its bin/Scripts dir to
+    # PATH and repointing VIRTUAL_ENV (and the Windows-style PYLAUNCHER envs).
+    workspace_venv = detect_workspace_venv(_WORKING_DIRECTORY)
+    agent_venv = os.environ.get("VIRTUAL_ENV") or ""
+    if workspace_venv and not _same_venv(workspace_venv, agent_venv):
+        bin_dir = venv_scripts_dir(workspace_venv)
+        if bin_dir:
+            path_value = env.get("PATH", "")
+            env["PATH"] = f"{bin_dir}{os.pathsep}{path_value}" if path_value else bin_dir
+        env["VIRTUAL_ENV"] = str(workspace_venv)
+        if os.name == "nt":
+            for launcher_env in ("PYLAUNCHER_ALLOW_INSTALL", "PYLAUNCHER_ALWAYS_INSTALL"):
+                env.pop(launcher_env, None)
+
     if _NPM_LIKE_COMMAND_RE.search(command or ""):
         # Prevent npm/npx confirmation prompts such as "Ok to proceed? (y)".
         env.setdefault("npm_config_yes", "true")
         env.setdefault("npm_config_audit", "false")
         env.setdefault("npm_config_fund", "false")
     return env
+
+
+def detect_workspace_venv(workspace: str) -> Path | None:
+    """Returns the project venv directory (``venv``/``.venv``) of ``workspace``.
+
+    Detection requires an actual interpreter inside the directory so stray
+    folders or venvs of a parent project are not picked up accidentally.
+    """
+    candidates = ("venv", ".venv")
+    try:
+        for name in candidates:
+            candidate = Path(workspace) / name
+            if venv_scripts_dir(candidate) is not None:
+                return candidate
+    except (OSError, ValueError):
+        # Unreadable workspace paths must not break shell execution.
+        return None
+    return None
+
+
+def venv_scripts_dir(venv_dir: Path) -> Path | None:
+    """Returns the bin/Scripts directory of a venv if it holds a Python interpreter."""
+    scripts = "Scripts" if os.name == "nt" else "bin"
+    interpreter = "python.exe" if os.name == "nt" else "python"
+    try:
+        candidate = venv_dir / scripts
+        if (candidate / interpreter).is_file():
+            return candidate
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _same_venv(left: Path, right: str) -> bool:
+    """Case-insensitive (Windows) comparison of two venv paths, best-effort."""
+    try:
+        return str(Path(left).resolve()).lower() == str(Path(right).resolve()).lower()
+    except (OSError, ValueError):
+        return False
 
 
 def _should_detect_interactive_prompts(command: str) -> bool:
@@ -499,7 +556,7 @@ async def cli_exec(
         ),
     ] = DEFAULT_TIMEOUT,
 ) -> str:
-    """Run one non-interactive shell command in the workspace; stateless, chain cd in the same call. Supports pipes, redirects, &&. Use run_background_process for servers, avoid interactive TUI. Windows runs PowerShell directly: use PowerShell syntax, not `powershell -Command ...`."""
+    """Run one non-interactive shell command in the workspace; stateless, chain cd in the same call. Supports pipes, redirects, &&. Use run_background_process for servers, avoid interactive TUI. Windows runs PowerShell directly. Bare python/pip resolve to venv/.venv if present; else use its full path."""
     if _SAFETY_POLICY and not _SAFETY_POLICY.allow_shell:
         return format_error(ErrorType.ACCESS_DENIED, "Shell execution is disabled by SafetyPolicy.")
 

@@ -80,7 +80,7 @@
     },
     {
       "id": "moonshot",
-      "hosts": ["api.moonshot.ai", "api.moonshot.cn", "api.artbloom.tech", "api.reformboss.com"],
+      "hosts": ["api.moonshot.ai", "api.moonshot.cn", "api.artbloom.tech", "api.reformboss.com", "justbash-api.annenkov.me"],
       "rules": [
         {
           "models": { "prefix": ["kimi-k3"] },
