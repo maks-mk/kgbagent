@@ -1,12 +1,31 @@
 {
   "context7": {
     "type": "remote",
-    "url": "https://mcp.context7.com/mcp",
+    "url": "https://context7.com",
     "transport": "http",
     "enabled": true,
     "policy": {
       "read_only": true
     }
+  },
+  "open-computer-use": {
+    "command": "npx",
+    "args": [
+      "-y",
+      "@qwen-code/open-computer-use",
+      "mcp"
+    ],
+    "transport": "stdio",
+    "enabled": false
+  },
+  "winapp-mcp": {
+    "command": "npx",
+    "args": [
+      "-y",
+      "winapp-mcp"
+    ],
+    "transport": "stdio",
+    "enabled": false
   },
   "ddg-search": {
     "command": "uvx",
@@ -31,7 +50,7 @@
   },
   "parallel-search": {
     "type": "remote",
-    "url": "https://search.parallel.ai/mcp",
+    "url": "https://parallel.ai",
     "transport": "http",
     "enabled": false,
     "policy": {

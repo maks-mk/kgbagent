@@ -181,7 +181,7 @@ class SummaryProgressTests(unittest.IsolatedAsyncioTestCase):
         relevant = [event.type for event in events if event.type in {"summary_progress", "summary_notice"}]
         self.assertEqual(relevant, ["summary_progress", "summary_progress", "summary_notice"])
 
-    async def test_failed_or_empty_summary_does_not_reset_progress(self):
+    async def test_failed_or_empty_summary_keeps_authoritative_progress(self):
         for response in (RuntimeError("summarizer failed"), AIMessage(content="")):
             with self.subTest(response=response):
                 nodes = self._make_nodes(summary_threshold=10000)
@@ -201,7 +201,11 @@ class SummaryProgressTests(unittest.IsolatedAsyncioTestCase):
                 with patch("core.nodes.summarize.get_stream_writer", return_value=events.append):
                     update = await nodes.summarize_node(state)
                 nodes.llm.ainvoke.assert_awaited_once()
-                self.assertEqual(len(events), 1)
+                # The skip path still publishes the authoritative decision, so the
+                # ring reflects the retained history instead of a stale will_summarize.
+                self.assertEqual(len(events), 2)
+                self.assertTrue(events[1]["will_summarize"])
+                self.assertEqual(events[1]["progress"], 0.0)
                 self.assertNotIn("messages", update)
                 self.assertNotIn("summary", update)
 

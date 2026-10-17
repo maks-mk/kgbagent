@@ -858,6 +858,10 @@ class ToolBatchCoordinator:
                 else:
                     last_error = parsed.message
             merged_issue = owner._merge_open_tool_issues(tool_issues, current_turn_id)
+            # Tool results are the main source of sudden context growth; publish the
+            # updated fill before the model streams its next comment so the ring
+            # visibly fills instead of jumping straight to the compaction state.
+            self._emit_summary_progress(state, messages + final_messages)
             owner._log_run_event(
                 state,
                 "tools_node_end",
@@ -911,6 +915,37 @@ class ToolBatchCoordinator:
                 parallel_mode=parallel_mode,
             )
             raise
+
+    def _emit_summary_progress(self, state, messages: list[BaseMessage]) -> None:
+        """Publish the context-fill state after tool results land.
+
+        Reuses the same policy/estimation path as the summarize node so the ring
+        cannot disagree with the node's actual compaction decision.
+        """
+        from core.summarize_policy import summary_progress_payload, token_model_name
+
+        config = getattr(self.owner, "config", None)
+        try:
+            threshold = int(getattr(config, "summary_threshold", 0) or 0)
+            if threshold <= 0:
+                return
+            overhead = int(state.get("summary_context_overhead_tokens") or 0)
+            progress = summary_progress_payload(
+                messages,
+                threshold=threshold,
+                keep_last=int(getattr(config, "summary_keep_last", 0) or 0),
+                summary=str(state.get("summary") or ""),
+                reserved_tokens=int(getattr(config, "summary_reserved_tokens", 0) or 0) + overhead,
+                allow_tool_round_boundaries=True,
+                model_name=token_model_name(config),
+            )
+            writer = get_stream_writer()
+            writer({"type": "summary_progress", **progress})
+        except RuntimeError:
+            # Direct node calls outside a running graph have no stream writer.
+            return
+        except Exception:
+            return
 
     @staticmethod
     def _emit_live_tool_batch_started(tool_calls: list[dict[str, Any]]) -> None:

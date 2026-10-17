@@ -380,8 +380,11 @@ def summary_progress_payload(
         "remaining_tokens": max(0, trigger - estimated),
         "reserved_tokens": reserved_tokens if messages else 0,
         "summary_tokens": summary_tokens,
+        # Scale the fill against the soft trigger the node actually waits for, so the
+        # ring reaches 100% exactly when compaction is no longer delayed by the guards,
+        # instead of pegging full across the threshold..trigger dead zone.
         "progress": 1.0 - summary_fill_ratio(
-            estimated, threshold=threshold, baseline_tokens=effective_reserved,
+            estimated, threshold=trigger, baseline_tokens=effective_reserved,
         ),
         "message_count": len(messages),
         "has_summary": has_summary,

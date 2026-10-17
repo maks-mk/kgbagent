@@ -238,8 +238,10 @@ class SummaryProgressRing(QWidget):
     def _build_tooltip(self) -> str:
         if self._threshold <= 0:
             return "Auto-summary is disabled."
-        if self._will_summarize or self._remaining <= 0.0:
+        if self._will_summarize:
             return "Auto-summary will run on the next step."
+        if self._remaining <= 0.0:
+            return "Context is full; auto-summary is waiting for more removable history."
         return f"{int(round(self._remaining * 100))}% left until auto-summary."
 
     def paintEvent(self, event) -> None:  # type: ignore[override]

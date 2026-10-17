@@ -237,6 +237,7 @@ class SummarizeMixin:
                 outcome="skipped",
                 reason="no_summarizable_messages",
             )
+            self._emit_summary_progress(state, messages, summary, overhead_tokens)
             return transcript_bootstrap
 
         history_text = self._format_history_for_summary(to_summarize)
@@ -271,6 +272,7 @@ class SummarizeMixin:
                     reason="empty_summary",
                     estimated_tokens=estimated_tokens,
                 )
+                self._emit_summary_progress(state, messages, summary, overhead_tokens)
                 return transcript_bootstrap
 
             delete_msgs = [RemoveMessage(id=m.id) for m in to_summarize if m.id]
@@ -332,6 +334,7 @@ class SummarizeMixin:
                 outcome="failed",
                 estimated_tokens=estimated_tokens,
             )
+            self._emit_summary_progress(state, messages, summary, overhead_tokens)
             return transcript_bootstrap
 
     def _format_history_for_summary(self, messages: List) -> str:

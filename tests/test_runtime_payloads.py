@@ -58,10 +58,11 @@ class RuntimePayloadTests(unittest.IsolatedAsyncioTestCase):
             payload["remaining_tokens"],
             max(0, payload["trigger_tokens"] - payload["estimated_tokens"]),
         )
-        # Progress excludes the fixed reserve: only history fills the compactable span.
+        # Progress excludes the fixed reserve and scales to the soft trigger the
+        # summarize node actually waits for, so only history fills the span.
         self.assertAlmostEqual(
             payload["progress"],
-            1.0 - (estimate_tokens(messages) / (payload["threshold"] - 25)),
+            1.0 - (estimate_tokens(messages) / (payload["trigger_tokens"] - 25)),
         )
 
     def test_build_summary_progress_payload_reports_summary_and_provider_input_separately(self):
