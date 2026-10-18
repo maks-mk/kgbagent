@@ -44,15 +44,20 @@ class OverviewPanelWidget(QWidget):
             "Session",
             "Thread",
             "Approvals",
-            "MCP",
+            "MCP On",
+            "MCP Off",
+            "MCP Error",
             "Status",
             "Config",
         ):
             label = QLabel("—")
+            label.setObjectName("InspectorValueText")
             label.setWordWrap(True)
             label.setTextInteractionFlags(Qt.TextSelectableByMouse)
             self._labels[key] = label
-            form.addRow(key, label)
+            field_label = QLabel(key)
+            field_label.setObjectName("InspectorFieldText")
+            form.addRow(field_label, label)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -60,6 +65,15 @@ class OverviewPanelWidget(QWidget):
         layout.addStretch(1)
 
     def set_snapshot(self, snapshot: dict[str, Any]) -> None:
+        mcp_groups = snapshot.get("mcp_groups") or {}
+        if not mcp_groups and snapshot.get("mcp_text"):
+            # Older payloads carry a flat MCP list; keep it under "MCP On".
+            mcp_groups = {"on": list(snapshot.get("mcp_servers") or []), "off": [], "error": []}
+        mcp_value = {
+            "on": ", ".join(mcp_groups.get("on") or []) or "none",
+            "off": ", ".join(mcp_groups.get("off") or []) or "—",
+            "error": ", ".join(mcp_groups.get("error") or []) or "—",
+        }
         mapping = {
             "Provider": snapshot.get("provider", "—"),
             "Model": snapshot.get("model", "—"),
@@ -68,7 +82,9 @@ class OverviewPanelWidget(QWidget):
             "Session": snapshot.get("session_short", "—"),
             "Thread": snapshot.get("thread_short", "—"),
             "Approvals": snapshot.get("approvals", "—"),
-            "MCP": snapshot.get("mcp_text", "—"),
+            "MCP On": mcp_value.get("on", "none"),
+            "MCP Off": mcp_value.get("off", "—"),
+            "MCP Error": mcp_value.get("error", "—"),
             "Status": snapshot.get("status", "—"),
             "Config": snapshot.get("config_mode", "—"),
         }

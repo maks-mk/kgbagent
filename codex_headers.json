@@ -1,0 +1,64 @@
+{
+  "_note": "Filled example based on the public OpenAI Codex CLI source and public request examples. This is not a literal capture. IDs, cookies, routing tokens, metadata and the JWT-shaped Authorization value are fictional examples and will not authenticate. Values that are fixed by the source/protocol are preserved; conditional headers appear only for the relevant auth mode, endpoint, transport, or feature. Example CLI version: 0.160.1.",
+  "default_headers": {
+    "User-Agent": "codex_cli_rs/0.160.1 (Windows 10.0.19045; x86_64) unknown",
+    "originator": "codex_cli_rs",
+    "X-OpenAI-Internal-Codex-Residency": "us",
+    "OpenAI-Beta": "responses=experimental"
+  },
+  "chatgpt_backend_auth_headers": {
+    "Authorization": "Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJleGFtcGxlLXVzZXIiLCJleHAiOjE5MDAwMDAwMDB9.c2lnbmF0dXJlLWV4YW1wbGU",
+    "ChatGPT-Account-ID": "3b241101-e2bb-4255-8caf-4136c566a962"
+  },
+  "responses_http_headers": {
+    "Content-Type": "application/json",
+    "Accept": "text/event-stream",
+    "session-id": "6f7432cf-5c68-49a8-9d31-1f765902f85b",
+    "thread-id": "01a4b7ec-4931-7d20-b913-c617c9d81e4e",
+    "x-client-request-id": "94f6760d-7677-9579-b959-c15a640826fd",
+    "x-codex-window-id": "6c01d68a-7c47-42e8-95a8-0d55e7f2a391",
+    "x-codex-turn-metadata": "{\"originator\":\"codex_cli_rs\",\"cli_version\":\"0.160.1\",\"source\":\"cli\"}",
+    "x-codex-parent-thread-id": "de305d54-75b4-431b-adb2-eb6b9e546014",
+    "x-codex-turn-state": "turn_state_example_7c4d9f2a8b6e",
+    "x-codex-routing-hint": "model=gpt-6-sol;tier=priority",
+    "x-openai-subagent": "review",
+    "x-openai-memgen-request": "true",
+    "x-responsesapi-include-timing-metrics": "true",
+    "OpenAI-Beta": "responses=experimental"
+  },
+  "responses_websocket_handshake_headers": {
+    "OpenAI-Beta": "responses_websockets=2026-02-06",
+    "session-id": "6f7432cf-5c68-49a8-9d31-1f765902f85b",
+    "thread-id": "01a4b7ec-4931-7d20-b913-c617c9d81e4e",
+    "x-client-request-id": "94f6760d-7677-9579-b959-c15a640826fd",
+    "x-codex-window-id": "6c01d68a-7c47-42e8-95a8-0d55e7f2a391",
+    "x-codex-turn-metadata": "{\"originator\":\"codex_cli_rs\",\"cli_version\":\"0.160.1\",\"source\":\"cli\"}",
+    "Authorization": "Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJleGFtcGxlLXVzZXIiLCJleHAiOjE5MDAwMDAwMDB9.c2lnbmF0dXJlLWV4YW1wbGU",
+    "ChatGPT-Account-ID": "3b241101-e2bb-4255-8caf-4136c566a962",
+    "Connection": "Upgrade",
+    "Upgrade": "websocket",
+    "Sec-WebSocket-Version": "13",
+    "Sec-WebSocket-Key": "XUxvWnuMnQ4fIDFCU2R1hg=="
+  },
+  "other_chatgpt_backend_requests": {
+    "OAI-Product-Sku": "codex",
+    "Content-Type": "application/json"
+  },
+  "not_fixed_or_not_always_present": {
+    "Cookie": "__Secure-next-auth.session-token=example.invalid; __Host-next-auth.csrf-token=example-csrf-token",
+    "Host": "chatgpt.com",
+    "Content-Length": "42817",
+    "Accept-Encoding": "gzip, br, zstd",
+    "custom_provider_headers": "X-Custom-Provider-Header: example-value"
+  },
+  "source_declared_conditional_headers": {
+    "x-codex-routing-hint": "model=gpt-6-sol;tier=priority",
+    "x-responsesapi-include-timing-metrics": "true",
+    "x-openai-internal-codex-responses-lite": "true"
+  },
+  "responses_request_body_metadata_not_http_headers": {
+    "client_metadata.x-codex-installation-id": "c9b8e73a-34e5-4c61-bf8a-8e30b6d19a72",
+    "client_metadata.x-codex-window-id": "6c01d68a-7c47-42e8-95a8-0d55e7f2a391",
+    "client_metadata.x-codex-turn-metadata": "{\"originator\":\"codex_cli_rs\",\"cli_version\":\"0.160.1\",\"source\":\"cli\"}"
+  }
+}

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListView,
     QMenu,
+    QPushButton,
     QStyle,
     QStyleOptionViewItem,
     QStyledItemDelegate,
@@ -438,6 +439,7 @@ class SessionSidebarWidget(QWidget):
     session_activated = Signal(str)
     session_delete_requested = Signal(str)
     project_delete_requested = Signal(str)
+    compact_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -494,6 +496,13 @@ class SessionSidebarWidget(QWidget):
         empty_layout.addStretch(1)
         self.empty_state_card.setVisible(False)
         root.addWidget(self.empty_state_card, 1)
+
+        self.compact_button = QPushButton("Compact database")
+        self.compact_button.setObjectName("SidebarCompactButton")
+        self.compact_button.setCursor(Qt.PointingHandCursor)
+        self.compact_button.setToolTip("Reclaim disk space used by the checkpoint database")
+        self.compact_button.clicked.connect(self.compact_requested)
+        root.addWidget(self.compact_button, 0)
 
     def set_sessions(self, sessions: list[dict[str, str]], active_session_id: str) -> None:
         self.model.set_sessions(sessions, active_session_id)

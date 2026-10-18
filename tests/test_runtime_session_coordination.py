@@ -69,6 +69,7 @@ class RuntimeSessionCoordinationTests(unittest.IsolatedAsyncioTestCase):
             tool_metadata={},
             mcp_config={},
             mcp_server_status=[],
+            disabled_mcp_servers=set(),
             disabled_local_tools=set(),
             checkpoint_info={"resolved_backend": "sqlite"},
             active_tools=mock.Mock(return_value=[]),

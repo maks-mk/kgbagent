@@ -27,7 +27,7 @@ from ui.streaming import StreamEvent, StreamProcessor
 from ui.theme import AMBER_WARNING, BORDER, ERROR_RED, SUCCESS_GREEN, SURFACE_BG, SURFACE_CARD, TEXT_MUTED, build_stylesheet
 from ui.widgets.composer import _ComposerMentionItemWidget
 from ui.widgets.foundation import AutoTextBrowser, CodeBlockWidget, CopySafePlainTextEdit, DiffBlockWidget, TRANSCRIPT_MAX_WIDTH
-from ui.widgets.messages import AssistantMessageWidget, NoticeWidget
+from ui.widgets.messages import AssistantMessageWidget, NoticeWidget, SpinnerGlyph
 from ui.widgets.sidebar import SessionListModel
 from ui.widgets.transcript import ConversationTurnWidget
 from ui.widgets.tool_group import ToolGroupWidget
@@ -757,7 +757,7 @@ class GuiUxTests(unittest.TestCase):
             "",
         )
 
-    def test_status_spinner_uses_qtawesome_spin_in_chat_while_busy(self):
+    def test_status_spinner_paints_lightweight_arc_in_chat_while_busy(self):
         self.window._handle_initialized(self._snapshot_payload())
         self.window._handle_event(StreamEvent("run_started", {"text": "Проверь"}))
         self._process_events()
@@ -767,16 +767,16 @@ class GuiUxTests(unittest.TestCase):
         status_widget.show()
         self._process_events()
         self.assertFalse(hasattr(self.window, "status_icon"))
-        self.assertIsInstance(status_widget.spinner, QToolButton)
-        self.assertIsInstance(status_widget._spinner_animation, qta.Spin)
-        self.assertIs(status_widget._spinner_animation.parent_widget, status_widget.spinner)
+        # Regression guard: qtawesome's animated icon re-rasterised the glyph on
+        # every frame (~200 KB/frame, ~20 MB/s) and grew the app into gigabytes.
+        self.assertIsInstance(status_widget.spinner, SpinnerGlyph)
+        self.assertFalse(hasattr(status_widget, "_spinner_animation"))
+        self.assertTrue(status_widget.spinner.is_spinning())
+        self.assertTrue(status_widget.spinner._timer.isActive())
 
-        animation = status_widget._spinner_animation
-        with mock.patch.object(animation, "stop", wraps=animation.stop) as stop_mock:
-            status_widget.set_state("Ready", phase="success")
-        stop_mock.assert_called_once_with()
-
-        self.assertIs(status_widget._spinner_animation, animation)
+        status_widget.set_state("Ready", phase="success")
+        self.assertFalse(status_widget.spinner.is_spinning())
+        self.assertFalse(status_widget.spinner._timer.isActive())
 
     def test_user_cancel_does_not_render_canceled_notice_in_transcript(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -902,7 +902,9 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertEqual(self.window.overview_panel._labels["Provider"].text(), "OpenAI")
         self.assertEqual(self.window.overview_panel._labels["Model"].text(), "gpt-4o")
-        self.assertEqual(self.window.overview_panel._labels["MCP"].text(), "context7")
+        self.assertEqual(self.window.overview_panel._labels["MCP On"].text(), "context7")
+        self.assertEqual(self.window.overview_panel._labels["MCP Off"].text(), "—")
+        self.assertEqual(self.window.overview_panel._labels["MCP Error"].text(), "—")
         tool_cards = self.window.tools_panel.findChildren(QFrame, "ToolCard")
         self.assertEqual(len(tool_cards), 3)
         switches = self.window.tools_panel.findChildren(QCheckBox, "ToolAvailabilitySwitch")
@@ -971,6 +973,51 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(build("openai")["llm_api_mode"], "responses")
         self.assertEqual(build("gemini")["llm_api_mode"], "chat")
         self.assertEqual(build("anthropic")["llm_api_mode"], "chat")
+
+    def test_runtime_snapshot_groups_mcp_servers_by_state(self):
+        session = type(
+            "Session",
+            (),
+            {
+                "session_id": "session-1234567890abcdef",
+                "thread_id": "thread-abcdef1234567890",
+                "approval_mode": "prompt",
+                "project_path": "D:/demo/workspace",
+                "title": "Current chat",
+            },
+        )()
+        registry = FakeToolRegistry()
+        registry.mcp_config = {
+            "context7": {"enabled": True},
+            "off-server": {"enabled": False},
+            "broken-server": {"enabled": True},
+        }
+        registry.disabled_mcp_servers = {"off-server"}
+        registry.mcp_server_status = [
+            {"server": "context7", "loaded_tools": ["resolve-library-id"], "error": ""},
+            {"server": "off-server", "loaded_tools": [], "error": "", "enabled": False},
+            {"server": "broken-server", "loaded_tools": [], "error": "connect failed", "enabled": True},
+        ]
+        config = type(
+            "Config",
+            (),
+            {
+                "provider": "openai",
+                "openai_model": "gpt-4o",
+                "gemini_model": "gemini-1.5-flash",
+                "anthropic_model": "claude-sonnet-4-5",
+                "llm_api_mode": "chat",
+                "checkpoint_backend": "sqlite",
+                "enable_approvals": False,
+                "debug": False,
+            },
+        )()
+
+        groups = build_runtime_snapshot(config, registry, session)["mcp_groups"]
+
+        self.assertEqual(groups["on"], ["context7"])
+        self.assertEqual(groups["off"], ["off-server"])
+        self.assertEqual(groups["error"], ["broken-server"])
 
     def test_failed_mcp_server_switch_is_unchecked_in_tools_panel(self):
         payload = self._snapshot_payload()

@@ -6,8 +6,59 @@ from unittest import mock
 
 import aiosqlite
 
-from core.checkpointing import create_checkpoint_runtime
+from core.checkpointing import compact_checkpoint_database, create_checkpoint_runtime
 from core.config import AgentConfig
+
+
+class CompactCheckpointDatabaseTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        tempdir = tempfile.TemporaryDirectory(
+            prefix=".checkpoint-compact-tests-", dir=Path(__file__).resolve().parents[1]
+        )
+        self.addCleanup(tempdir.cleanup)
+        self.db_path = Path(tempdir.name) / "checkpoints.sqlite"
+
+    async def _create_bloated_db(self) -> None:
+        def _setup() -> None:
+            import sqlite3
+
+            conn = sqlite3.connect(str(self.db_path))
+            try:
+                conn.execute("CREATE TABLE data (id INTEGER PRIMARY KEY, blob TEXT)")
+                payload = "x" * 4096
+                conn.executemany("INSERT INTO data (blob) VALUES (?)", [(payload,)] * 400)
+                conn.commit()
+                conn.execute("DELETE FROM data")
+                conn.commit()
+            finally:
+                conn.close()
+
+        await asyncio.to_thread(_setup)
+
+    async def test_compact_missing_file_returns_none(self):
+        result = await compact_checkpoint_database(self.db_path)
+        self.assertIsNone(result)
+
+    async def test_compact_returns_sizes_and_shrinks_database(self):
+        await self._create_bloated_db()
+        size_before_expected = self.db_path.stat().st_size
+        result = await compact_checkpoint_database(self.db_path)
+        self.assertIsNotNone(result)
+        size_before, size_after = result
+        self.assertGreater(size_before, 0)
+        self.assertLess(size_after, size_before)
+        # Database stays valid after VACUUM.
+        conn = await aiosqlite.connect(str(self.db_path))
+        try:
+            async with conn.execute("PRAGMA integrity_check") as cursor:
+                row = await cursor.fetchone()
+            self.assertEqual(row[0], "ok")
+            async with conn.execute("SELECT COUNT(*) FROM data") as cursor:
+                count = await cursor.fetchone()
+            self.assertEqual(count[0], 0)
+        finally:
+            await conn.close()
+        self.assertEqual(size_after, self.db_path.stat().st_size)
 
 
 class CheckpointRuntimeCleanupTests(unittest.IsolatedAsyncioTestCase):

@@ -73,6 +73,46 @@ class CheckpointRuntime:
             await result
 
 
+def format_bytes(size: int) -> str:
+    """Human-readable byte size for checkpoint database messages."""
+    value = float(max(0, size))
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GB"
+
+
+async def compact_checkpoint_database(db_path: Path | str) -> tuple[int, int] | None:
+    """Run VACUUM on the checkpoint database from a dedicated connection.
+
+    VACUUM is a write operation that fails when another connection holds a
+    conflicting lock, so it runs with a busy timeout instead of blocking the
+    caller indefinitely. Returns ``(size_before, size_after)`` in bytes, or
+    ``None`` when the database file does not exist.
+    """
+    import aiosqlite
+
+    path = Path(db_path)
+    if not path.exists():
+        return None
+
+    size_before = path.stat().st_size
+    conn = await aiosqlite.connect(str(path))
+    try:
+        cursor = await conn.execute("PRAGMA busy_timeout = 5000")
+        await cursor.close()
+        cursor = await conn.execute("VACUUM")
+        await cursor.close()
+    finally:
+        await conn.close()
+
+    size_after = path.stat().st_size
+    return size_before, size_after
+
+
 async def _maybe_setup(checkpointer: Any) -> None:
     setup = getattr(checkpointer, "setup", None)
     if not callable(setup):

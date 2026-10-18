@@ -1,7 +1,7 @@
 {
   "context7": {
     "type": "remote",
-    "url": "https://context7.com",
+    "url": "https://mcp.context7.com/mcp",
     "transport": "http",
     "enabled": true,
     "policy": {
@@ -37,6 +37,17 @@
     "policy": {
       "read_only": true
     }
+  },
+  "windows-mcp": {
+    "command": "uvx",
+    "args": [
+      "windows-mcp==0.8.7",
+      "serve",
+      "--tools",
+      "Click,Type,Scroll,Move,Shortcut,Wait,WaitFor,DisplayInventory,Screenshot,Snapshot,App,MultiSelect,MultiEdit,Clipboard"
+    ],
+    "transport": "stdio",
+    "enabled": false
   },
   "ssh-mcp": {
     "command": "./ssh-mcp/ssh-mcp.exe",

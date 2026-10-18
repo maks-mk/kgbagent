@@ -14,6 +14,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from core.config import AgentConfig
+from core.checkpointing import compact_checkpoint_database, format_bytes
 from core.logging_config import setup_logging
 from core.model_profiles import ModelProfileStore, find_active_profile, normalize_profiles_payload
 from core.multimodal import (
@@ -1172,6 +1173,68 @@ class AgentRunWorker(QObject):
         self.event_emitted.emit(StreamEvent("chat_reset", {}))
         await self._emit_session_payload(include_transcript=True)
 
+    @Slot()
+    def compact_checkpoints(self) -> None:
+        if self._is_busy or self._awaiting_approval:
+            return
+        self._set_busy(True)
+        try:
+            self._run(self._compact_checkpoints_async())
+        except Exception as exc:
+            self.event_emitted.emit(
+                StreamEvent(
+                    "summary_notice",
+                    {
+                        "message": f"Failed to compact the checkpoint database: {exc}",
+                        "kind": "checkpoint_compact",
+                    },
+                )
+            )
+        finally:
+            self._set_busy(False)
+
+    async def _compact_checkpoints_async(self) -> None:
+        self.event_emitted.emit(
+            StreamEvent("status_changed", {"label": "Compacting checkpoint database…", "phase": "working"})
+        )
+        checkpoint_runtime = self.checkpoint_runtime
+        if checkpoint_runtime is None:
+            checkpoint_runtime = getattr(self.tool_registry, "checkpoint_runtime", None)
+        if checkpoint_runtime is None or checkpoint_runtime.resolved_backend != "sqlite":
+            self.event_emitted.emit(
+                StreamEvent(
+                    "summary_notice",
+                    {
+                        "message": "Checkpoint database is unavailable in the current backend.",
+                        "kind": "checkpoint_compact",
+                    },
+                )
+            )
+            return
+        sizes = await compact_checkpoint_database(checkpoint_runtime.target)
+        if sizes is None:
+            self.event_emitted.emit(
+                StreamEvent(
+                    "summary_notice",
+                    {"message": "Checkpoint database file does not exist yet.", "kind": "checkpoint_compact"},
+                )
+            )
+            return
+        size_before, size_after = sizes
+        freed = max(0, size_before - size_after)
+        self.event_emitted.emit(
+            StreamEvent(
+                "summary_notice",
+                {
+                    "message": (
+                        f"Checkpoint database compacted: freed {format_bytes(freed)} "
+                        f"({format_bytes(size_before)} → {format_bytes(size_after)})."
+                    ),
+                    "kind": "checkpoint_compact",
+                },
+            )
+        )
+
     @Slot(str)
     def set_active_profile(self, profile_id: str) -> None:
         if self._is_busy or self._awaiting_approval:
@@ -1337,6 +1400,7 @@ class AgentRuntimeController(QObject):
     _switch_session_requested = Signal(str)
     _delete_session_requested = Signal(str)
     _delete_project_requested = Signal(str)
+    _compact_checkpoints_requested = Signal()
     _set_active_profile_requested = Signal(str)
     _save_profiles_requested = Signal(object)
     _apply_tool_availability_changes_requested = Signal(object)
@@ -1373,6 +1437,7 @@ class AgentRuntimeController(QObject):
         self._switch_session_requested.connect(self._worker.switch_session)
         self._delete_session_requested.connect(self._worker.delete_session)
         self._delete_project_requested.connect(self._worker.delete_project)
+        self._compact_checkpoints_requested.connect(self._worker.compact_checkpoints)
         self._set_active_profile_requested.connect(self._worker.set_active_profile)
         self._save_profiles_requested.connect(self._worker.save_profiles)
         self._apply_tool_availability_changes_requested.connect(self._worker.apply_tool_availability_changes)
@@ -1407,6 +1472,7 @@ class AgentRuntimeController(QObject):
             (self._switch_session_requested, worker.switch_session),
             (self._delete_session_requested, worker.delete_session),
             (self._delete_project_requested, worker.delete_project),
+            (self._compact_checkpoints_requested, worker.compact_checkpoints),
             (self._set_active_profile_requested, worker.set_active_profile),
             (self._save_profiles_requested, worker.save_profiles),
             (self._apply_tool_availability_changes_requested, worker.apply_tool_availability_changes),
@@ -1532,6 +1598,9 @@ class AgentRuntimeController(QObject):
 
     def delete_project(self, project_path: str) -> None:
         self._delete_project_requested.emit(project_path)
+
+    def compact_checkpoints(self) -> None:
+        self._compact_checkpoints_requested.emit()
 
     def set_active_profile(self, profile_id: str) -> None:
         self._set_active_profile_requested.emit(profile_id)

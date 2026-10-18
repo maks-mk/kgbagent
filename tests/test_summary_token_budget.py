@@ -1,9 +1,10 @@
 """Local summary budgeting regressions; no provider calls."""
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 import tiktoken
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -59,6 +60,88 @@ class TokenEstimateTests(unittest.TestCase):
     def test_memory_truncation_uses_selected_model(self):
         result = policy.truncate_summary_to_token_budget("- важный факт " * 300, 100, model_name="gpt-4o")
         self.assertLessEqual(policy.estimate_summary_tokens(result, model_name="gpt-4o"), 100)
+
+
+class SummaryDecisionTests(unittest.TestCase):
+    def test_progress_uses_the_history_specific_trigger(self):
+        threshold = 10000
+        many_turns = [message for _ in range(4) for message in
+                      (HumanMessage(content="question"), AIMessage(content="answer"))]
+        many_turns.append(HumanMessage(content="continue"))
+        few_messages = [HumanMessage(content="question"), AIMessage(content="answer"),
+                        HumanMessage(content="continue")]
+        one_old_turn = [HumanMessage(content="question")] + [AIMessage(content="answer") for _ in range(5)]
+        one_old_turn.append(HumanMessage(content="continue"))
+        for summary in ("", "previous memory"):
+            soft_trigger = policy.summary_trigger_tokens(threshold, has_summary=bool(summary))
+            for messages, keep_last, expected_trigger in (
+                (many_turns, 1, threshold),
+                (few_messages, 1, soft_trigger),
+                (one_old_turn, 1, soft_trigger),
+                (many_turns, 8, soft_trigger),
+            ):
+                for estimated in (threshold - 1, threshold, threshold + 1, soft_trigger):
+                    with self.subTest(summary=summary, count=len(messages), keep_last=keep_last,
+                                      estimated=estimated, trigger=expected_trigger):
+                        with patch.object(policy, "estimate_context_tokens", return_value=estimated):
+                            payload = policy.summary_progress_payload(
+                                messages, threshold=threshold, keep_last=keep_last,
+                                summary=summary, reserved_tokens=2000,
+                            )
+                            decision = policy.should_summarize(
+                                messages, threshold=threshold, keep_last=keep_last,
+                                has_summary=bool(summary),
+                                reserved_tokens=2000 + payload["summary_tokens"],
+                            )
+                        self.assertEqual(payload["trigger_tokens"], expected_trigger)
+                        self.assertEqual(payload["remaining_tokens"], max(0, expected_trigger - estimated))
+                        self.assertEqual(payload["will_summarize"], decision)
+                        self.assertEqual(decision, estimated > threshold and estimated >= expected_trigger)
+                        baseline = 2000 + payload["summary_tokens"]
+                        self.assertAlmostEqual(payload["progress"],
+                                               max(0.0, 1 - (estimated - baseline) / (expected_trigger - baseline)))
+
+    def test_full_ring_without_removable_history_does_not_allow_compression(self):
+        messages = [HumanMessage(content="active task")]
+        with patch.object(policy, "estimate_context_tokens", return_value=20000):
+            payload = policy.summary_progress_payload(messages, threshold=10000, keep_last=1)
+        self.assertEqual(payload["progress"], 0.0)
+        self.assertFalse(payload["will_summarize"])
+
+    def test_mid_run_trigger_excludes_the_retained_user_anchor(self):
+        rounds = []
+        for index in range(3):
+            rounds.extend([
+                AIMessage(content="", tool_calls=[{"id": f"call-{index}", "name": "read_file", "args": {}}]),
+                ToolMessage(content="result", tool_call_id=f"call-{index}"),
+            ])
+        threshold = 10000
+        for summary in ("", "previous memory"):
+            soft_trigger = policy.summary_trigger_tokens(threshold, has_summary=bool(summary))
+            for old_turns, tool_rounds, expected_trigger, reclaimable in (
+                (0, rounds[:2], soft_trigger, False),
+                (1, rounds, soft_trigger, True),
+                (2, rounds, threshold, True),
+            ):
+                messages = [message for _ in range(old_turns) for message in
+                            (HumanMessage(content="old question"), AIMessage(content="old answer"))]
+                messages += [HumanMessage(content="active task"), *tool_rounds]
+                for estimated in (threshold + 1, soft_trigger):
+                    with self.subTest(summary=summary, old_turns=old_turns, estimated=estimated):
+                        with patch.object(policy, "estimate_context_tokens", return_value=estimated):
+                            payload = policy.summary_progress_payload(
+                                messages, threshold=threshold, keep_last=1, summary=summary,
+                                allow_tool_round_boundaries=True,
+                            )
+                        self.assertEqual(payload["trigger_tokens"], expected_trigger)
+                        self.assertEqual(payload["will_summarize"], reclaimable and estimated >= expected_trigger)
+                        if payload["will_summarize"]:
+                            self.assertEqual(payload["progress"], 0.0)
+
+    def test_disabled_summary_does_not_allow_compression(self):
+        payload = policy.summary_progress_payload([HumanMessage(content="task")], threshold=0, keep_last=1)
+        self.assertEqual(payload["trigger_tokens"], 0)
+        self.assertFalse(payload["will_summarize"])
 
 
 class RuntimeOverheadTests(unittest.IsolatedAsyncioTestCase):
@@ -146,6 +229,98 @@ class SummaryProgressTests(unittest.IsolatedAsyncioTestCase):
             self.assertLess(current["progress"], previous["progress"])
         nodes.llm.ainvoke.assert_not_called()
 
+    async def test_early_compaction_starts_with_full_ring_before_model_response(self):
+        for summary in ("", "previous memory"):
+            with self.subTest(summary=summary):
+                nodes = self._make_nodes(summary_threshold=60000)
+                nodes.config.summary_reserved_tokens = 10000
+                messages = [HumanMessage(content="token " * 51000), AIMessage(content="done")]
+                for _ in range(3):
+                    messages.extend([HumanMessage(content="question"), AIMessage(content="answer")])
+                messages.append(HumanMessage(content="continue"))
+                for index, message in enumerate(messages):
+                    message.id = f"message-{index}"
+                events = []
+                processor = StreamProcessor(events.append)
+
+                async def summarize(*args, **kwargs):
+                    progress = [event.payload for event in events if event.type == "summary_progress"][-1]
+                    self.assertGreater(progress["estimated_tokens"], nodes.config.summary_threshold)
+                    self.assertLess(progress["estimated_tokens"], policy.summary_trigger_tokens(
+                        nodes.config.summary_threshold, has_summary=bool(summary)))
+                    self.assertTrue(progress["will_summarize"])
+                    self.assertEqual(progress["progress"], 0.0)
+                    self.assertEqual(processor.active_node, "summarize")
+                    self.assertEqual([event.payload["label"] for event in events
+                                      if event.type == "status_changed"][-1], "Compressing context")
+                    return AIMessage(content="- Compressed memory.")
+
+                nodes.llm.ainvoke.side_effect = summarize
+                with patch("core.nodes.summarize.get_stream_writer", return_value=processor._handle_custom):
+                    update = await nodes.summarize_node({"messages": messages, "summary": summary, "steps": 0})
+                nodes.llm.ainvoke.assert_awaited_once()
+                self.assertTrue(update.get("messages"))
+                self.assertEqual(processor.active_node, "agent")
+                self.assertEqual([event.payload["node"] for event in events
+                                  if event.type == "status_changed"], ["summarize", "agent"])
+
+    async def test_compression_status_covers_memory_folding_and_streamed_tokens(self):
+        for response in (AIMessage(content="- Folded memory."), AIMessage(content=""),
+                         RuntimeError("fold failed"), asyncio.CancelledError()):
+            with self.subTest(response=response):
+                nodes = self._make_nodes(summary_threshold=10000)
+                events = []
+                processor = StreamProcessor(events.append)
+                processor.active_node = "tools"
+                model_statuses = []
+
+                async def summarize(*args, **kwargs):
+                    model_statuses.append(processor.active_node)
+                    processor._handle_messages((AIMessageChunk(content="memory"), {"langgraph_node": "summarize"}))
+                    if len(model_statuses) == 1:
+                        return AIMessage(content="memory detail " * 2000)
+                    if isinstance(response, BaseException):
+                        raise response
+                    return response
+
+                nodes.llm.ainvoke.side_effect = summarize
+                state = {"messages": [HumanMessage(content="old detail " * 18000, id="old"),
+                                      HumanMessage(content="continue", id="new")], "steps": 0}
+                with patch("core.nodes.summarize.get_stream_writer", return_value=processor._handle_custom):
+                    if isinstance(response, asyncio.CancelledError):
+                        with self.assertRaises(asyncio.CancelledError):
+                            await nodes.summarize_node(state)
+                    else:
+                        update = await nodes.summarize_node(state)
+                        self.assertTrue(update.get("messages"))
+                        self.assertLessEqual(policy.estimate_summary_tokens(update["summary"], model_name="gpt-4o"),
+                                             nodes.config.effective_summary_max_tokens)
+                self.assertEqual(nodes.llm.ainvoke.await_count, 2)
+                self.assertEqual(model_statuses, ["summarize", "summarize"])
+                self.assertEqual(processor.active_node, "agent")
+                self.assertEqual([event.payload["node"] for event in events
+                                  if event.type == "status_changed"], ["summarize", "agent"])
+                self.assertEqual(processor.full_text, "")
+
+    async def test_cancelled_summary_clears_compression_status(self):
+        nodes = self._make_nodes(summary_threshold=10000)
+        events = []
+        processor = StreamProcessor(events.append)
+
+        async def summarize(*args, **kwargs):
+            self.assertEqual(processor.active_node, "summarize")
+            raise asyncio.CancelledError()
+
+        nodes.llm.ainvoke.side_effect = summarize
+        state = {"messages": [HumanMessage(content="old detail " * 18000, id="old"),
+                              HumanMessage(content="continue", id="new")], "steps": 0}
+        with patch("core.nodes.summarize.get_stream_writer", return_value=processor._handle_custom):
+            with self.assertRaises(asyncio.CancelledError):
+                await nodes.summarize_node(state)
+        self.assertEqual(processor.active_node, "agent")
+        self.assertEqual([event.payload["node"] for event in events
+                          if event.type == "status_changed"], ["summarize", "agent"])
+
     async def test_graph_stream_fills_then_resets_progress_to_committed_state(self):
         nodes = self._make_nodes(summary_threshold=10000)
         workflow = StateGraph(AgentState)
@@ -180,17 +355,20 @@ class SummaryProgressTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(progress[1], expected)
         relevant = [event.type for event in events if event.type in {"summary_progress", "summary_notice"}]
         self.assertEqual(relevant, ["summary_progress", "summary_progress", "summary_notice"])
+        statuses = [event.payload["node"] for event in events if event.type == "status_changed"]
+        self.assertIn("summarize", statuses)
+        self.assertEqual(statuses[-1], "agent")
 
     async def test_failed_or_empty_summary_keeps_authoritative_progress(self):
         for response in (RuntimeError("summarizer failed"), AIMessage(content="")):
             with self.subTest(response=response):
                 nodes = self._make_nodes(summary_threshold=10000)
                 events = []
+                processor = StreamProcessor(events.append)
+                model_statuses = []
 
                 async def summarize(*args, **kwargs):
-                    self.assertEqual(len(events), 1)
-                    self.assertTrue(events[0]["will_summarize"])
-                    self.assertEqual(events[0]["progress"], 0.0)
+                    model_statuses.append(processor.active_node)
                     if isinstance(response, Exception):
                         raise response
                     return response
@@ -198,14 +376,19 @@ class SummaryProgressTests(unittest.IsolatedAsyncioTestCase):
                 nodes.llm.ainvoke.side_effect = summarize
                 state = {"messages": [HumanMessage(content="old detail " * 18000, id="old"),
                                       HumanMessage(content="continue", id="new")], "steps": 0}
-                with patch("core.nodes.summarize.get_stream_writer", return_value=events.append):
+                with patch("core.nodes.summarize.get_stream_writer", return_value=processor._handle_custom):
                     update = await nodes.summarize_node(state)
                 nodes.llm.ainvoke.assert_awaited_once()
-                # The skip path still publishes the authoritative decision, so the
-                # ring reflects the retained history instead of a stale will_summarize.
-                self.assertEqual(len(events), 2)
-                self.assertTrue(events[1]["will_summarize"])
-                self.assertEqual(events[1]["progress"], 0.0)
+                self.assertEqual(model_statuses, ["summarize"])
+                # Failed/empty compaction leaves the history and its full ring intact.
+                progress = [event.payload for event in events if event.type == "summary_progress"]
+                self.assertEqual(len(progress), 2)
+                self.assertEqual(progress[0], progress[1])
+                self.assertTrue(progress[1]["will_summarize"])
+                self.assertEqual(progress[1]["progress"], 0.0)
+                self.assertEqual(processor.active_node, "agent")
+                self.assertEqual([event.payload["node"] for event in events
+                                  if event.type == "status_changed"], ["summarize", "agent"])
                 self.assertNotIn("messages", update)
                 self.assertNotIn("summary", update)
 

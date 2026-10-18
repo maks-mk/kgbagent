@@ -306,6 +306,51 @@ def active_turn_anchor_index(messages: List[BaseMessage], boundary: int) -> Opti
     return None
 
 
+def _summary_decision(
+    messages: List[BaseMessage],
+    *,
+    estimated_tokens: int,
+    threshold: int,
+    keep_last: int,
+    has_summary: bool = False,
+    reserved_tokens: int = 0,
+    allow_tool_round_boundaries: bool = False,
+    model_name: str = "",
+) -> tuple[int, bool]:
+    """Return the history-specific trigger and eligibility for both the node and UI."""
+    threshold = int(threshold or 0)
+    trigger = summary_trigger_tokens(threshold, has_summary=has_summary)
+    if threshold <= 0:
+        return trigger, False
+
+    boundary = choose_summary_boundary(
+        messages,
+        keep_last=keep_last,
+        threshold=threshold,
+        reserved_tokens=reserved_tokens,
+        allow_tool_round_boundaries=allow_tool_round_boundaries,
+        model_name=model_name,
+    )
+    summarizable = messages[:boundary]
+    if not summarizable:
+        return trigger, False
+
+    # Mid-run compaction keeps the active user message live as the retained anchor,
+    # so it is not part of the removable set. Nothing can be reclaimed when the only
+    # summarizable message is that anchor.
+    anchor_index = active_turn_anchor_index(messages, boundary) if allow_tool_round_boundaries else None
+    removable = [message for index, message in enumerate(summarizable) if index != anchor_index]
+    if not removable:
+        return trigger, False
+
+    summarizable_human_turns = sum(1 for message in removable if isinstance(message, HumanMessage))
+    min_summarizable_messages = max(6, int(keep_last or 0) + 2)
+    if len(removable) >= min_summarizable_messages and summarizable_human_turns >= 2:
+        trigger = threshold
+
+    return trigger, estimated_tokens > threshold and estimated_tokens >= trigger
+
+
 def should_summarize(
     messages: List[BaseMessage],
     *,
@@ -319,42 +364,20 @@ def should_summarize(
     threshold = int(threshold or 0)
     if threshold <= 0:
         return False
-
     estimated = estimate_context_tokens(messages, reserved_tokens=reserved_tokens, model_name=model_name)
     if estimated <= threshold:
         return False
-
-    boundary = choose_summary_boundary(
+    _, will_summarize = _summary_decision(
         messages,
-        keep_last=keep_last,
+        estimated_tokens=estimated,
         threshold=threshold,
+        keep_last=keep_last,
+        has_summary=has_summary,
         reserved_tokens=reserved_tokens,
         allow_tool_round_boundaries=allow_tool_round_boundaries,
         model_name=model_name,
     )
-    summarizable = messages[:boundary]
-    if not summarizable:
-        return False
-
-    # Mid-run compaction keeps the active user message live as the retained anchor,
-    # so it is not part of the removable set. Nothing can be reclaimed when the only
-    # summarizable message is that anchor.
-    anchor_index = active_turn_anchor_index(messages, boundary) if allow_tool_round_boundaries else None
-    removable = [message for index, message in enumerate(summarizable) if index != anchor_index]
-    if not removable:
-        return False
-
-    summarizable_human_turns = sum(1 for message in removable if isinstance(message, HumanMessage))
-    soft_threshold = summary_trigger_tokens(threshold, has_summary=has_summary)
-    min_summarizable_messages = max(6, int(keep_last or 0) + 2)
-
-    if estimated < soft_threshold:
-        if len(removable) < min_summarizable_messages:
-            return False
-        if summarizable_human_turns < 2:
-            return False
-
-    return True
+    return will_summarize
 
 
 def summary_progress_payload(
@@ -372,7 +395,16 @@ def summary_progress_payload(
     effective_reserved = reserved_tokens + summary_tokens
     estimated = estimate_context_tokens(messages, reserved_tokens=effective_reserved, model_name=model_name)
     has_summary = bool(summary)
-    trigger = summary_trigger_tokens(threshold, has_summary=has_summary)
+    trigger, will_summarize = _summary_decision(
+        messages,
+        estimated_tokens=estimated,
+        threshold=threshold,
+        keep_last=keep_last,
+        has_summary=has_summary,
+        reserved_tokens=effective_reserved,
+        allow_tool_round_boundaries=allow_tool_round_boundaries,
+        model_name=model_name,
+    )
     return {
         "estimated_tokens": estimated,
         "threshold": threshold,
@@ -380,23 +412,14 @@ def summary_progress_payload(
         "remaining_tokens": max(0, trigger - estimated),
         "reserved_tokens": reserved_tokens if messages else 0,
         "summary_tokens": summary_tokens,
-        # Scale the fill against the soft trigger the node actually waits for, so the
-        # ring reaches 100% exactly when compaction is no longer delayed by the guards,
-        # instead of pegging full across the threshold..trigger dead zone.
+        # The soft margin only applies when too little history can be removed.
+        # Use the decision's trigger so early compaction also starts with a full ring.
         "progress": 1.0 - summary_fill_ratio(
             estimated, threshold=trigger, baseline_tokens=effective_reserved,
         ),
         "message_count": len(messages),
         "has_summary": has_summary,
-        "will_summarize": should_summarize(
-            messages,
-            threshold=threshold,
-            keep_last=keep_last,
-            has_summary=has_summary,
-            reserved_tokens=effective_reserved,
-            allow_tool_round_boundaries=allow_tool_round_boundaries,
-            model_name=model_name,
-        ),
+        "will_summarize": will_summarize,
     }
 
 

@@ -136,6 +136,13 @@ class SummarizeMixin:
             pass
         return progress
 
+    def _emit_summary_status(self, *, active: bool) -> None:
+        try:
+            get_stream_writer()({"type": "summary_started" if active else "summary_finished"})
+        except RuntimeError:
+            # Direct node calls outside a running graph have no stream writer.
+            pass
+
     async def summarize_node(self, state: AgentState):
         messages = state["messages"]
         summary = state.get("summary", "")
@@ -255,6 +262,7 @@ class SummarizeMixin:
         )
 
         summary_started = time.perf_counter()
+        self._emit_summary_status(active=True)
         try:
             res = await self.llm.ainvoke(prompt, **summary_reasoning_kwargs(self.config))
             summary_duration_ms = round((time.perf_counter() - summary_started) * 1000, 2)
@@ -336,6 +344,8 @@ class SummarizeMixin:
             )
             self._emit_summary_progress(state, messages, summary, overhead_tokens)
             return transcript_bootstrap
+        finally:
+            self._emit_summary_status(active=False)
 
     def _format_history_for_summary(self, messages: List) -> str:
         return format_history_for_summary(messages, is_internal_retry=self._is_internal_retry_message)

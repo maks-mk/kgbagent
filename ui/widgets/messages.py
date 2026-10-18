@@ -3,9 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-import qtawesome as qta
-from PySide6.QtCore import QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QFontMetrics, QLinearGradient, QPainter, QPen
+from PySide6.QtCore import QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QFontMetrics, QIcon, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
 from core.text_utils import build_tool_ui_labels, has_visible_text, split_markdown_segments
@@ -116,11 +115,26 @@ class ShimmerLabel(QLabel):
         self._shimmer_active = active
         if active:
             self._shimmer_phase = 0.0
-            self._shimmer_timer.start()
+            self._sync_shimmer_timer()
         else:
             self._shimmer_timer.stop()
             self._shimmer_phase = 0.0
         self.update()
+
+    def _sync_shimmer_timer(self) -> None:
+        if self._shimmer_active and not self.isHidden():
+            if not self._shimmer_timer.isActive():
+                self._shimmer_timer.start()
+        elif self._shimmer_timer.isActive():
+            self._shimmer_timer.stop()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._sync_shimmer_timer()
+
+    def hideEvent(self, event) -> None:
+        self._shimmer_timer.stop()
+        super().hideEvent(event)
 
     def _advance_shimmer(self) -> None:
         step = 0.02
@@ -185,6 +199,94 @@ class ShimmerLabel(QLabel):
         painter.end()
 
 
+class SpinnerGlyph(QWidget):
+    """Rotating ring that never rasterises a font glyph.
+
+    qtawesome's animated icons re-render the Font-Awesome glyph (glyf table copy
+    plus QPainterPath) on every frame: ~200 KB of RSS per frame, i.e. ~20 MB/s at
+    its 10 ms timer. Long runs therefore grew the process into gigabytes. This
+    widget paints a plain arc instead and stops its timer while hidden.
+    """
+
+    _INTERVAL_MS = 33
+    _STEP_DEGREES = 18
+    _SWEEP_DEGREES = 300
+
+    def __init__(self, size: int = 14, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self._angle = 0
+        self._spinning = False
+        self._color = QColor(TEXT_MUTED)
+        self._static_pixmap: QPixmap | None = None
+        self._timer = QTimer(self)
+        self._timer.setInterval(self._INTERVAL_MS)
+        self._timer.timeout.connect(self._advance)
+
+    def is_spinning(self) -> bool:
+        return self._spinning
+
+    def set_color(self, color: str) -> None:
+        candidate = QColor(color)
+        if not candidate.isValid() or candidate == self._color:
+            return
+        self._color = candidate
+        self.update()
+
+    def set_static_icon(self, icon: QIcon) -> None:
+        self._spinning = False
+        self._timer.stop()
+        self._static_pixmap = icon.pixmap(QSize(12, 12))
+        self.update()
+
+    def set_spinning(self, spinning: bool) -> None:
+        self._static_pixmap = None
+        self._spinning = bool(spinning)
+        self._sync_timer()
+        self.update()
+
+    def _sync_timer(self) -> None:
+        if self._spinning and not self.isHidden():
+            if not self._timer.isActive():
+                self._timer.start()
+        elif self._timer.isActive():
+            self._timer.stop()
+
+    def _advance(self) -> None:
+        self._angle = (self._angle - self._STEP_DEGREES) % 360
+        self.update()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._sync_timer()
+
+    def hideEvent(self, event) -> None:
+        self._timer.stop()
+        super().hideEvent(event)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        try:
+            if not self._spinning:
+                if self._static_pixmap is not None:
+                    painter.drawPixmap(
+                        (self.width() - self._static_pixmap.width()) // 2,
+                        (self.height() - self._static_pixmap.height()) // 2,
+                        self._static_pixmap,
+                    )
+                return
+            pen = QPen(self._color)
+            pen.setWidthF(max(1.6, self.width() / 8.0))
+            pen.setCapStyle(Qt.RoundCap)
+            painter.setPen(pen)
+            inset = pen.widthF() / 2.0 + 0.5
+            rect = QRectF(self.rect()).adjusted(inset, inset, -inset, -inset)
+            painter.drawArc(rect, int(self._angle * 16), int(-self._SWEEP_DEGREES * 16))
+        finally:
+            painter.end()
+
+
 class StatusIndicatorWidget(QFrame):
     def __init__(self, label: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -194,14 +296,8 @@ class StatusIndicatorWidget(QFrame):
         layout.setContentsMargins(0, 2, 0, 6)
         layout.setSpacing(6)
 
-        self.spinner = QToolButton()
+        self.spinner = SpinnerGlyph(14)
         self.spinner.setObjectName("InlineStatusSpinner")
-        self.spinner.setEnabled(False)
-        self.spinner.setAutoRaise(True)
-        self.spinner.setIconSize(QSize(12, 12))
-        self.spinner.setFixedSize(14, 14)
-        self._spinner_animation = qta.Spin(self.spinner, autostart=True)
-        self._spinner_icon = None
         layout.addWidget(self.spinner, 0, Qt.AlignVCenter)
 
         self.label = ShimmerLabel(label)
@@ -230,22 +326,13 @@ class StatusIndicatorWidget(QFrame):
         busy_phase = phase != "success"
         self.label.set_shimmer_active(busy_phase)
         if phase == "success":
-            self._spinner_animation.stop()
-            icon_name = "fa5s.check-circle"
-            icon_color = SUCCESS_GREEN
-            self.spinner.setIcon(_fa_icon(icon_name, color=icon_color, size=12))
+            self.spinner.set_static_icon(_fa_icon("fa5s.check-circle", color=SUCCESS_GREEN, size=12))
         elif phase == "waiting":
-            self._spinner_animation.stop()
-            icon_name = "fa5s.pause-circle"
-            icon_color = TEXT_MUTED
-            self.spinner.setIcon(_fa_icon(icon_name, color=icon_color, size=12))
+            self.spinner.set_static_icon(_fa_icon("fa5s.pause-circle", color=TEXT_MUTED, size=12))
         else:
             icon_color = TEXT_MUTED if phase not in {"active", "reviewing"} else ACCENT_BLUE
-            if self._spinner_icon is None or self.property("spinnerColor") != icon_color:
-                self._spinner_icon = qta.icon("fa5s.spinner", color=icon_color, animation=self._spinner_animation)
-                self.setProperty("spinnerColor", icon_color)
-            self.spinner.setIcon(self._spinner_icon)
-            self._spinner_animation.start()
+            self.spinner.set_color(icon_color)
+            self.spinner.set_spinning(True)
 
 
 class UserMessageWidget(QFrame):

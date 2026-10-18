@@ -260,6 +260,7 @@ class MainWindow(QMainWindow):
         self.sidebar.session_activated.connect(self._switch_session)
         self.sidebar.session_delete_requested.connect(self._request_delete_session)
         self.sidebar.project_delete_requested.connect(self._request_delete_project)
+        self.sidebar.compact_requested.connect(self._request_compact_database)
         self.tools_panel.availability_changed.connect(self._handle_tool_availability_changed)
 
         self.send_button.clicked.connect(self._submit_request)
@@ -514,7 +515,8 @@ class MainWindow(QMainWindow):
                 self.transcript.add_global_notice(message, level=level)
             return
         if message:
-            self._show_transient_status_message(message)
+            timeout_ms = 6000 if kind == "checkpoint_compact" else 1800
+            self._show_transient_status_message(message, timeout_ms=timeout_ms)
 
     def _on_tool_args_missing(self, payload: dict) -> None:
         _ = payload
@@ -974,7 +976,14 @@ class MainWindow(QMainWindow):
 
     def _handle_busy_changed(self, busy: bool) -> None:
         self.tools_panel.setEnabled(not busy)
+        self.sidebar.compact_button.setEnabled(not busy)
         self._status_controller.handle_busy_changed(busy)
+
+    def _request_compact_database(self) -> None:
+        if self.is_busy or self.awaiting_approval or self.awaiting_user_choice:
+            return
+        self._show_transient_status_message("Compacting checkpoint database…")
+        self.controller.compact_checkpoints()
 
     def _handle_event(self, event) -> None:
         if self._event_router is not None:

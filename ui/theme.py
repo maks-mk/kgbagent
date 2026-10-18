@@ -171,6 +171,24 @@ def build_stylesheet() -> str:
         background: transparent;
     }}
 
+    QPushButton#SidebarCompactButton {{
+        background: {SURFACE_CARD};
+        border: 1px solid {BORDER};
+        border-radius: {SOFT_RADIUS_MD}px;
+        color: {TEXT_MUTED};
+        padding: 5px 10px;
+    }}
+
+    QPushButton#SidebarCompactButton:hover:enabled {{
+        color: {TEXT_PRIMARY};
+        background: {blend_hex(SURFACE_CARD, "#FFFFFF", 0.05)};
+    }}
+
+    QPushButton#SidebarCompactButton:disabled {{
+        color: {blend_hex(TEXT_MUTED, SURFACE_CARD, 0.45)};
+        background: {blend_hex(SURFACE_CARD, SURFACE_BG, 0.4)};
+    }}
+
     QFrame#TranscriptMetaChip {{
     background: transparent;
     border: none;
@@ -1140,6 +1158,12 @@ def build_stylesheet() -> str:
         border: none;
     }}
 
+    QLabel#InspectorFieldText,
+    QLabel#InspectorValueText {{
+        background: transparent;
+        border: none;
+    }}
+
     QLabel#MetaText[severity="error"] {{
         color: {ERROR_RED};
     }}
@@ -1174,7 +1198,7 @@ def build_stylesheet() -> str:
         color: {TEXT_MUTED};
     }}
 
-    QToolButton#InlineStatusSpinner {{
+    #InlineStatusSpinner {{
         background: transparent;
         border: none;
         padding: 0px;

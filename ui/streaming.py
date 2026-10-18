@@ -585,6 +585,17 @@ class StreamProcessor:
     def _handle_custom(self, payload: Any) -> None:
         if not isinstance(payload, dict):
             return
+        if payload.get("type") == "summary_started":
+            self.active_node = "summarize"
+            self._agent_is_thinking = False
+            self._emit_status()
+            return
+        if payload.get("type") == "summary_finished":
+            if self.active_node == "summarize":
+                self.active_node = "agent"
+                self._agent_is_thinking = False
+                self._emit_status()
+            return
         if payload.get("type") == "summary_progress":
             self._emit("summary_progress", {key: value for key, value in payload.items() if key != "type"})
             return

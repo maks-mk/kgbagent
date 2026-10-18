@@ -4024,6 +4024,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         worker.tool_registry.tool_metadata = {}
         worker.tool_registry.mcp_server_status = []
         worker.tool_registry.mcp_config = {}
+        worker.tool_registry.disabled_mcp_servers = set()
         worker.tool_registry.builtin_tools = []
         worker.tool_registry.checkpoint_info = {}
         worker.tool_registry.model_capabilities = {}

@@ -125,6 +125,45 @@ def _enabled_mcp_servers(tool_registry) -> list[str]:
     return names
 
 
+def _mcp_server_groups(tool_registry) -> dict[str, list[str]]:
+    """Split every configured MCP server into "on", "off" and "error" buckets.
+
+    Servers are read from the config, the load statuses and the runtime
+    disabled-set so a server without loaded tools still shows up in Overview.
+    """
+    statuses = {
+        str(status.get("server", "")): status
+        for status in getattr(tool_registry, "mcp_server_status", [])
+        if status.get("server")
+    }
+    mcp_config = {
+        name: cfg
+        for name, cfg in getattr(tool_registry, "mcp_config", {}).items()
+        if name != "_builtin_tools" and isinstance(cfg, dict)
+    }
+    disabled = set(getattr(tool_registry, "disabled_mcp_servers", set()) or set())
+
+    server_names = list(mcp_config)
+    server_names.extend(name for name in statuses if name not in mcp_config)
+    server_names.extend(
+        name for name in disabled if name not in mcp_config and name not in statuses
+    )
+
+    groups: dict[str, list[str]] = {"on": [], "off": [], "error": []}
+    for name in server_names:
+        cfg = mcp_config.get(name, {})
+        status = statuses.get(name, {})
+        error = str(status.get("error", "") or "").strip()
+        enabled = bool(cfg.get("enabled", status.get("enabled", True)))
+        if error:
+            groups["error"].append(name)
+        elif not enabled or name in disabled:
+            groups["off"].append(name)
+        else:
+            groups["on"].append(name)
+    return groups
+
+
 def _runtime_issue_count(tool_registry) -> int:
     lines = tool_registry.get_runtime_status_lines()
     return sum(
@@ -250,6 +289,7 @@ def build_runtime_snapshot(config: AgentConfig, tool_registry, snapshot: Session
             approvals = "on (always for this session)"
 
     mcp_servers = _enabled_mcp_servers(tool_registry)
+    mcp_groups = _mcp_server_groups(tool_registry)
     issue_count = _runtime_issue_count(tool_registry)
     status = "ready" if issue_count == 0 else f"degraded ({issue_count} issue{'s' if issue_count != 1 else ''})"
     tools = build_tools_snapshot(tool_registry)
@@ -274,6 +314,7 @@ def build_runtime_snapshot(config: AgentConfig, tool_registry, snapshot: Session
         "approvals": approvals,
         "mcp_servers": mcp_servers,
         "mcp_text": ", ".join(mcp_servers) if mcp_servers else "none",
+        "mcp_groups": mcp_groups,
         "status": status,
         "config_mode": "debug" if config.debug else "standard",
         "runtime_lines": tool_registry.get_runtime_status_lines(),
