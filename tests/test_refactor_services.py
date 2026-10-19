@@ -135,11 +135,24 @@ class RefactorServicesTests(unittest.TestCase):
         self.assertIn("Current task: Проверь задачу", joined)
         self.assertIn("TOOLS:", joined)
         self.assertIn("TOOL INTENT REQUIREMENT:", joined)
-        self.assertIn("IMPORTANT: every assistant message with tool calls MUST include visible text in the content field", joined)
-        self.assertIn("trivial actions such as committing", joined)
-        self.assertIn("violates this contract", joined)
-        self.assertIn("Group comment: before the first call of a logical group", joined)
-        self.assertIn("Never end a turn with neither text nor a tool call.", joined)
+        self.assertIn(
+            "Every assistant message containing tool calls MUST include visible text before the calls, in the same message:",
+            joined,
+        )
+        self.assertIn("No exceptions, even for trivial actions.", joined)
+        self.assertIn("Empty, whitespace-only or reasoning-only content does not count.", joined)
+        self.assertIn("One comment per message, not per call.", joined)
+        self.assertIn(
+            "Write at least two full sentences: a single short sentence is never enough, even for trivial actions.",
+            joined,
+        )
+        self.assertIn("Consecutive calls serving one objective form a logical group", joined)
+        self.assertIn("The first comment of a group states the objective", joined)
+        self.assertIn("Start a new group when the objective changes, a stage is completed", joined)
+        self.assertIn("Before a risky or irreversible action not covered by the current comment", joined)
+        self.assertIn("Be concrete. State intent and purpose, not internal reasoning.", joined)
+        self.assertIn("Never end a turn without visible text or a tool call.", joined)
+        self.assertIn("When finished, briefly summarize verified outcomes", joined)
         self.assertIn("Execution environment: os=windows;", joined)
         self.assertIn("paths=windows.", joined)
         self.assertIn("Workspace:", joined)

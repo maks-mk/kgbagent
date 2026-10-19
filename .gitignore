@@ -2,69 +2,26 @@
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# Virtual Environments
-.history
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Logs
-*.log
-*.jsonl
-logs/runs/
-
-# Tool specific
-.vscode/
-.idea/
-
-# PyInstaller
-*.spec
-*.exe
-*.app
-*.dmg
-build/
-dist/
-
-# Project specific
-mcp_config_secret.json
-.agent_state/
-.tmp_tests/
-.agent_history
-.history/
-
-# Cache directories
 .pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.hypothesis/
-.coverage
-htmlcov/
-tiktoken_cache/
+.venv/
+venv/
 
-# OS specific
+# Environment & Secrets
+.env
+*.env
+
+# Project State & Logs
+.agent_state/
+logs/
+.tmp_tests/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# OS
 .DS_Store
 Thumbs.db
+
+# IDE
+.idea/
+.vscode/

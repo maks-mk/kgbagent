@@ -7,8 +7,10 @@ from core.model_profiles import (
     bootstrap_profiles_from_env,
     find_active_profile,
     generate_profile_id,
+    group_profiles_by_provider,
     merge_profiles_with_env,
     normalize_profiles_payload,
+    provider_label_for_profile,
 )
 from core.reasoning_controls import profile_reasoning_overrides, reasoning_options_for_profile
 
@@ -32,6 +34,45 @@ class ModelProfilesTests(unittest.TestCase):
             generate_profile_id("model_name", set(), "https://www.example-provider.io/v1"),
             "exmplprvdr/model_name",
         )
+
+    def test_provider_label_prefers_base_url_brand(self):
+        self.assertEqual(
+            provider_label_for_profile({"provider": "openai", "base_url": "https://api.openai.com/v1"}),
+            "OpenAI",
+        )
+        self.assertEqual(
+            provider_label_for_profile({"provider": "openai", "base_url": "https://api.reformboss.com/v1"}),
+            "Reformboss",
+        )
+        self.assertEqual(
+            provider_label_for_profile({"provider": "openai", "base_url": "https://justbash-api.annenkov.me/v1"}),
+            "Annenkov",
+        )
+        # Native protocols are reached through proxies; the hostname still wins.
+        self.assertEqual(
+            provider_label_for_profile({"provider": "anthropic", "base_url": "https://tooken.club"}),
+            "Tooken",
+        )
+
+    def test_provider_label_falls_back_to_profile_provider(self):
+        self.assertEqual(provider_label_for_profile({"provider": "gemini"}), "Google Gemini")
+        self.assertEqual(provider_label_for_profile({"provider": "anthropic", "base_url": ""}), "Anthropic")
+        self.assertEqual(provider_label_for_profile({"provider": "openai", "base_url": "  "}), "OpenAI")
+        self.assertEqual(provider_label_for_profile({}), "Unknown provider")
+
+    def test_group_profiles_by_provider_keeps_enabled_profiles_only(self):
+        profiles = [
+            {"id": "rfrmbss/kimi-k3", "provider": "openai", "model": "kimi-k3", "base_url": "https://api.reformboss.com/v1", "enabled": True},
+            {"id": "rfrmbss/glm-5-3", "provider": "openai", "model": "glm-5-3", "base_url": "https://api.reformboss.com/v1", "enabled": True},
+            {"id": "annnkv/glm-5-3-prime", "provider": "openai", "model": "glm-5-3-prime", "base_url": "https://justbash-api.annenkov.me/v1", "enabled": False},
+            {"id": "gemini-1-5-flash", "provider": "gemini", "model": "gemini-1.5-flash", "base_url": "", "enabled": True},
+        ]
+
+        groups = group_profiles_by_provider(profiles)
+
+        self.assertEqual([label for label, _ in groups], ["Reformboss", "Google Gemini"])
+        self.assertEqual([profile["id"] for profile in groups[0][1]], ["rfrmbss/kimi-k3", "rfrmbss/glm-5-3"])
+        self.assertEqual(group_profiles_by_provider(profiles, include_disabled=True)[1][0], "Annenkov")
 
     def test_normalization_preserves_profile_id_namespace(self):
         payload = normalize_profiles_payload(

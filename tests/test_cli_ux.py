@@ -4330,10 +4330,75 @@ class GuiUxTests(unittest.TestCase):
         self.assertIn("Model: gpt-4o", self.window.model_chip.toolTip())
         self.assertTrue(self.window.no_models_label.isHidden())
 
+    def test_model_selector_groups_profiles_under_provider_submenus(self):
+        payload = self._snapshot_payload()
+        payload["model_profiles"]["profiles"].append(
+            {
+                "id": "tkn/claude-opus-5-5",
+                "provider": "anthropic",
+                "model": "claude-opus-5-5",
+                "base_url": "https://tooken.club",
+                "enabled": False,
+            }
+        )
+        payload["model_profiles"]["active_profile"] = "gemini-1-5-flash"
+        self.window._handle_initialized(payload)
+
+        provider_actions = self.window.model_chip_menu.actions()
+        self.assertEqual([action.text() for action in provider_actions], ["OpenAI", "Google Gemini"])
+        for action in provider_actions:
+            menu = action.menu()
+            self.assertIsNotNone(menu)
+            self.assertEqual(menu.objectName(), "ComposerPopupMenu")
+            self.assertEqual(menu.windowType(), Qt.WindowType.Popup)
+            self.assertTrue(menu.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground))
+            self.assertTrue(menu.windowFlags() & Qt.WindowType.FramelessWindowHint)
+            self.assertTrue(menu.windowFlags() & Qt.WindowType.NoDropShadowWindowHint)
+
+        openai_menu = provider_actions[0].menu()
+        gemini_menu = provider_actions[1].menu()
+        self.assertEqual([action.text() for action in openai_menu.actions()], ["gpt-4o"])
+        self.assertEqual([action.text() for action in gemini_menu.actions()], ["gemini-1.5-flash"])
+        self.assertEqual(openai_menu.actions()[0].data(), "gpt-4o")
+        self.assertTrue(gemini_menu.actions()[0].isChecked())
+        self.assertFalse(openai_menu.actions()[0].isChecked())
+
+        # Disabled profiles must never leak into the selector, no matter the group.
+        all_profile_ids = {
+            action.data()
+            for provider_action in provider_actions
+            for action in provider_action.menu().actions()
+        }
+        self.assertNotIn("tkn/claude-opus-5-5", all_profile_ids)
+
+    def test_model_selector_keeps_duplicate_models_distinguishable(self):
+        payload = self._snapshot_payload()
+        payload["model_profiles"]["profiles"].append(
+            {
+                "id": "backup-account/gpt-4o",
+                "provider": "openai",
+                "model": "gpt-4o",
+                "enabled": True,
+            }
+        )
+        payload["model_profiles"]["active_profile"] = "gpt-4o"
+        self.window._handle_initialized(payload)
+
+        openai_menu = next(
+            action.menu() for action in self.window.model_chip_menu.actions() if action.text() == "OpenAI"
+        )
+        labels = {action.text(): action.data() for action in openai_menu.actions()}
+        self.assertEqual(labels["gpt-4o (backup-account/gpt-4o)"], "backup-account/gpt-4o")
+        self.assertEqual(labels["gpt-4o (gpt-4o)"], "gpt-4o")
+
     def test_model_selector_action_triggers_controller_switch(self):
         self.window._handle_initialized(self._snapshot_payload())
-        actions = self.window.model_chip_menu.actions()
-        target_action = next(action for action in actions if action.text() == "gemini-1-5-flash")
+        provider_action = next(
+            action for action in self.window.model_chip_menu.actions() if action.text() == "Google Gemini"
+        )
+        target_action = next(
+            action for action in provider_action.menu().actions() if action.data() == "gemini-1-5-flash"
+        )
 
         target_action.trigger()
 

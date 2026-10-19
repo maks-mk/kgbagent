@@ -80,6 +80,7 @@
     "read_skills": false,
     "stop_background_process": false,
     "cli_exec": true,
-    "read_images": false
+    "read_images": false,
+    "find_process_by_port": false
   }
 }

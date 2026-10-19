@@ -70,23 +70,13 @@ class RuntimePromptPolicyBuilder:
     )
     TOOL_INTENT_REQUIREMENT_TEXT = (
         "TOOL INTENT REQUIREMENT:\n"
-        "IMPORTANT: every assistant message with tool calls MUST include visible text in the content field, written BEFORE "
-        "those calls in the same message. No exceptions, even for trivial actions such as committing. Empty, whitespace-only "
-        "or reasoning-only content does not count: internal reasoning is invisible to the user, so a tool call without "
-        "visible text violates this contract.\n"
-        "Group comment: before the first call of a logical group, write 2-4 sentences in the language of the user's "
-        "current request. Say what you are doing and why. A logical group is a run of consecutive calls with one "
-        "immediate objective, even if it spans several messages. Switching a tool, file or command, retrying, or "
-        "fetching more results stays within the same group. Later messages in the group need only one short sentence "
-        "about what you are continuing.\n"
-        "Write a new group comment only when the objective changes, the work reaches a meaningful new stage, or an "
-        "important result comes up. Also write one before a risky action the current comment does not cover, and state "
-        "the intended effect.\n"
-        "Do not comment on each call, retell tool results or repeat yourself. Keep comments concrete, without filler or "
-        "internal reasoning.\n"
-        "Never end a turn with neither text nor a tool call. When the task is done, summarize verified outcomes, "
-        "blockers, decisions and next steps."
+        "Every assistant message containing tool calls MUST include visible text before the calls, in the same message: 2-4 sentences in the user's language on what you are doing and why. No exceptions, even for trivial actions. Empty, whitespace-only or reasoning-only content does not count. One comment per message, not per call. Write at least two full sentences: a single short sentence is never enough, even for trivial actions.\n"
+        "Consecutive calls serving one objective form a logical group (switching tools, files or commands, retries and fetching more results stay in the same group). The first comment of a group states the objective; later ones describe the current action and its purpose without repeating earlier text.\n"
+        "Start a new group when the objective changes, a stage is completed, or a result changes the plan. Before a risky or irreversible action not covered by the current comment, state its intended effect.\n"
+        "Be concrete. State intent and purpose, not internal reasoning. No filler or needless recaps of results. Each sentence must carry new information; do not pad the comment with restatements of the same point.\n"
+        "Never end a turn without visible text or a tool call. When finished, briefly summarize verified outcomes, blockers, decisions and next steps."
     )
+
 
     def __init__(self, *, config: AgentConfig) -> None:
         self.config = config

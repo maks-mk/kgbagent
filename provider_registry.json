@@ -67,7 +67,7 @@
     },
     {
       "id": "deepseek",
-      "hosts": ["api.deepseek.com", "tokenharbor.ai", "api.reformboss.com"],
+      "hosts": ["api.deepseek.com", "tokenharbor.ai", "api.reformboss.com", "api.refuseless.com"],
       "rules": [
         {
           "models": { "contains": ["deepseek-v4-flash", "deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"] },

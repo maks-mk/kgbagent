@@ -158,7 +158,10 @@ ENABLE_SHELL_TOOL=false
 # ENABLE_TEXT_TOOL_CALL_RECOVERY=false
 # Require interactive approval before mutating/destructive tools execute
 ENABLE_APPROVALS=true
-# Allow stopping external PIDs not started by this agent
+# Allow stopping external PIDs not started by this agent (e.g. found via
+# find_process_by_port but launched manually or in a previous session).
+# The process registry lives in memory, so PIDs from previous runs always
+# count as external. Approval (ENABLE_APPROVALS) is still required.
 ALLOW_EXTERNAL_PROCESS_CONTROL=false
 
 # ===========================

@@ -8,12 +8,12 @@ from typing import Final
 
 from PySide6.QtCore import QEvent, QMessageLogContext, Qt, QtMsgType, QSize, QTimer, qInstallMessageHandler
 from PySide6.QtGui import QAction, QCloseEvent, QIcon
-from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMenuBar, QMessageBox, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMenu, QMenuBar, QMessageBox, QSizePolicy, QVBoxLayout, QWidget
 
 from core.constants import AGENT_VERSION, BASE_DIR
 from core.input_sanitizer import build_user_input_notice, sanitize_user_text
 from core.multimodal import DEFAULT_MODEL_CAPABILITIES, can_read_image_file, resolve_model_capabilities
-from core.model_profiles import normalize_profiles_payload
+from core.model_profiles import group_profiles_by_provider, normalize_profiles_payload
 from core.reasoning_controls import normalize_profile_reasoning, reasoning_options_for_profile
 from core.std_streams import ensure_standard_streams
 from core.text_utils import format_compact_tokens, prepare_markdown_for_render
@@ -26,7 +26,7 @@ from ui.window_components.inspector_controller import InspectorController
 from ui.window_components.menu_builder import MenuBuilder
 from ui.window_components.sidebar_controller import SidebarController
 from ui.window_components.status_bar_manager import StatusBarManager
-from ui.window_components.workspace_builder import WorkspaceBuilder
+from ui.window_components.workspace_builder import WorkspaceBuilder, configure_composer_popup
 
 logger = logging.getLogger("agent")
 APP_DISPLAY_NAME: Final[str] = "KGB|Agent"
@@ -224,6 +224,7 @@ class MainWindow(QMainWindow):
         self.model_chip = refs.model_chip
         self.model_chip_menu = refs.model_chip_menu
         self.model_chip_group = refs.model_chip_group
+        self._model_provider_menus: list[QMenu] = []
         self.reasoning_chip = refs.reasoning_chip
         self.reasoning_chip_menu = refs.reasoning_chip_menu
         self.reasoning_chip_group = refs.reasoning_chip_group
@@ -672,15 +673,24 @@ class MainWindow(QMainWindow):
                 return profile
         return None
 
+    def _clear_model_selector_menu(self) -> None:
+        for action in self.model_chip_group.actions():
+            self.model_chip_group.removeAction(action)
+        self.model_chip_menu.clear()
+        # QMenu.clear() detaches submenu actions but keeps child QMenu objects
+        # alive, so remove them explicitly before rebuilding the selector.
+        for provider_menu in self._model_provider_menus:
+            provider_menu.setParent(None)
+            provider_menu.deleteLater()
+        self._model_provider_menus.clear()
+
     def _refresh_model_selector(self) -> None:
         payload = self.model_profiles_payload if isinstance(self.model_profiles_payload, dict) else {}
         profiles = [item for item in payload.get("profiles", []) or [] if isinstance(item, dict)]
         enabled_profiles = [item for item in profiles if bool(item.get("enabled", True))]
         active_id = str(payload.get("active_profile") or "").strip()
 
-        self.model_chip_menu.clear()
-        for action in self.model_chip_group.actions():
-            self.model_chip_group.removeAction(action)
+        self._clear_model_selector_menu()
 
         if not profiles:
             self.model_chip.setVisible(False)
@@ -706,21 +716,38 @@ class MainWindow(QMainWindow):
         self.no_models_label.setVisible(False)
         self.open_settings_inline_button.setVisible(False)
 
-        for profile in enabled_profiles:
-            profile_id = str(profile.get("id") or "").strip()
-            if not profile_id:
-                continue
-            action = self.model_chip_menu.addAction(profile_id)
-            action.setCheckable(True)
-            action.setData(profile_id)
-            provider = str(profile.get("provider") or "").strip()
-            model = str(profile.get("model") or "").strip()
-            action.setToolTip(f"Provider: {provider}\nModel: {model}")
-            if profile_id == active_id:
-                action.setChecked(True)
-                self.model_chip.setText(profile_id)
-                self.model_chip.setToolTip(f"Provider: {provider}\nModel: {model}")
-            self.model_chip_group.addAction(action)
+        for provider_label, provider_profiles in group_profiles_by_provider(enabled_profiles):
+            provider_menu = self.model_chip_menu.addMenu(provider_label)
+            provider_menu.setObjectName("ComposerPopupMenu")
+            configure_composer_popup(provider_menu)
+            self._model_provider_menus.append(provider_menu)
+
+            # Identical models can live in different profiles of the same
+            # endpoint (e.g. separate keys); keep both actions distinguishable.
+            model_counts: dict[str, int] = {}
+            for profile in provider_profiles:
+                model_text = str(profile.get("model") or "").strip()
+                if model_text:
+                    model_counts[model_text] = model_counts.get(model_text, 0) + 1
+
+            for profile in provider_profiles:
+                profile_id = str(profile.get("id") or "").strip()
+                if not profile_id:
+                    continue
+                model = str(profile.get("model") or "").strip()
+                label = model or profile_id
+                if model and model_counts.get(model, 0) > 1:
+                    label = f"{model} ({profile_id})"
+                action = provider_menu.addAction(label)
+                action.setCheckable(True)
+                action.setData(profile_id)
+                provider = str(profile.get("provider") or "").strip()
+                action.setToolTip(f"Provider: {provider}\nModel: {model}\nProfile: {profile_id}")
+                if profile_id == active_id:
+                    action.setChecked(True)
+                    self.model_chip.setText(profile_id)
+                    self.model_chip.setToolTip(f"Provider: {provider}\nModel: {model}")
+                self.model_chip_group.addAction(action)
 
         self._has_active_model = any(str(item.get("id") or "").strip() == active_id for item in enabled_profiles)
         if not self._has_active_model:

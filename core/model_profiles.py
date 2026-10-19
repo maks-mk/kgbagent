@@ -136,6 +136,115 @@ def _api_url_prefix(api_url: Any) -> str:
     return letters[0] + "".join(char for char in letters[1:] if char not in "aeiouy")
 
 
+# Human-readable names for endpoint brands that a naive capitalisation would
+# render incorrectly ("OpenAi", "Deepseek"). Keys are hostname labels, not
+# provider registry ids: the registry describes reasoning semantics and maps
+# gateway hosts (reformboss, annenkov) to multiple upstream vendors, so it
+# cannot identify the provider the user connects to.
+PROVIDER_BRAND_NAMES: dict[str, str] = {
+    "openai": "OpenAI",
+    "gemini": "Google Gemini",
+    "google": "Google Gemini",
+    "googleapis": "Google",
+    "anthropic": "Anthropic",
+    "deepseek": "DeepSeek",
+    "moonshot": "Moonshot AI",
+    "mistral": "Mistral AI",
+    "bigmodel": "Z.ai",
+    "dashscope": "Alibaba DashScope",
+    "aliyuncs": "Alibaba DashScope",
+    "nvidia": "NVIDIA NIM",
+    "huggingface": "Hugging Face",
+    "modelscope": "ModelScope",
+    "openrouter": "OpenRouter",
+    "fireworks": "Fireworks AI",
+    "ollama": "Ollama",
+    "minimax": "MiniMax",
+    "aihubmix": "AIHubMix",
+    "tokenlayer": "TokenLayer",
+    "freemodel": "FreeModel",
+}
+
+# Hostname labels that describe transport rather than a provider brand.
+_GENERIC_HOST_LABELS = {
+    "api",
+    "www",
+    "app",
+    "open",
+    "gateway",
+    "inference",
+    "integrate",
+    "endpoints",
+    "proxy",
+    "chat",
+    "v1",
+}
+_IPV4_HOST_RE = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}")
+
+
+def _hostname_from_base_url(base_url: Any) -> str:
+    raw = _clean_text(base_url)
+    if not raw:
+        return ""
+    parsed = urlsplit(raw if "://" in raw else f"//{raw}")
+    return str(parsed.hostname or "").strip(".").lower()
+
+
+def _display_brand(brand: str) -> str:
+    return PROVIDER_BRAND_NAMES.get(brand) or brand[:1].upper() + brand[1:]
+
+
+def provider_label_for_profile(profile: Mapping[str, Any]) -> str:
+    """Return the provider group label for a model profile.
+
+    The label follows ``base_url`` first, so profiles that share an endpoint
+    stay together and gateways are not mislabelled as the upstream vendor.
+    ``provider`` is only a fallback for profiles without an endpoint (Gemini
+    and default OpenAI/Anthropic entries).
+    """
+    data = profile if isinstance(profile, Mapping) else {}
+    hostname = _hostname_from_base_url(data.get("base_url"))
+    if hostname:
+        if _IPV4_HOST_RE.fullmatch(hostname) or hostname == "localhost":
+            return hostname
+        labels = [part for part in hostname.split(".") if part]
+        brands = [part for part in labels[:-1] if part not in _GENERIC_HOST_LABELS] if len(labels) > 1 else labels
+        for brand in brands:
+            if brand in PROVIDER_BRAND_NAMES:
+                return PROVIDER_BRAND_NAMES[brand]
+        if brands:
+            return _display_brand(brands[-1])
+        if labels:
+            return _display_brand(labels[0])
+
+    provider = _normalize_provider(data.get("provider"))
+    if provider:
+        return _display_brand(provider)
+    return "Unknown provider"
+
+
+def group_profiles_by_provider(
+    profiles: Any,
+    *,
+    include_disabled: bool = False,
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Group profiles by provider label, preserving first-appearance order.
+
+    Only user-configured profiles are grouped here; no model discovery
+    (``/v1/models``) is involved, so the menu never mixes fetched models with
+    saved profiles.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for raw in profiles or []:
+        if not isinstance(raw, Mapping):
+            continue
+        if not include_disabled and not _normalize_bool(raw.get("enabled", True)):
+            continue
+        profile = dict(raw)
+        groups.setdefault(provider_label_for_profile(profile), []).append(profile)
+    return list(groups.items())
+
+
 def ensure_unique_profile_id(profile_id: Any, used_ids: set[str]) -> str:
     return _ensure_unique_id(_clean_text(profile_id), used_ids)
 
