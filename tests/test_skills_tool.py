@@ -75,7 +75,6 @@ class SkillsToolTests(unittest.IsolatedAsyncioTestCase):
             "PROMPT_PATH": Path(__file__).resolve().parents[1] / "prompt.txt",
             "MCP_CONFIG_PATH": Path(__file__).resolve().parents[1] / "tests" / "missing_mcp.json",
             "ENABLE_SEARCH_TOOLS": False,
-            "ENABLE_PROCESS_TOOLS": False,
             "ENABLE_SHELL_TOOL": False,
             "SKILLS_DIR": str(self.skills_dir),
         }

@@ -308,6 +308,7 @@ class GuiUxTests(unittest.TestCase):
     def test_tool_cards_use_semantic_qtawesome_icons(self):
         icon_cases = {
             "read_file": "fa5s.file-alt",
+            "read_images": "fa5s.file-alt",
             "write_file": "fa5s.file-signature",
             "edit_file": "fa5s.edit",
             "list_directory": "fa5s.folder-open",
@@ -317,9 +318,6 @@ class GuiUxTests(unittest.TestCase):
             "cli_exec": "fa5s.terminal",
             "safe_delete_file": "fa5s.trash-alt",
             "download_file": "fa5s.download",
-            "run_background_process": "fa5s.play",
-            "stop_background_process": "fa5s.stop",
-            "find_process_by_port": "fa5s.network-wired",
             "request_user_input": "fa5s.comment-dots",
         }
 
@@ -348,6 +346,7 @@ class GuiUxTests(unittest.TestCase):
     def test_tool_titles_change_to_past_tense_after_successful_completion(self):
         title_cases = {
             "read_file": ("Reading", "Read"),
+            "read_images": ("Reading images", "Read images"),
             "write_file": ("Writing", "Wrote"),
             "edit_file": ("Editing", "Edited"),
             "list_directory": ("Listing", "Listed"),
@@ -357,9 +356,6 @@ class GuiUxTests(unittest.TestCase):
             "cli_exec": ("Running", "Ran"),
             "safe_delete_file": ("Deleting", "Deleted"),
             "download_file": ("Downloading", "Downloaded"),
-            "run_background_process": ("Starting process", "Started process"),
-            "stop_background_process": ("Stopping process", "Stopped process"),
-            "find_process_by_port": ("Finding process", "Found process"),
             "request_user_input": ("Requesting input", "Requested input"),
         }
 
@@ -370,6 +366,33 @@ class GuiUxTests(unittest.TestCase):
                 card.finish({"name": name})
                 self.assertEqual(card.action_label.full_text(), f"{completed_title}")
                 card.deleteLater()
+
+    def test_read_images_card_preserves_all_paths_and_path_styling(self):
+        cases = (
+            ({"paths": ["img/one.png", "img/two.png"]}, "img/one.png, img/two.png"),
+            ({"paths": "img/one.png"}, "img/one.png"),
+            ({"path": "img/one.png"}, "img/one.png"),
+        )
+        for args, target in cases:
+            with self.subTest(args=args):
+                card = ToolCardWidget({"name": "read_images", "args": args, "phase": "running"})
+                try:
+                    self.assertEqual(card.action_label.full_text(), f"Reading images {target}")
+                    self.assertIn("color:#7CC7FF", card.action_label.text())
+                    card.finish({"content": "Success"})
+                    self.assertEqual(card.action_label.full_text(), f"Read images {target}")
+                    self.assertIn("color:#7CC7FF", card.action_label.text())
+                finally:
+                    card.deleteLater()
+
+    def test_read_images_card_has_distinct_preparing_title(self):
+        card = ToolCardWidget({"name": "read_images", "args": {}, "phase": "preparing"})
+        try:
+            self.assertEqual(card.action_label.full_text(), "Preparing image read")
+            card.update_started_payload({"args": {"paths": ["img/one.png"]}, "phase": "running"})
+            self.assertEqual(card.action_label.full_text(), "Reading images img/one.png")
+        finally:
+            card.deleteLater()
 
     def test_safe_delete_cards_render_paths_like_other_filesystem_tools(self):
         cases = (
@@ -410,11 +433,15 @@ class GuiUxTests(unittest.TestCase):
         card.deleteLater()
 
     def test_tool_title_keeps_action_form_for_errors(self):
-        card = ToolCardWidget({"name": "read_file", "phase": "running", "is_error": True})
-        self.assertEqual(card.action_label.full_text(), "Reading failed")
-        card.finish({"name": "read_file", "is_error": True})
-        self.assertEqual(card.action_label.full_text(), "Reading failed")
-        card.deleteLater()
+        for name, title in (("read_file", "Reading failed"), ("read_images", "Reading images failed")):
+            with self.subTest(name=name):
+                card = ToolCardWidget({"name": name, "phase": "running", "is_error": True})
+                try:
+                    self.assertEqual(card.action_label.full_text(), title)
+                    card.finish({"name": name, "is_error": True})
+                    self.assertEqual(card.action_label.full_text(), title)
+                finally:
+                    card.deleteLater()
 
     def test_tool_chevron_tracks_expansion_without_text_suffix(self):
         for name, source in (("read_file", "tool"), ("query_docs", "mcp"), ("cli_exec", "cli")):
@@ -516,6 +543,8 @@ class GuiUxTests(unittest.TestCase):
             (["write_file", "write_file"], "Wrote 2 files"),
             (["write_file", "edit_file"], "Edited 2 files"),
             (["read_file", "read_file"], "Read 2 files"),
+            (["read_images", "read_images"], "Read 2 images"),
+            (["read_file", "read_images"], "Completed 2 tools"),
             (["cli_exec", "cli_exec"], "Ran 2 commands"),
         )
         for names, expected_title in cases:
@@ -530,6 +559,37 @@ class GuiUxTests(unittest.TestCase):
                 group.refresh_completion()
                 self.assertEqual(group.header_btn.text(), f"{expected_title}")
                 group.deleteLater()
+
+    def test_read_images_group_counts_images_instead_of_calls(self):
+        cases = (
+            ({"paths": ["img/one.png", "img/two.png"]}, 2, "images"),
+            ({"paths": ["img/one.png", " "]}, 1, "image"),
+            ({"paths": "img/one.png"}, 1, "image"),
+            ({"path": "img/one.png"}, 1, "image"),
+        )
+        for args, count, noun in cases:
+            with self.subTest(args=args):
+                group = ToolGroupWidget(parent=self.window)
+                try:
+                    card = ToolCardWidget({"name": "read_images", "args": args, "phase": "running"})
+                    group.add_tool(card)
+                    self.assertEqual(group.header_btn.text(), f"Reading {count} {noun}")
+                    card.finish({"content": "Success"})
+                    group.refresh_completion()
+                    self.assertEqual(group.header_btn.text(), f"Read {count} {noun}")
+                finally:
+                    group.deleteLater()
+
+    def test_read_images_group_has_distinct_error_title(self):
+        group = ToolGroupWidget(parent=self.window)
+        try:
+            card = ToolCardWidget({"name": "read_images", "phase": "running"})
+            group.add_tool(card)
+            card.finish({"is_error": True})
+            group.refresh_completion()
+            self.assertEqual(group.header_btn.text(), "Reading images failed")
+        finally:
+            group.deleteLater()
 
     def test_tool_group_error_title_includes_total_tools_and_errors(self):
         group = ToolGroupWidget(parent=self.window)
@@ -5899,8 +5959,18 @@ class GuiUxTests(unittest.TestCase):
         # A second payload in the same event-loop turn used to pick up the offset Qt
         # had already dragged to the bottom.
         self.window._handle_initialized(self._tools_scroll_payload({"tool_05", "tool_06"}))
-        QTest.qWait(60)
 
+        # A fixed delay can expire while Qt still has a collapsed scroll range and
+        # the restore timer is queued. Wait for the layout and restoration to settle.
+        panel = self.window.tools_panel
+        deadline = time.monotonic() + 2.0
+        while (
+            scrollbar.maximum() < 120 or panel._pending_scroll_value is not None
+        ) and time.monotonic() < deadline:
+            QTest.qWait(20)
+
+        self.assertGreaterEqual(scrollbar.maximum(), 120)
+        self.assertIsNone(panel._pending_scroll_value)
         self.assertEqual(scrollbar.value(), 120)
 
 

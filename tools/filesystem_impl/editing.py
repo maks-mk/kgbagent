@@ -1,6 +1,5 @@
 import difflib
 import json
-import logging
 import re
 from pathlib import Path
 
@@ -8,38 +7,68 @@ from core.errors import ErrorType, format_error
 
 from .pathing import atomic_write_text
 
-logger = logging.getLogger(__name__)
-
-_READ_FILE_LINE_NUMBER_RE = re.compile(r"^\s*\d+\s{2}(.*)$")
+_READ_FILE_LINE_NUMBER_RE = re.compile(r"^( *[1-9][0-9]*) {2}(.*)$")
 
 
 def _strip_read_file_line_numbers(text: str) -> tuple[str, bool]:
-    """Remove line-number prefixes produced by read_file(show_line_numbers=True)."""
+    """Accept only complete, consecutive prefixes in read_file's exact format."""
     lines = text.split("\n")
-    meaningful_count = 0
-    numbered_count = 0
+    previous_number = None
     stripped_lines: list[str] = []
-
-    for line in lines:
-        if not line.strip():
+    for index, line in enumerate(lines):
+        if not line and index == len(lines) - 1:
             stripped_lines.append(line)
             continue
+        match = _READ_FILE_LINE_NUMBER_RE.fullmatch(line)
+        if not match:
+            return text, False
+        number = int(match.group(1))
+        if match.group(1) != f"{number:6d}" or (previous_number is not None and number != previous_number + 1):
+            return text, False
+        previous_number = number
+        stripped_lines.append(match.group(2))
+    return "\n".join(stripped_lines), previous_number is not None
 
-        meaningful_count += 1
-        match = _READ_FILE_LINE_NUMBER_RE.match(line)
-        if match:
-            numbered_count += 1
-            stripped_lines.append(match.group(1))
-        else:
-            stripped_lines.append(line)
 
-    if not meaningful_count:
-        return text, False
+def _exact_text_pattern(text: str) -> re.Pattern[str]:
+    return re.compile(r"(?:\r\n|(?<!\r)\n)".join(re.escape(line) for line in text.split("\n")))
 
-    if numbered_count >= max(1, int(meaningful_count * 0.6)):
-        return "\n".join(stripped_lines), True
 
-    return text, False
+def _match_failure_hint(content: str, old_text: str) -> str:
+    """Locate a possible block for diagnostics only; never use it to edit text."""
+    guidance = (
+        "Read the current file with read_file(show_line_numbers=false); copy only file text, "
+        "not headers/footers. Preserve whitespace and do not reuse stale or truncated text."
+    )
+    file_lines = content.replace("\r\n", "\n").split("\n")
+    search_lines = old_text.split("\n")
+    # A shared non-blank line is a bounded, linear-time hint, not fuzzy matching.
+    # Ignoring spaces/tabs here also exposes internal and trailing differences.
+    whitespace = str.maketrans("", "", " \t")
+    anchor_index = max(range(len(search_lines)), key=lambda index: len(search_lines[index].strip()))
+    anchor = search_lines[anchor_index].translate(whitespace)
+    starts = []
+    for index, line in enumerate(file_lines):
+        if index >= anchor_index and line.translate(whitespace) == anchor:
+            starts.append(index - anchor_index)
+            if len(starts) == 3:
+                break
+    if not starts:
+        return guidance
+    if len(starts) > 1:
+        locations = ", ".join(str(start + 1) for start in starts)
+        return f"Possible target blocks start at lines {locations} (up to 3 shown); no block was selected. {guidance}"
+
+    start = starts[0]
+    hint = f"Possible target starts at line {start + 1}. "
+    for index, expected in enumerate(search_lines):
+        actual = file_lines[start + index] if start + index < len(file_lines) else None
+        if expected != actual:
+            expected_preview = repr(expected[:160]) + ("..." if len(expected) > 160 else "")
+            actual_preview = "<EOF>" if actual is None else repr(actual[:160]) + ("..." if len(actual) > 160 else "")
+            hint += f"First differing line {start + index + 1}: old_string={expected_preview}; file={actual_preview}. "
+            break
+    return hint + guidance
 
 
 def _realign_indentation(
@@ -48,27 +77,23 @@ def _realign_indentation(
     search_len: int,
     new_lines: list[str],
 ) -> list[str]:
-    """Re-align new_lines indentation to match the indentation of the block being replaced.
+    """Shift a replacement's base indentation to the matched block's base.
 
-    When the model reads a file with show_line_numbers=True (or otherwise loses leading
-    whitespace) and passes old_string / new_string without proper indentation, the
-    trim/aggressive fallback can find the right block but would write new_lines verbatim,
-    corrupting indentation.  This function detects the delta between the base indentation
-    of new_lines and the base indentation of the matched file block, then shifts every
-    line of new_lines by that delta so the replacement preserves the original indent level.
+    Used only in explicitly requested indentation mode. Relative indentation,
+    internal whitespace, and trailing whitespace are not normalized.
     """
     # Base indentation = indentation of the first non-empty line in the matched file block.
     file_base = ""
     for line in file_lines[match_idx : match_idx + search_len]:
         if line.strip():
-            file_base = line[: len(line) - len(line.lstrip())]
+            file_base = line[: len(line) - len(line.lstrip(" \t"))]
             break
 
     # Base indentation = indentation of the first non-empty line in new_lines.
     new_base = ""
     for line in new_lines:
         if line.strip():
-            new_base = line[: len(line) - len(line.lstrip())]
+            new_base = line[: len(line) - len(line.lstrip(" \t"))]
             break
 
     # Nothing to adjust.
@@ -82,167 +107,194 @@ def _realign_indentation(
             result.append(line)
             continue
 
-        current_indent = line[: len(line) - len(line.lstrip())]
-        content = line.lstrip()
+        current_indent = line[: len(line) - len(line.lstrip(" \t"))]
+        content = line.lstrip(" \t")
 
         if current_indent.startswith(new_base):
             # Strip the model's base indent and prepend the file's base indent,
             # keeping any extra indentation (e.g. nested blocks) intact.
             extra = current_indent[len(new_base):]
             result.append(file_base + extra + content)
+        elif new_base.startswith(current_indent):
+            # A dedent must remove the same whitespace suffix from the file base.
+            removed_indent = new_base[len(current_indent):]
+            if not file_base.endswith(removed_indent):
+                raise ValueError("Cannot preserve relative indentation in this block.")
+            result.append(file_base[:-len(removed_indent)] + content)
         else:
-            # The line is *less* indented than new_base (e.g. a dedented except/else).
-            # Compute how much less, and apply the same relative reduction to file_base.
-            under = len(new_base) - len(current_indent)
-            adjusted_base = file_base[: max(0, len(file_base) - under)]
-            result.append(adjusted_base + content)
+            raise ValueError("Mixed indentation cannot be realigned safely.")
 
     return result
 
 
-def edit_text_file(target: Path, path_label: str, old_string: str, new_string: str, *, replace_all: bool = False) -> str:
+def _apply_text_edit(content: str, old_string: str, new_string: str, *, replace_all: bool, match_mode: str) -> tuple[str, int, list[str]]:
+    if not isinstance(old_string, str) or not old_string.strip():
+        raise ValueError("old_string must be a non-empty string.")
+    if not isinstance(new_string, str):
+        raise ValueError("new_string must be a string (use an empty string to delete text).")
+    if not isinstance(replace_all, bool):
+        raise ValueError("replace_all must be a boolean.")
+    if match_mode not in {"exact", "indentation"}:
+        raise ValueError("match_mode must be 'exact' or 'indentation'.")
+
+    old_text = old_string.replace("\r\n", "\n")
+    new_text = new_string.replace("\r\n", "\n")
+    warnings = []
+
+    # Treat LF/CRLF as equivalent in the search, but preserve untouched bytes,
+    # including mixed line endings and a UTF-8 BOM. Literal text takes priority:
+    # numeric data must never be mistaken for read_file's presentation prefixes.
+    pattern = _exact_text_pattern(old_text)
+    if not pattern.search(content):
+        stripped_text, stripped_old = _strip_read_file_line_numbers(old_text)
+        if stripped_old:
+            if not stripped_text.strip():
+                raise ValueError("old_string is empty after removing line-number prefixes.")
+            old_text = stripped_text
+            # Only a numbered old_string gives us grounds to strip new_string.
+            new_text, _ = _strip_read_file_line_numbers(new_text)
+            pattern = _exact_text_pattern(old_text)
+            warnings.append("read_file line-number prefixes were removed before applying the edit. Verify the diff carefully.")
+    count = 0
+    previous_end = 0
+    for candidate in re.finditer(f"(?=({pattern.pattern}))", content):
+        if candidate.start() < previous_end:
+            raise ValueError("Exact matches overlap; provide a non-overlapping target block.")
+        previous_end = candidate.end(1)
+        count += 1
+    if count:
+        if count > 1 and not replace_all:
+            raise ValueError(
+                f"Found {count} identical occurrences of the exact target text. "
+                "Provide more context to uniquely identify the block, or set replace_all=true."
+            )
+
+        def replacement(match):
+            newline = "\r\n" if "\r\n" in match.group() else ("\r\n" if "\r\n" in content else "\n")
+            return new_text.replace("\n", newline)
+
+        return pattern.sub(replacement, content, count=0 if replace_all else 1), count, warnings
+
+    if match_mode == "exact":
+        raise ValueError(
+            "Could not find an exact match for old_string. " + _match_failure_hint(content, old_text)
+            + " Use match_mode='indentation' only for an intentional leading-indentation adjustment."
+        )
+
+    file_lines = content.replace("\r\n", "\n").split("\n")
+    search_lines = old_text.split("\n")
+    trailing_newline = old_text.endswith("\n")
+    if trailing_newline:
+        search_lines.pop()
+    search_len = len(search_lines)
+    matches = []
+    for index in range(len(file_lines) - search_len + 1):
+        block = file_lines[index:index + search_len]
+        # No trimming of trailing or internal whitespace, and no independent
+        # re-indentation of nested lines: only one base-indent shift is allowed.
+        if [line.lstrip(" \t") for line in block] != [line.lstrip(" \t") for line in search_lines]:
+            continue
+        try:
+            aligned_search = _realign_indentation(file_lines, index, search_len, search_lines)
+        except ValueError:
+            continue
+        if aligned_search != block:
+            continue
+        if trailing_newline and index + search_len >= len(file_lines):
+            continue
+        matches.append(index)
+    if not matches:
+        raise ValueError(
+            "Could not find a leading-indentation match for old_string. "
+            "Internal/trailing whitespace and relative indentation must match exactly. "
+            + _match_failure_hint(content, old_text)
+        )
+    if len(matches) > 1 and not replace_all:
+        raise ValueError(f"Found {len(matches)} occurrences of the target block. Provide more context or set replace_all=true.")
+    if any(right < left + search_len for left, right in zip(matches, matches[1:])):
+        raise ValueError("Indentation matches overlap; provide a non-overlapping target block.")
+
+    raw_lines = content.split("\n")
+    starts = []
+    cursor = 0
+    for line in raw_lines:
+        starts.append(cursor)
+        cursor += len(line) + 1
+    updated = content
+    for index in reversed(matches):
+        end_line = index + search_len - 1
+        end = starts[end_line] + len(raw_lines[end_line])
+        if trailing_newline:
+            end += 1
+        elif end_line + 1 < len(raw_lines) and raw_lines[end_line].endswith("\r"):
+            end -= 1
+        begin = starts[index]
+        matched = content[begin:end]
+        newline = "\r\n" if "\r\n" in matched else ("\r\n" if "\r\n" in content else "\n")
+        replacement_lines = _realign_indentation(file_lines, index, search_len, new_text.split("\n"))
+        updated = updated[:begin] + "\n".join(replacement_lines).replace("\n", newline) + updated[end:]
+    warnings.append("Explicit indentation match used; replacement indentation was realigned. Verify the diff carefully.")
+    return updated, len(matches), warnings
+
+
+def edit_text_file(
+    target: Path, path_label: str, old_string: str | None = None, new_string: str | None = None,
+    *, replace_all: bool = False, match_mode: str = "exact", edits: list[dict] | None = None,
+) -> str:
+    """Apply ordered edits in memory, validate the final result, then write once."""
     try:
         if not target.exists():
             return format_error(ErrorType.NOT_FOUND, f"File '{path_label}' not found.")
-        if not isinstance(replace_all, bool):
-            return format_error(ErrorType.VALIDATION, "replace_all must be a boolean.")
+        if not target.is_file():
+            return format_error(ErrorType.VALIDATION, f"'{path_label}' is not a file.")
+        if edits is not None:
+            if old_string is not None or new_string is not None or replace_all or match_mode != "exact":
+                raise ValueError("Do not mix edits with top-level old_string/new_string/replace_all/match_mode.")
+            if not isinstance(edits, list) or not 1 <= len(edits) <= 20:
+                raise ValueError("edits must contain 1-20 replacements for the same file.")
+            operations = edits
+        else:
+            operations = [{"old_string": old_string, "new_string": new_string,
+                           "replace_all": replace_all, "match_mode": match_mode}]
+        for index, operation in enumerate(operations, 1):
+            if not isinstance(operation, dict) or set(operation) - {"old_string", "new_string", "replace_all", "match_mode"}:
+                raise ValueError(f"Edit {index}: only old_string, new_string, replace_all and match_mode are allowed.")
 
         original_bytes = target.read_bytes()
-        content = original_bytes.decode("utf-8", errors="replace")
-        original_newline = "\r\n" if "\r\n" in content else "\n"
-        content_norm = content.replace("\r\n", "\n")
-        old_string_norm = old_string.replace("\r\n", "\n")
-        new_string_norm = new_string.replace("\r\n", "\n")
-
-        old_string_norm, stripped_old_line_numbers = _strip_read_file_line_numbers(old_string_norm)
-        new_string_norm, stripped_new_line_numbers = _strip_read_file_line_numbers(new_string_norm)
-
-        fallback_warning: str = ""
-        line_number_warning: str = ""
-        if stripped_old_line_numbers or stripped_new_line_numbers:
-            logger.info("edit_file: stripped read_file line-number prefixes for '%s'.", path_label)
-            line_number_warning = (
-                "\n\n⚠ Warning: read_file line-number prefixes were removed before applying the edit. "
-                "Verify the diff carefully."
-            )
-
-        count = content_norm.count(old_string_norm)
-        if count == 1:
-            new_content = content_norm.replace(old_string_norm, new_string_norm, 1)
-        elif count > 1 and replace_all:
-            new_content = content_norm.replace(old_string_norm, new_string_norm)
-        elif count > 1:
-            return format_error(
-                ErrorType.VALIDATION,
-                f"Found {count} identical occurrences of the exact target text. "
-                "Provide more context to uniquely identify the block, or set replace_all=true.",
-            )
-        else:
-            file_lines = content_norm.split("\n")
-            search_lines = old_string_norm.split("\n")
-
-            while search_lines and not search_lines[0].strip():
-                search_lines.pop(0)
-            while search_lines and not search_lines[-1].strip():
-                search_lines.pop()
-
-            if not search_lines:
-                return format_error(ErrorType.VALIDATION, "old_string is empty or only contains whitespaces.")
-
-            search_len = len(search_lines)
-
-            def find_matches(normalize_line):
-                search_norm = [normalize_line(line) for line in search_lines]
-                file_norm = [normalize_line(line) for line in file_lines]
-                return [
-                    index
-                    for index in range(len(file_lines) - search_len + 1)
-                    if file_norm[index : index + search_len] == search_norm
-                ]
-
-            match_mode = "trim"
-            matches = find_matches(lambda value: value.strip())
-            if not matches and search_len >= 3:
-                match_mode = "aggressive"
-                matches = find_matches(lambda value: "".join(value.split()))
-            elif not matches and search_len < 3:
-                snippet = old_string_norm[:80].replace("\n", "\\n")
-                return format_error(
-                    ErrorType.VALIDATION,
-                    f"Could not find an exact/indentation-safe match for short old_string snippet '{snippet}...'. "
-                    "For 1-2 line replacements, provide exact text or include more surrounding lines.",
+        try:
+            content = original_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            return format_error(ErrorType.VALIDATION, f"File '{path_label}' is not valid UTF-8 (byte {exc.start}). No changes were written.")
+        new_content = content
+        replacements = 0
+        warnings = []
+        for index, operation in enumerate(operations, 1):
+            try:
+                new_content, count, edit_warnings = _apply_text_edit(
+                    new_content, operation.get("old_string"), operation.get("new_string"),
+                    replace_all=operation.get("replace_all", False), match_mode=operation.get("match_mode", "exact"),
                 )
-
-            if len(matches) == 0:
-                snippet = old_string_norm[:50].replace("\n", "\\n")
-                return format_error(
-                    ErrorType.VALIDATION,
-                    f"Could not find a match for 'old_string'.\n"
-                    f"Snippet: '{snippet}...'.\n"
-                    "Make sure you are replacing existing lines and DID NOT include line numbers in old_string.",
-                )
-            if len(matches) > 1:
-                return format_error(
-                    ErrorType.VALIDATION,
-                    f"Found {len(matches)} occurrences of the target block. "
-                    "Please include more surrounding lines to uniquely identify the block.",
-                )
-
-            match_idx = matches[0]
-
-            if match_mode == "aggressive":
-                logger.warning("edit_file: aggressive whitespace-insensitive match used for '%s'.", path_label)
-                fallback_warning = (
-                    "\n\n⚠ Warning: exact match failed — aggressive (whitespace-insensitive) fallback was used. "
-                    "Indentation of new_string was realigned to match the replaced block. "
-                    "Verify the diff carefully."
-                )
-            else:
-                logger.info("edit_file: trim (indentation-insensitive) fallback used for '%s'.", path_label)
-                fallback_warning = (
-                    "\n\n⚠ Warning: exact match failed — trim (indentation-insensitive) fallback was used. "
-                    "Indentation of new_string was realigned to match the replaced block. "
-                    "Verify the diff carefully."
-                )
-
-            # FIX: realign new_string indentation to the file block before substitution.
-            new_string_lines = _realign_indentation(
-                file_lines, match_idx, search_len, new_string_norm.split("\n")
-            )
-
-            new_file_lines = (
-                file_lines[:match_idx]
-                + new_string_lines
-                + file_lines[match_idx + search_len :]
-            )
-            new_content = "\n".join(new_file_lines)
-
-        final_content = new_content.replace("\n", original_newline)
-        if new_content == content_norm:
+            except ValueError as exc:
+                context = " Diagnostics refer to content after preceding edits in memory." if index > 1 else ""
+                raise ValueError(f"Edit {index}: {exc}{context} No changes were written.") from exc
+            replacements += count
+            warnings.extend(warning for warning in edit_warnings if warning not in warnings)
+        if new_content == content:
             return "No changes: replacement is identical to the existing text."
         if target.suffix.lower() == ".json":
             try:
-                json.loads(final_content.removeprefix("\ufeff"))
+                json.loads(new_content.removeprefix("\ufeff"))
             except json.JSONDecodeError as exc:
-                return format_error(
-                    ErrorType.VALIDATION,
-                    f"Edit would produce invalid JSON in '{path_label}' (line {exc.lineno}, column {exc.colno}): {exc.msg}",
-                )
+                raise ValueError(f"Edit would produce invalid JSON in '{path_label}' (line {exc.lineno}, column {exc.colno}): {exc.msg}. No changes were written.") from exc
 
-        atomic_write_text(target, final_content, expected_content=original_bytes)
-
+        atomic_write_text(target, new_content, expected_content=original_bytes)
         diff = difflib.unified_diff(
-            content_norm.splitlines(),
-            new_content.splitlines(),
-            fromfile=f"a/{path_label}",
-            tofile=f"b/{path_label}",
-            lineterm="",
+            content.splitlines(), new_content.splitlines(), fromfile=f"a/{path_label}", tofile=f"b/{path_label}", lineterm="",
         )
+        warning_text = "".join(f"\n\nWarning: {warning}" for warning in warnings)
         diff_text = "\n".join(diff)
-        replacements = count if count > 0 else 1
-        return (
-            f"Success: File edited. ({replacements} replacement(s))"
-            f"{line_number_warning}{fallback_warning}\n\nDiff:\n```diff\n{diff_text}\n```"
-        )
+        return f"Success: File edited. ({replacements} replacement(s)){warning_text}\n\nDiff:\n```diff\n{diff_text}\n```"
+    except ValueError as exc:
+        return format_error(ErrorType.VALIDATION, str(exc))
     except Exception as exc:
         return format_error(ErrorType.EXECUTION, f"Error editing file: {exc}")

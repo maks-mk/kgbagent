@@ -37,9 +37,13 @@ _DESTRUCTIVE_COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 _LONG_RUNNING_SERVICE_RE = re.compile(
-    r"(?:^|[;&|()])\s*(?:python(?:3(?:\.\d+)?)?\s+-m\s+http\.server|http-server|npm\s+start|"
+    r"(?:^|[;&|()\"])\s*(?:\"[^\"]*[\\/]|\S*[\\/])?(?:"
+    r"(?:python(?:3(?:\.\d+)?)?|py)(?:\.exe)?\"?\s+-m\s+(?:http\.server|uvicorn|flask\s+run)|"
+    r"http-server(?:\.cmd|\.exe)?|npm\s+start|"
     r"npm\s+run\s+dev|npm\s+exec\b.*\bhttp-server\b|npx\b.*\bhttp-server\b|"
-    r"uvicorn|flask\s+run|webpack(?:\.cmd)?\s+serve|serve(?:\.cmd|\.ps1|\.exe)?)(?=$|[;&|()\s])",
+    r"uvicorn(?:\.exe)?|flask(?:\.exe)?\s+run|webpack(?:\.cmd)?\s+serve|"
+    r"serve(?:\.cmd|\.ps1|\.exe)?"
+    r")(?=$|[;&|()\s\"])",
     re.IGNORECASE,
 )
 _HTTP_PROBE_COMMAND_RE = re.compile(
@@ -636,6 +640,15 @@ def shell_command_requires_approval(command: str) -> bool:
     return True
 
 
+def is_background_cli_exec(tool_args: Dict[str, Any] | None) -> bool:
+    """True when ``cli_exec`` is asked to start a detached process."""
+
+    value = (tool_args or {}).get("background")
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 def tool_requires_approval(
     tool_name: str,
     tool_args: Dict[str, Any] | None = None,
@@ -651,6 +664,9 @@ def tool_requires_approval(
     if normalized_name == "cli_exec":
         command = str(((tool_args or {}).get("command")) or "").strip()
         if not command:
+            return True
+        if is_background_cli_exec(tool_args):
+            # A detached process outlives the tool call, so it is always protected.
             return True
         return shell_command_requires_approval(command)
 

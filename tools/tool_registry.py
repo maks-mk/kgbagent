@@ -295,7 +295,7 @@ class ToolRegistry:
     def sync_working_directory(self, cwd: str | Path | None = None) -> None:
         """Propagate runtime cwd to local tool modules that cache workspace roots."""
         target_cwd = str(Path(cwd or Path.cwd()).resolve())
-        for module_name in ("tools.filesystem", "tools.local_shell", "tools.process_tools", "tools.skills"):
+        for module_name in ("tools.filesystem", "tools.local_shell", "tools.skills"):
             try:
                 module = importlib.import_module(module_name)
             except Exception:
@@ -406,29 +406,6 @@ class ToolRegistry:
                     ),
                     "crawl_site": ToolMetadata(
                         name="crawl_site", read_only=True, networked=True
-                    ),
-                },
-            ),
-            ToolLoaderSpec(
-                name="process",
-                enabled=lambda config: config.enable_process_tools,
-                module_name="tools.process_tools",
-                tool_names=("run_background_process", "stop_background_process", "find_process_by_port"),
-                configure=self._configure_safety,
-                metadata={
-                    "run_background_process": ToolMetadata(
-                        name="run_background_process",
-                        mutating=True,
-                        requires_approval=True,
-                    ),
-                    "stop_background_process": ToolMetadata(
-                        name="stop_background_process",
-                        mutating=True,
-                        destructive=True,
-                        requires_approval=True,
-                    ),
-                    "find_process_by_port": ToolMetadata(
-                        name="find_process_by_port", read_only=True
                     ),
                 },
             ),

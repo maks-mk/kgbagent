@@ -623,23 +623,23 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertTrue(any(payload["name"] == "edit_file" and payload["diff"] for payload in tool_finished_payloads))
         self.assertTrue(any(payload["is_error"] and "boom" in payload["content"] for payload in tool_finished_payloads))
 
-    def test_stream_processor_treats_free_port_result_as_success(self):
+    def test_stream_processor_treats_empty_search_result_as_success(self):
         events = []
         processor = StreamProcessor(events.append)
-        processor.tool_buffer["call-port-check"] = {"name": "find_process_by_port", "args": {"port": 8000}}
+        processor.tool_buffer["call-search"] = {"name": "search_in_files", "args": {"pattern": "absent"}}
 
         processor._handle_tool_result(
             ToolMessage(
-                tool_call_id="call-port-check",
-                name="find_process_by_port",
-                content="No process found listening on port 8000.",
+                tool_call_id="call-search",
+                name="search_in_files",
+                content="No matches found.",
             )
         )
 
         finished = [event.payload for event in events if event.type == "tool_finished"]
         self.assertEqual(len(finished), 1)
         self.assertFalse(finished[0]["is_error"])
-        self.assertIn("No process found listening on port 8000.", finished[0]["content"])
+        self.assertIn("No matches found.", finished[0]["content"])
 
     def test_stream_processor_treats_successful_read_file_error_like_contents_as_success(self):
         events = []
@@ -3649,7 +3649,7 @@ class StreamAndFilesystemTests(unittest.TestCase):
         result = asyncio.run(local_shell.cli_exec.ainvoke({"command": "npm exec -- npx http-server -p 8080"}))
 
         self.assertIn("Foreground service/server commands are not supported", result)
-        self.assertIn("run_background_process", result)
+        self.assertIn("background=true", result)
 
     def test_cli_exec_decodes_utf8_and_legacy_windows_output(self):
         cases = (

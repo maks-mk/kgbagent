@@ -38,9 +38,6 @@ TOOL_ROLE_ICONS = {
     "crawl": "fa5s.spider",
     "download": "fa5s.download",
     "delete": "fa5s.trash-alt",
-    "start_process": "fa5s.play",
-    "stop_process": "fa5s.stop",
-    "find_process": "fa5s.network-wired",
     "input": "fa5s.comment-dots",
     "skills": "fa5s.book",
     "tool": "fa5s.tools",
@@ -220,6 +217,16 @@ class _ToolActionLabel(ElidedLabel):
     # wider than fontMetrics().horizontalAdvance(); keep a small reserve so
     # the trailing characters are not clipped by the adjacent chevron button.
     WIDTH_RESERVE_PX = 2
+    _details_tooltip = ""
+
+    def set_details_tooltip(self, text: str) -> None:
+        self._details_tooltip = text
+        self.setToolTip(text)
+
+    def _update_elided_text(self) -> None:
+        super()._update_elided_text()
+        if self._details_tooltip:
+            self.setToolTip(self._details_tooltip)
 
     def sizeHint(self) -> QSize:
         hint = super().sizeHint()
@@ -369,12 +376,6 @@ class ToolCardWidget(QFrame):
             return "download"
         if normalized in {"safe_delete_file", "safe_delete_directory"}:
             return "delete"
-        if normalized == "run_background_process":
-            return "start_process"
-        if normalized == "stop_background_process":
-            return "stop_process"
-        if normalized == "find_process_by_port":
-            return "find_process"
         if normalized == "request_user_input":
             return "input"
         if normalized == "read_skills":
@@ -396,12 +397,13 @@ class ToolCardWidget(QFrame):
             return "Tool call rejected"
         if str(payload.get("source_kind", "") or "") == "mcp":
             return str(payload.get("display", "") or normalized_name or "MCP")
-        role = cls._tool_role(name)
+        role = "read_images" if normalized_name == "read_images" else cls._tool_role(name)
         is_error = bool(payload.get("is_error", False))
         action_titles = {
             "write": "Writing",
             "edit": "Editing",
             "read": "Reading",
+            "read_images": "Reading images",
             "command": "Running",
             "search": "Searching",
             "list": "Listing",
@@ -410,9 +412,6 @@ class ToolCardWidget(QFrame):
             "crawl": "Crawling",
             "download": "Downloading",
             "delete": "Deleting",
-            "start_process": "Starting process",
-            "stop_process": "Stopping process",
-            "find_process": "Finding process",
             "input": "Requesting input",
             "skills": "Reading Skills",
         }
@@ -420,6 +419,7 @@ class ToolCardWidget(QFrame):
             "write": "Wrote",
             "edit": "Edited",
             "read": "Read",
+            "read_images": "Read images",
             "command": "Ran",
             "search": "Searched",
             "list": "Listed",
@@ -428,13 +428,12 @@ class ToolCardWidget(QFrame):
             "crawl": "Crawled",
             "download": "Downloaded",
             "delete": "Deleted",
-            "start_process": "Started process",
-            "stop_process": "Stopped process",
-            "find_process": "Found process",
             "input": "Requested input",
             "skills": "Read Skills",
         }
         phase = str(payload.get("phase", "running") or "running")
+        if role == "read_images" and phase == "preparing" and not is_error and payload.get("args_state") == "pending":
+            return "Preparing image read"
         titles = action_titles if is_error or phase != "finished" else completed_titles
         title = titles.get(role)
         if title:
@@ -601,6 +600,11 @@ class ToolCardWidget(QFrame):
             phase=str(normalized.get("phase", "running") or "running"),
             is_error=bool(normalized.get("is_error", False)),
         )
+        if str(normalized.get("name", "")).strip() in {"read_file", "Read"} and normalized_args.get("requests"):
+            # Older sessions and streamed updates may carry labels made before
+            # batch targets were available. Derive them from the current args.
+            for key in ("subtitle", "raw_display", "args_state"):
+                normalized[key] = labels[key]
         normalized.setdefault("display", labels.get("title") or normalized.get("name", "tool"))
         normalized.setdefault("subtitle", labels.get("subtitle", ""))
         normalized.setdefault("raw_display", labels.get("raw_display") or format_tool_display(str(normalized.get("name", "")), normalized_args))
@@ -677,7 +681,7 @@ class ToolCardWidget(QFrame):
         else:
             self.action_label.set_full_text(action_line)
         self.action_label.updateGeometry()
-        self.action_label.setToolTip(raw_display if raw_display and raw_display != action_line else action_line)
+        self.action_label.set_details_tooltip(raw_display if raw_display and raw_display != action_line else action_line)
 
         if finished:
             subtitle = self._compact_argument_text(normalized, normalized_args)

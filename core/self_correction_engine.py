@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shlex
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
@@ -58,30 +57,10 @@ def repair_fingerprint(tool_name: str, tool_args: Dict[str, Any], error_type: st
 def _normalize_args_dict(tool_args: Any) -> Dict[str, Any]:
     if not isinstance(tool_args, dict):
         return {}
-    normalized: Dict[str, Any] = {}
-    for key, value in tool_args.items():
-        if value is None:
-            continue
-        if isinstance(value, str):
-            stripped = value.strip()
-            if stripped:
-                normalized[str(key)] = stripped
-            continue
-        normalized[str(key)] = value
-    return normalized
-
-
-def _split_command(command: str) -> List[str]:
-    raw = str(command or "").strip()
-    if not raw:
-        return []
-    try:
-        parts = shlex.split(raw, posix=False)
-        if parts:
-            return [str(part) for part in parts]
-    except Exception:
-        pass
-    return [part for part in re.split(r"\s+", raw) if part]
+    # Tool payloads are literal data: empty replacement strings delete text,
+    # and indentation/trailing whitespace can be significant. Normalize only
+    # specific fields below, never strip every string in an arbitrary payload.
+    return {str(key): value for key, value in tool_args.items() if value is not None}
 
 
 _NONINTERACTIVE_PATCHERS: Tuple[Tuple[re.Pattern[str], Any], ...] = (
@@ -241,27 +220,6 @@ def normalize_tool_args(tool_name: str, tool_args: Dict[str, Any], current_task:
                 changes.append(f"{alias}->path")
                 break
 
-    if name in {"find_process_by_port"}:
-        port_value = normalized.get("port")
-        if isinstance(port_value, str) and port_value.isdigit():
-            normalized["port"] = int(port_value)
-            changes.append("port:str->int")
-
-    if name in {"stop_background_process"}:
-        pid_value = normalized.get("pid")
-        if isinstance(pid_value, str) and pid_value.isdigit():
-            normalized["pid"] = int(pid_value)
-            changes.append("pid:str->int")
-
-    if name == "run_background_process":
-        command = normalized.get("command")
-        if isinstance(command, str):
-            normalized["command"] = _split_command(command)
-            changes.append("command:str->list")
-        if normalized.get("cwd", "") == "":
-            normalized.pop("cwd", None)
-            changes.append("cwd:empty_removed")
-
     if name == "edit_file":
         alias_map = (
             ("old_text", "old_string"),
@@ -275,7 +233,7 @@ def normalize_tool_args(tool_name: str, tool_args: Dict[str, Any], current_task:
             if new_key in normalized:
                 continue
             candidate = normalized.get(old_key)
-            if isinstance(candidate, str) and candidate.strip():
+            if isinstance(candidate, str):
                 normalized[new_key] = candidate
                 changes.append(f"{old_key}->{new_key}")
         for old_key, _ in alias_map:
@@ -397,18 +355,22 @@ def build_repair_plan(
         command = str(original_args.get("command") or "").strip()
         profile = classify_shell_command(command)
         if profile.get("long_running_service"):
-            run_bg_args = {"command": _split_command(command)} if command else {}
+            background_args = dict(original_args)
+            background_args["background"] = True
             return _repair_plan(
-                strategy="switch_tool",
+                strategy="normalize_args",
                 reason="cli_exec_foreground_service",
                 fingerprint=fingerprint,
                 tool_name=tool_name,
-                suggested_tool_name="run_background_process",
+                suggested_tool_name=tool_name,
                 original_args=original_args,
-                patched_args=run_bg_args,
-                notes="Use run_background_process for long-running services.",
+                patched_args=background_args,
+                notes="Long-running services run through cli_exec background mode.",
                 max_auto_repairs=max_auto_repairs,
-                llm_guidance="Switch to run_background_process with argv-style command arguments.",
+                llm_guidance=(
+                    "Retry cli_exec with background=true; it starts the command detached and "
+                    "returns the PID and log path immediately."
+                ),
             )
 
         command = str(original_args.get("command") or "").strip()

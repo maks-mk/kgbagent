@@ -4,15 +4,6 @@ from core.self_correction_engine import _inject_yes_flag, build_repair_plan, nor
 
 
 class SelfCorrectionEngineTests(unittest.TestCase):
-    def test_normalize_run_background_process_command_string(self):
-        args, changes = normalize_tool_args(
-            "run_background_process",
-            {"command": "python -m http.server 8000", "cwd": ""},
-        )
-        self.assertIn("command:str->list", changes)
-        self.assertIn("cwd:empty_removed", changes)
-        self.assertEqual(args["command"][:3], ["python", "-m", "http.server"])
-
     def test_normalize_edit_file_aliases(self):
         args, changes = normalize_tool_args(
             "edit_file",
@@ -22,6 +13,31 @@ class SelfCorrectionEngineTests(unittest.TestCase):
         self.assertIn("new_text->new_string", changes)
         self.assertEqual(args["old_string"], "a")
         self.assertEqual(args["new_string"], "b")
+
+    def test_normalization_preserves_literal_payloads(self):
+        for replacement in ("", " \t\n", "    replacement \r\n"):
+            for aliases in (False, True):
+                with self.subTest(replacement=replacement, aliases=aliases):
+                    old_key, new_key = ("old_text", "new_text") if aliases else ("old_string", "new_string")
+                    original = {"path": "demo.txt", old_key: "\told text \r\n", new_key: replacement}
+                    args, _ = normalize_tool_args("edit_file", original)
+                    self.assertEqual(args, {"path": "demo.txt", "old_string": "\told text \r\n", "new_string": replacement})
+                    self.assertEqual(original[new_key], replacement)
+        body = "\n    indented content \t\n"
+        args, changes = normalize_tool_args("write_file", {"file_path": "demo.txt", "content": body})
+        self.assertIn("file_path->path", changes)
+        self.assertEqual(args["content"], body)
+
+    def test_repair_plan_preserves_deletion_text(self):
+        plan = build_repair_plan({
+            "tool_names": ["edit_file"],
+            "tool_args": {"path": "demo.txt", "old_string": "    old \n", "new_string": ""},
+            "summary": "Could not find a match for 'old_string'.",
+            "error_type": "VALIDATION",
+        }, current_task="Исправь файл")
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.patched_args["old_string"], "    old \n")
+        self.assertEqual(plan.patched_args["new_string"], "")
 
     def test_normalize_filesystem_path_aliases_to_canonical_path(self):
         args, changes = normalize_tool_args(

@@ -12,7 +12,3 @@ class SafetyPolicy(BaseModel):
     max_search_chars: int = Field(default=10000, description="Maximum characters for search results")
     max_read_lines: int = Field(default=DEFAULT_READ_LIMIT, description="Maximum lines to read from a file")
     allow_shell: bool = Field(default=False, description="Allow execution of shell commands")
-    allow_external_process_control: bool = Field(
-        default=False,
-        description="Allow stopping arbitrary external processes outside the agent registry",
-    )

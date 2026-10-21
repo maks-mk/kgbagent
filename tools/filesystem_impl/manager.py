@@ -1,5 +1,6 @@
 import errno
 import itertools
+import json
 import os
 from pathlib import Path
 from typing import Optional, Union
@@ -91,87 +92,192 @@ class FilesystemManager:
         except Exception as exc:
             return format_error(ErrorType.EXECUTION, str(exc))
 
-    # FIX: show_line_numbers default changed from True to False.
-    #
-    # Root cause of indentation corruption:
-    #   With show_line_numbers=True the model receives lines prefixed as "     1  code",
-    #   copies them into old_string/new_string, exact-match fails (prefix not in file),
-    #   trim/aggressive fallback finds the block anyway, and new_string (without proper
-    #   indentation) is written verbatim — corrupting indentation.
-    #
-    #   Changing the default to False eliminates the prefix entirely, making exact-match
-    #   succeed in the normal case.  The secondary defence (indentation realignment in
-    #   editing.py) handles any residual cases where indentation still drifts.
-    #
-    # Callers that explicitly need line numbers can still pass show_line_numbers=True.
-    def read_file(self, path: str, offset: int = 0, limit: int = DEFAULT_READ_LIMIT, show_line_numbers: bool = False) -> str:
+    def _read_file_page(self, path: str, offset: int, limit: int, show_line_numbers: bool, char_budget: int) -> dict:
+        """Read a bounded page; metadata is kept separate so truncation cannot hide it."""
         try:
+            if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+                raise ValueError("offset must be a non-negative integer.")
+            if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+                raise ValueError("limit must be a positive integer.")
+            if not isinstance(show_line_numbers, bool):
+                raise ValueError("show_line_numbers must be a boolean.")
             target = self._resolve_path(path, for_read=True)
             if not target.exists():
-                return format_error(ErrorType.NOT_FOUND, f"File '{path}' not found.")
+                return {"error": format_error(ErrorType.NOT_FOUND, f"File '{path}' not found.")}
             if not target.is_file():
-                return format_error(ErrorType.VALIDATION, f"'{path}' is not a file.")
-
+                raise ValueError(f"'{path}' is not a file.")
             stats = target.stat()
             max_size = self.safety_policy.max_file_size if self.safety_policy else DEFAULT_MAX_FILE_SIZE
             if stats.st_size > max_size:
-                return format_error(ErrorType.LIMIT_EXCEEDED, f"File is too large ({stats.st_size} bytes). Max: {max_size}.")
+                return {"error": format_error(ErrorType.LIMIT_EXCEEDED, f"File is too large ({stats.st_size} bytes). Max: {max_size}.")}
             if self._is_binary(target):
-                return format_error(ErrorType.VALIDATION, "File binary or unknown encoding.")
-            if stats.st_size == 0:
-                return "System reminder: File exists but has empty contents."
-
+                raise ValueError("File binary or unknown encoding.")
             total_lines = self._count_lines(target)
+            if offset >= total_lines and total_lines > 0:
+                raise ValueError(f"Line offset {offset} exceeds file length ({total_lines} lines).")
             policy_limit = self.safety_policy.max_read_lines if self.safety_policy else DEFAULT_READ_LIMIT
             limit = min(limit, policy_limit)
-            if offset >= total_lines and total_lines > 0:
-                return format_error(ErrorType.VALIDATION, f"Line offset {offset} exceeds file length ({total_lines} lines).")
-
-            char_budget = max(500, self._tool_limit() - 120)
-            result: list[str] = []
+            result = []
             chars_used = 0
             lines_read = 0
-            long_line_warning = ""
-            try:
-                with open(target, "r", encoding="utf-8", errors="replace") as file_obj:
-                    for index, line in enumerate(itertools.islice(file_obj, offset, offset + limit)):
-                        clean_line = line.rstrip("\n").rstrip("\r")
-                        formatted = f"{offset + index + 1:6}  {clean_line}" if show_line_numbers else clean_line
-                        line_chars = len(formatted) + 1
-                        if chars_used + line_chars > char_budget:
-                            if not result:
-                                # A single line longer than the whole budget: show its
-                                # prefix instead of returning an empty page.
-                                result.append(formatted[:char_budget])
-                                lines_read = 1
-                                long_line_warning = (
-                                    f"\n\n[TRUNCATED LINE] Line {offset + 1}: only its prefix is shown. "
-                                    "The remainder of this line is omitted; use cli_exec to read character "
-                                    "ranges or increase max_tool_output."
-                                )
-                            break
-                        result.append(formatted)
-                        chars_used += line_chars
-                        lines_read += 1
-            except Exception as exc:
-                return format_error(ErrorType.EXECUTION, f"Error reading file stream: {exc}")
-
-            output = "\n".join(result) + long_line_warning
-            end_index = offset + lines_read
-            if total_lines > end_index:
-                output += (
-                    f"\n\n[TRUNCATED] Showing lines {offset + 1}-{end_index} of {total_lines} "
-                    f"({stats.st_size} bytes total). "
-                    f"To continue: read_file(path='{path}', offset={end_index}, "
-                    f"limit={limit}, show_line_numbers={show_line_numbers})"
-                )
-            else:
-                if offset == 0 and not show_line_numbers and end_index >= total_lines:
-                    return self._truncate(output, source="read_file")
-                output += f"\n\n[EOF] Lines {offset + 1}-{end_index} of {total_lines} ({stats.st_size} bytes)."
-            return self._truncate(output, source="read_file")
+            truncated_line = False
+            with open(target, "r", encoding="utf-8") as file_obj:
+                for index, line in enumerate(itertools.islice(file_obj, offset, offset + limit)):
+                    clean_line = line.rstrip("\n").rstrip("\r")
+                    formatted = f"{offset + index + 1:6}  {clean_line}" if show_line_numbers else clean_line
+                    line_chars = len(formatted) + (1 if result else 0)
+                    if chars_used + line_chars > char_budget:
+                        if not result and char_budget > 0:
+                            result.append(formatted[:char_budget])
+                            lines_read = 1
+                            truncated_line = True
+                        break
+                    result.append(formatted)
+                    chars_used += line_chars
+                    lines_read += 1
+            return {"content": "\n".join(result), "offset": offset, "end": offset + lines_read if total_lines else 0,
+                    "total": total_lines, "size": stats.st_size, "limit": limit,
+                    "truncated_line": truncated_line, "lines_read": lines_read}
+        except UnicodeDecodeError:
+            return {"error": format_error(ErrorType.VALIDATION, "File is not valid UTF-8. Convert it to UTF-8 before reading.")}
+        except ValueError as exc:
+            return {"error": format_error(ErrorType.VALIDATION, str(exc))}
         except Exception as exc:
-            return format_error(ErrorType.EXECUTION, f"Error reading file: {exc}")
+            return {"error": format_error(ErrorType.EXECUTION, f"Error reading file: {exc}")}
+
+
+    def read_file(self, path: str, offset: int = 0, limit: int = DEFAULT_READ_LIMIT, show_line_numbers: bool = False) -> str:
+        budget = max(0, self._tool_limit())
+        page = self._read_file_page(path, offset, limit, show_line_numbers, budget)
+        if "error" in page:
+            return self._truncate(page["error"], source="read_file")
+        if page["size"] == 0:
+            message = "System reminder: File exists but has empty contents."
+            if len(message) <= budget:
+                return message
+            return self._truncate(format_error(ErrorType.LIMIT_EXCEEDED, "Increase max_tool_output."), source="read_file")
+
+        def footer() -> str:
+            metadata = ""
+            if page["truncated_line"]:
+                metadata += (f"\n\n[TRUNCATED LINE] Line {offset + 1}: only its prefix is shown. "
+                             "The remainder of this line is omitted; use cli_exec to read character "
+                             "ranges or increase max_tool_output.")
+            end_index = page["end"]
+            if page["total"] > end_index:
+                metadata += (f"\n\n[TRUNCATED] Showing lines {offset + 1}-{end_index} of {page['total']} "
+                             f"({page['size']} bytes total). "
+                             f"To continue: read_file(path={path!r}, offset={end_index}, "
+                             f"limit={page['limit']}, show_line_numbers={show_line_numbers})")
+            elif (offset or show_line_numbers) and not page["truncated_line"]:
+                metadata += f"\n\n[EOF] Lines {offset + 1}-{end_index} of {page['total']} ({page['size']} bytes)."
+            return metadata
+
+        # Trim content, never metadata, and preserve complete line boundaries first.
+        content = page["content"]
+        metadata = footer()
+        while len(content) + len(metadata) > budget:
+            if page["lines_read"] > 1:
+                content = content.rsplit("\n", 1)[0]
+                page["lines_read"] -= 1
+                page["end"] -= 1
+            else:
+                page["truncated_line"] = True
+                metadata = footer()
+                allowance = budget - len(metadata)
+                if allowance < 1:
+                    return self._truncate(format_error(ErrorType.LIMIT_EXCEEDED, "Increase max_tool_output to retain read metadata."), source="read_file")
+                content = content[:allowance]
+            metadata = footer()
+        return content + metadata
+
+
+    def read_files(self, requests: list[dict], limit: int = DEFAULT_READ_LIMIT) -> str:
+        """Internal batch implementation of read_file, with one shared output/line budget."""
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+            return self._truncate(format_error(ErrorType.VALIDATION, "limit must be a positive integer."), source="read_file")
+        if not isinstance(requests, list) or not 1 <= len(requests) <= 8:
+            return self._truncate(format_error(ErrorType.VALIDATION, "requests must contain 1-8 file ranges."), source="read_file")
+        for index, request in enumerate(requests, 1):
+            if not isinstance(request, dict) or set(request) - {"path", "offset", "limit", "show_line_numbers"}:
+                return self._truncate(format_error(ErrorType.VALIDATION, f"Request {index}: invalid fields."), source="read_file")
+            if not isinstance(request.get("path"), str) or not request["path"].strip():
+                return self._truncate(format_error(ErrorType.VALIDATION, f"Request {index}: path is required."), source="read_file")
+        labels = [json.dumps(request["path"], ensure_ascii=False) for request in requests]
+        # Reserve headers, errors, totals, and continuation for every item, before IO.
+        numeric_width = len(str(self.safety_policy.max_file_size if self.safety_policy else DEFAULT_MAX_FILE_SIZE))
+        reserves = [
+            400 + 2 * len(label) + 3 * numeric_width
+            + sum(len(str(request.get(key, 0))) for key in ("offset", "limit") if isinstance(request.get(key, 0), int))
+            for request, label in zip(requests, labels)
+        ]
+        remaining_chars = self._tool_limit() - sum(reserves) - 200
+        if remaining_chars < len(requests):
+            return self._truncate(format_error(ErrorType.LIMIT_EXCEEDED, "Batch metadata exceeds max_tool_output; use fewer requests or shorter paths."), source="read_file")
+        remaining_lines = min(limit, self.safety_policy.max_read_lines if self.safety_policy else DEFAULT_READ_LIMIT)
+        parts = []
+        failures = []
+        incomplete = False
+        for index, (request, label) in enumerate(zip(requests, labels), 1):
+            offset = request.get("offset", 0)
+            limit = request.get("limit", DEFAULT_READ_LIMIT)
+            numbered = request.get("show_line_numbers", False)
+            pending = len(requests) - index + 1
+            allowance = remaining_chars // pending
+            line_allowance = remaining_lines // pending
+            header = f"--- Request {index}: path={label} ---\n"
+            if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+                page = {"error": format_error(ErrorType.VALIDATION, "offset must be a non-negative integer.")}
+            elif not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+                page = {"error": format_error(ErrorType.VALIDATION, "limit must be a positive integer.")}
+            elif not isinstance(numbered, bool):
+                page = {"error": format_error(ErrorType.VALIDATION, "show_line_numbers must be a boolean.")}
+            elif allowance < 1 or line_allowance < 1:
+                incomplete = True
+                parts.append(header + f"status=SKIPPED; shared budget exhausted. Retry read_file(path={label}, offset={offset})."
+                             + f"\n--- End request {index} ---")
+                continue
+            else:
+                page = self._read_file_page(request["path"], offset, min(limit, line_allowance), numbered, allowance)
+            if "error" in page:
+                error = page["error"]
+                failures.append(error.split("]: ", 1)[0].removeprefix("ERROR["))
+                # Bound the whole error item, including its truncation marker and footer.
+                prefix = header + "status=ERROR\n"
+                footer = f"\n--- End request {index} ---"
+                error_budget = reserves[index - 1] - len(prefix) - len(footer)
+                if len(error) > error_budget:
+                    marker = "... [TRUNCATED ERROR]"
+                    error = error[:error_budget - len(marker)] + marker
+                parts.append(prefix + error + footer)
+                continue
+            remaining_lines -= page["lines_read"]
+            remaining_chars -= len(page["content"])
+            partial = page["truncated_line"] or page["end"] < page["total"]
+            incomplete |= partial
+            status = "TRUNCATED" if partial else "OK"
+            metadata = (f"status={status}; lines={offset + 1 if page['total'] else 0}-{page['end']} "
+                        f"of {page['total']}; bytes={page['size']}\n")
+            footer = ""
+            if page["truncated_line"]:
+                footer += (f"\n[TRUNCATED LINE] Line {offset + 1}: prefix only; its remainder is omitted. "
+                           "Read character ranges with cli_exec or increase max_tool_output.")
+            if page["end"] < page["total"]:
+                footer += (f"\nTo continue: read_file(path={label}, offset={page['end']}, "
+                           f"limit={limit}, show_line_numbers={numbered})")
+            body = page["content"] if page["size"] else "System reminder: File exists but has empty contents."
+            parts.append(header + metadata + body + footer + f"\n--- End request {index} ---")
+        if failures:
+            # Preserve existing result parsing: partial failures are not reported as success.
+            error_type = failures[0] if len(set(failures)) == 1 else ErrorType.EXECUTION
+            summary = format_error(error_type, f"Batch read: {len(failures)} of {len(requests)} requests failed; successful pages follow.")
+        else:
+            summary = f"Batch read: {'TRUNCATED' if incomplete else 'OK'}; {len(requests)} request(s)."
+        output = summary + "\n\n" + "\n\n".join(parts)
+        if len(output) > self._tool_limit():
+            return self._truncate(format_error(ErrorType.LIMIT_EXCEEDED, "Batch output metadata exceeds max_tool_output; retry with fewer requests."), source="read_file")
+        return output
+
 
     def write_file(self, path: str, content: str) -> str:
         try:
@@ -183,9 +289,15 @@ class FilesystemManager:
         except Exception as exc:
             return format_error(ErrorType.EXECUTION, f"Error writing file: {exc}")
 
-    def edit_file(self, path: str, old_string: str, new_string: str, *, replace_all: bool = False) -> str:
+    def edit_file(
+        self, path: str, old_string: str | None = None, new_string: str | None = None,
+        *, replace_all: bool = False, match_mode: str = "exact", edits: list[dict] | None = None,
+    ) -> str:
         try:
-            return self._truncate(edit_text_file(self._resolve_path(path), path, old_string, new_string, replace_all=replace_all))
+            return self._truncate(edit_text_file(
+                self._resolve_path(path), path, old_string, new_string,
+                replace_all=replace_all, match_mode=match_mode, edits=edits,
+            ))
         except ValueError as exc:
             return format_error(ErrorType.VALIDATION, str(exc))
         except Exception as exc:

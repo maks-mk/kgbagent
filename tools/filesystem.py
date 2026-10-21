@@ -9,7 +9,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Any, Optional, Protocol, cast
+from typing import Any, Literal, Optional, Protocol, cast
 from urllib.parse import unquote, urlsplit
 
 import aiofiles
@@ -32,8 +32,9 @@ class FilesystemBackend(Protocol):
 
     def set_policy(self, policy: SafetyPolicy) -> None: ...
     def read_file(self, path: str, offset: int = 0, limit: int = 2000, show_line_numbers: bool = False) -> str: ...
+    def read_files(self, requests: list[dict[str, Any]], limit: int = 2000) -> str: ...
     def write_file(self, path: str, content: str) -> str: ...
-    def edit_file(self, path: str, old_string: str, new_string: str, *, replace_all: bool = False) -> str: ...
+    def edit_file(self, path: str, old_string: str | None = None, new_string: str | None = None, *, replace_all: bool = False, match_mode: str = "exact", edits: list[dict[str, Any]] | None = None) -> str: ...
     def list_files(self, path: str = ".", include_hidden: bool = False) -> str: ...
     def delete_file(self, path: str) -> str: ...
     def delete_directory(self, path: str, recursive: bool = False) -> str: ...
@@ -149,6 +150,36 @@ def _resolve_payload_value(data: dict[str, Any], keys: tuple[str, ...]) -> str |
     return None
 
 
+class FileEdit(BaseModel):
+    """One ordered replacement; paths belong to the outer edit_file call."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    old_string: str = Field(min_length=1, validation_alias=AliasChoices("old_string", *_EDIT_FILE_ALIAS_MAP["old_string"], "from_"), description="Exact current text, including whitespace; omit read_file line numbers/metadata.")
+    new_string: str = Field(validation_alias=AliasChoices("new_string", *_EDIT_FILE_ALIAS_MAP["new_string"]), description="Replacement text; empty string deletes the match.")
+    replace_all: bool = Field(default=False, description="Replace all matches, otherwise require a unique match.")
+    match_mode: Literal["exact", "indentation"] = Field(default="exact", description="Only opt into indentation matching intentionally; internal/trailing whitespace stays exact.")
+
+
+class ReadFileRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    path: str = Field(min_length=1, validation_alias=AliasChoices("path", *_PATH_ALIASES), description="Text file path.")
+    offset: int = Field(default=0, ge=0, description="Zero-based starting line.")
+    limit: int = Field(default=2000, ge=1, description="Maximum lines; shares the call's line/output budget.")
+    show_line_numbers: bool = Field(default=False, description="Prefix lines with their one-based numbers.")
+
+
+class ReadFileInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    path: str | None = Field(default=None, validation_alias=AliasChoices("path", *_PATH_ALIASES), description="Single text file path; omit when using requests.")
+    offset: int = Field(default=0, ge=0, description="Zero-based starting line for a single file.")
+    limit: int = Field(default=2000, ge=1, description="Maximum lines for a single file or shared across all requests.")
+    show_line_numbers: bool = Field(default=False, description="Show one-based line numbers for a single file.")
+    requests: list[ReadFileRequest] | None = Field(default=None, min_length=1, max_length=8, description="Read 1-8 known file ranges in order with one shared output/line budget. Use instead of path; specify ranges inside each item.")
+
+
 class EditFileInput(BaseModel):
     """Input for edit_file; aliases accepted for old/new text."""
 
@@ -164,7 +195,7 @@ class EditFileInput(BaseModel):
         validation_alias=AliasChoices(
             "old_string", "old_text", "search_text", "find_text", "target_text", "old", "before", "from_", "from"
         ),
-        description="Exact text to replace.",
+        description="Exact current text, including whitespace; omit read_file line numbers/metadata.",
     )
     new_string: str | None = Field(
         default=None,
@@ -175,7 +206,14 @@ class EditFileInput(BaseModel):
     )
     replace_all: bool = Field(
         default=False,
-        description="Replace all exact matches instead of requiring a unique one.",
+        description="Replace all matches instead of requiring a unique one.",
+    )
+    match_mode: Literal["exact", "indentation"] = Field(
+        default="exact", description="Exact by default. Explicit indentation mode allows only leading-indentation adjustment.",
+    )
+    edits: list[FileEdit] | None = Field(
+        default=None, min_length=1, max_length=20,
+        description="1-20 ordered replacements in this file, each seeing the preceding edits. Use instead of top-level old_string/new_string/replace_all/match_mode. All must validate before one write.",
     )
 
     @model_validator(mode="before")
@@ -277,10 +315,20 @@ class ReadImagesInput(BaseModel):
     )
 
 
-@tool("read_file")
-def read_file_tool(path: str, offset: int = 0, limit: int = 2000, show_line_numbers: bool = False) -> str:
-    """Read a file with pagination."""
-    return _get_synced_backend().read_file(path, offset, limit, show_line_numbers)
+@tool("read_file", args_schema=ReadFileInput)
+def read_file_tool(
+    path: str | None = None, offset: int = 0, limit: int = 2000, show_line_numbers: bool = False,
+    requests: list[ReadFileRequest] | None = None,
+) -> str:
+    """Read one text file with pagination, or up to 8 file ranges with a shared budget."""
+    backend = _get_synced_backend()
+    if requests is not None:
+        if path is not None or offset != 0 or show_line_numbers:
+            return format_error(ErrorType.VALIDATION, "Do not mix requests with top-level path/offset/show_line_numbers; limit is shared across requests.")
+        return backend.read_files([item.model_dump() if isinstance(item, BaseModel) else item for item in requests], limit=limit)
+    if not path or not path.strip():
+        return format_error(ErrorType.VALIDATION, "Provide path or requests.")
+    return backend.read_file(path, offset, limit, show_line_numbers)
 
 
 @tool("write_file", args_schema=WriteFileInput)
@@ -338,9 +386,11 @@ def edit_file_tool(
     new: str | None = None,
     after: str | None = None,
     to: str | None = None,
+    match_mode: str = "exact",
+    edits: list[FileEdit] | None = None,
     **kwargs: Any,
 ) -> str:
-    """Replace text in a file."""
+    """Replace exact text in one file; ordered edits validate together before a single write."""
     resolved_path = _resolve_payload_path(
         {"path": path, "file_path": file_path, "filepath": filepath, **kwargs}
     )
@@ -361,6 +411,16 @@ def edit_file_tool(
             },
             ("old_string", *_EDIT_FILE_ALIAS_MAP["old_string"]),
         )
+    if edits is not None:
+        supplied_new = _resolve_payload_value(
+            {"new_string": new_string, "new_text": new_text, "replace_text": replace_text,
+             "replacement": replacement, "replace_with": replace_with, "new": new, "after": after, "to": to, **kwargs},
+            ("new_string", *_EDIT_FILE_ALIAS_MAP["new_string"]),
+        )
+        if old_string is not None or supplied_new is not None or replace_all or match_mode != "exact":
+            return format_error(ErrorType.VALIDATION, "Do not mix edits with top-level old_string/new_string/replace_all/match_mode.")
+        operations = [item.model_dump() if isinstance(item, BaseModel) else item for item in edits]
+        return _get_synced_backend().edit_file(resolved_path, edits=operations)
     if old_string is None or not str(old_string).strip():
         return format_error(
             ErrorType.VALIDATION,
@@ -387,6 +447,8 @@ def edit_file_tool(
             "Missing required field: new_string. Accepted aliases: new_text, replace_text, replacement.",
         )
     backend = _get_synced_backend()
+    if match_mode != "exact":
+        return backend.edit_file(resolved_path, old_string, new_string, replace_all=replace_all, match_mode=match_mode)
     if replace_all:
         return backend.edit_file(resolved_path, old_string, new_string, replace_all=True)
     return backend.edit_file(resolved_path, old_string, new_string)

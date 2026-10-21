@@ -1,16 +1,9 @@
-import re
 from pathlib import Path
 from typing import Any, Dict, Optional, TypedDict
-
-try:
-    import psutil
-except ImportError:
-    psutil = None
 
 from core.errors import ErrorType, format_error
 from core.tool_args import canonicalize_tool_args
 
-_PID_RE = re.compile(r"PID[:\s]+(\d+)")
 _FILE_ARG_NAMES = ("path", "file_path", "dir_path")
 
 
@@ -49,11 +42,6 @@ def validate(result: str, context: ValidationContext) -> Optional[str]:
             if path and _resolve_workspace_path(path).exists():
                 target_type = "File" if "file" in tool_name else "Directory"
                 return format_error(ErrorType.VALIDATION, f"{target_type} {path} still exists after deletion.")
-
-        elif tool_name == "run_background_process":
-            match = _PID_RE.search(result)
-            if match and psutil is not None and not psutil.pid_exists(int(match.group(1))):
-                return format_error(ErrorType.VALIDATION, f"Process PID {match.group(1)} not found immediately after start.")
 
     except Exception as e:
         return format_error(ErrorType.VALIDATION, f"Validation check failed: {e}")

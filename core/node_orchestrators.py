@@ -1115,6 +1115,20 @@ class ToolBatchCoordinator:
             )
             return outcome.tool_message, outcome.had_error, outcome.issue
 
+        # Incomplete calls are excluded from approval preflight. Report their
+        # validation error before checking approval instead of inventing a denial.
+        missing_required = owner._missing_required_tool_fields(tool_name, tool_args)
+        if missing_required:
+            outcome = owner.tool_executor.build_missing_required_result(
+                state=state,
+                current_turn_id=current_turn_id,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                tool_call_id=tool_call_id,
+                missing_required=missing_required,
+            )
+            return outcome.tool_message, outcome.had_error, outcome.issue
+
         if owner._tool_requires_approval(tool_name, tool_args) and not owner._tool_call_is_approved(
             tool_call_id, approval_state
         ):
@@ -1125,18 +1139,6 @@ class ToolBatchCoordinator:
                 tool_args=tool_args,
                 tool_call_id=tool_call_id,
                 policy=metadata.to_dict(),
-            )
-            return outcome.tool_message, outcome.had_error, outcome.issue
-
-        missing_required = owner._missing_required_tool_fields(tool_name, tool_args)
-        if missing_required:
-            outcome = owner.tool_executor.build_missing_required_result(
-                state=state,
-                current_turn_id=current_turn_id,
-                tool_name=tool_name,
-                tool_args=tool_args,
-                tool_call_id=tool_call_id,
-                missing_required=missing_required,
             )
             return outcome.tool_message, outcome.had_error, outcome.issue
 

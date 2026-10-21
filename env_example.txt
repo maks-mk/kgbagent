@@ -122,9 +122,6 @@ TAVILY_API_KEY=tvly-REPLACE_WITH_YOUR_KEY
 # Работа с файловой системой (чтение, запись, редактирование)
 ENABLE_FILESYSTEM_TOOLS=true
 
-# Управление процессами (запуск, остановка фоновых задач)
-ENABLE_PROCESS_TOOLS=false
-
 # Agent Skills: регистрировать инструмент read_skills и добавлять блок
 # <available_skills> в системный промпт (по умолчанию true).
 ENABLE_SKILLS_TOOL=true
@@ -158,11 +155,6 @@ ENABLE_SHELL_TOOL=false
 # ENABLE_TEXT_TOOL_CALL_RECOVERY=false
 # Require interactive approval before mutating/destructive tools execute
 ENABLE_APPROVALS=true
-# Allow stopping external PIDs not started by this agent (e.g. found via
-# find_process_by_port but launched manually or in a previous session).
-# The process registry lives in memory, so PIDs from previous runs always
-# count as external. Approval (ENABLE_APPROVALS) is still required.
-ALLOW_EXTERNAL_PROCESS_CONTROL=false
 
 # ===========================
 # 4) Лимиты и Безопасность
@@ -201,7 +193,7 @@ MAX_FILE_SIZE=300MiB
 # Максимальное количество строк при чтении файла (защита от чтения логов на 1млн строк).
 MAX_READ_LINES=2000
 
-# Максимальное количество фоновых процессов (если ENABLE_PROCESS_TOOLS=true).
+# Максимальное количество фоновых процессов cli_exec(background=true).
 MAX_BACKGROUND_PROCESSES=5
 
 # ===========================

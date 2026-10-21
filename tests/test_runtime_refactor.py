@@ -54,8 +54,7 @@ from core.turn_outcomes import (
     TURN_OUTCOME_RUN_TOOLS,
     normalize_turn_outcome,
 )
-from tools import process_tools
-from tools.filesystem import write_file_tool
+from tools.filesystem import edit_file_tool, write_file_tool
 from tools.tool_registry import ToolRegistry
 import ui.runtime as gui_runtime
 from ui.runtime import (
@@ -207,7 +206,6 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             "PROMPT_PATH": Path(__file__).resolve().parents[1] / "prompt.txt",
             "MCP_CONFIG_PATH": Path(__file__).resolve().parents[1] / "tests" / "missing_mcp.json",
             "ENABLE_SEARCH_TOOLS": False,
-            "ENABLE_PROCESS_TOOLS": False,
             "ENABLE_SHELL_TOOL": False,
         }
         defaults.update(overrides)
@@ -2190,6 +2188,72 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("ACCESS_DENIED", str(tool_message.content))
                     self.assertIsNone(resumed["open_tool_issue"])
                 self.assertIsInstance(messages[-1], AIMessage)
+
+    async def test_edit_approval_preserves_deletions_and_exact_text_in_mixed_batch(self):
+        arguments = [
+            {"path": "first.py", "old_string": "    first\n", "new_string": ""},
+            {"path": "second.py", "old_string": "    second\n", "new_string": "", "edits": None},
+            {"path": "third.py", "old_text": "\tthird \n", "new_text": ""},
+            {"path": "fourth.py", "old_string": "    fourth\n", "new_string": " \t\n"},
+            {"path": "fifth.py", "edits": [{"old_string": "    fifth\n", "new_string": ""}]},
+            {"path": "sixth.py", "old_string": "    sixth\n", "new_string": "    replaced \n"},
+            {"path": "seventh.py", "edits": [{"old_string": "    seventh\n", "new_string": "    new\n"}]},
+        ]
+        expected_args = [{k: v for k, v in args.items() if v is not None} for args in arguments]
+        expected_args[2] = {"path": "third.py", "old_string": "\tthird \n", "new_string": ""}
+        for parallelism in (1, 4):
+            for approved in (True, False):
+                with self.subTest(parallelism=parallelism, approved=approved):
+                    config = self._make_config(ENABLE_APPROVALS=True, MAX_PARALLEL_TOOL_CALLS=parallelism)
+                    tool = FakeSchemaTool("edit_file", "Success: file edited.", edit_file_tool.get_input_schema())
+                    calls = [
+                        {"name": "edit_file", "args": args, "id": f"edit-{index}"}
+                        for index, args in enumerate(arguments)
+                    ]
+                    nodes = AgentNodes(
+                        config=config, llm=FakeLLM([]), tools=[tool],
+                        llm_with_tools=ProviderSafeFakeLLM([
+                            AIMessage(content="", tool_calls=calls), AIMessage(content="Готово."),
+                        ]),
+                        tool_metadata={"edit_file": ToolMetadata(name="edit_file", mutating=True, requires_approval=True)},
+                    )
+                    app = create_agent_workflow(nodes, config, tools_enabled=True).compile(checkpointer=MemorySaver())
+                    thread_config = {"configurable": {"thread_id": "edit-approval"}, "recursion_limit": 36}
+                    interrupted = await app.ainvoke(self._initial_state("Исправь файлы"), config=thread_config)
+                    self.assertIn("__interrupt__", interrupted)
+                    self.assertEqual(tool.calls, [])
+                    protected = interrupted["__interrupt__"][0].value["tools"]
+                    self.assertEqual([call["id"] for call in protected], [call["id"] for call in calls])
+                    self.assertEqual([call["args"] for call in protected], expected_args)
+                    resumed = await app.ainvoke(Command(resume={"approved": approved}), config=thread_config)
+                    self.assertNotIn("__interrupt__", resumed)
+                    messages = [msg for msg in resumed["messages"] if isinstance(msg, ToolMessage)]
+                    self.assertEqual([msg.tool_call_id for msg in messages], [call["id"] for call in calls])
+                    self.assertTrue(all(("ACCESS_DENIED" in str(msg.content)) == (not approved) for msg in messages))
+                    executed = [{k: v for k, v in args.items() if v is not None} for args in tool.calls]
+                    self.assertCountEqual(executed, expected_args if approved else [])
+
+    async def test_invalid_protected_call_reports_validation_not_approval_denial(self):
+        config = self._make_config(ENABLE_APPROVALS=True)
+        tool = FakeSchemaTool("edit_file", "Must not execute", edit_file_tool.get_input_schema())
+        nodes = AgentNodes(
+            config=config, llm=FakeLLM([]), tools=[tool], llm_with_tools=FakeLLM([]),
+            tool_metadata={"edit_file": ToolMetadata(name="edit_file", mutating=True, requires_approval=True)},
+        )
+        for args in ({"path": "demo.txt", "old_string": "old"}, {"path": "demo.txt", "new_string": ""}):
+            with self.subTest(args=args):
+                call = {"name": "edit_file", "args": args, "id": "invalid-edit"}
+                self.assertFalse(nodes.tool_calls_require_approval([call]))
+                message, had_error, issue = await nodes._process_tool_call(
+                    call, [], self._initial_state(), {}, 1,
+                )
+                self.assertTrue(had_error)
+                self.assertIn("ERROR[VALIDATION]", str(message.content))
+                self.assertNotIn("ACCESS_DENIED", str(message.content))
+                self.assertEqual(message.status, "error")
+                self.assertIn("Missing required field(s):", str(message.content))
+                self.assertIsNone(issue)
+        self.assertEqual(tool.calls, [])
 
     async def test_approval_interrupt_requires_resume_before_mutating_tool_runs(self):
         config = self._make_config(ENABLE_APPROVALS=True)
@@ -6059,10 +6123,6 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         worker.store.save_active_session.assert_called_once_with(worker.current_session, touch=True, set_active=True)
         emit_session_mock.assert_awaited_once_with(include_transcript=False)
         self.assertFalse(worker._is_busy)
-
-    def test_stop_background_process_denies_external_pid_by_default(self):
-        result = process_tools.stop_background_process.invoke({"pid": os.getpid()})
-        self.assertIn("ACCESS_DENIED", result)
 
     def test_classify_stream_error_rate_limit(self):
         info = gui_runtime.AgentRunWorker._classify_stream_error("Error: 429 Too Many Requests")

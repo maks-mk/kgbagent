@@ -206,6 +206,23 @@ class RuntimePromptPolicyBuilder:
                 "Multiple tools are available in this runtime. Do not invent unavailable tools. "
                 "If unsure which tool fits, prefer the read-only inspection tool over a mutating one."
             )
+        filesystem_policy = []
+        if "read_file" in names:
+            filesystem_policy.append(
+                "For already-known independent text ranges, prefer one read_file call with requests "
+                "(up to 8); ranges share output/line limits. Check each status and continue truncated ranges."
+            )
+        if "edit_file" in names:
+            filesystem_policy.append(
+                "For several replacements in one file, prefer edit_file with edits (up to 20, applied in order) "
+                "instead of separate writes. Exact matching is the default; only request match_mode='indentation' "
+                "intentionally. Copy old_string from current file content, preserving whitespace and excluding "
+                "read_file line numbers/metadata. Each batch edit sees preceding edits; a failed batch writes nothing. "
+                "After a mismatch, reread the relevant range instead of guessing or repeating the same edit. "
+                "Inspect the final diff and verify."
+            )
+        if filesystem_policy:
+            message += "\n" + "\n".join(filesystem_policy)
         mcp_section = self._build_mcp_tools_section(context)
         if mcp_section:
             message = f"{message}\n{mcp_section}"

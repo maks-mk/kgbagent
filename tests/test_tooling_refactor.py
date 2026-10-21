@@ -1,6 +1,5 @@
 import importlib
 import json
-import re
 import shutil
 import sys
 import unittest
@@ -15,8 +14,6 @@ from core.nodes.tools import ToolsMixin
 from core.safety_policy import SafetyPolicy
 from core.validation import validate_tool_result
 from langchain_core.tools import StructuredTool
-from tools import process_tools
-from tools.process_tools import run_background_process
 from tools.search_tools import _RUNTIME, _format_tavily_error, _parse_urls_input, crawl_site, fetch_content
 from tools.tool_registry import ToolRegistry
 from ui.runtime_payloads import build_tools_snapshot
@@ -31,7 +28,6 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
             "PROMPT_PATH": Path(__file__).resolve().parents[1] / "prompt.txt",
             "MCP_CONFIG_PATH": Path(__file__).resolve().parents[1] / "tests" / "missing_mcp.json",
             "ENABLE_SEARCH_TOOLS": False,
-            "ENABLE_PROCESS_TOOLS": False,
             "ENABLE_SHELL_TOOL": False,
         }
         defaults.update(overrides)
@@ -70,6 +66,23 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("safe_delete_file", names)
         self.assertIn("safe_delete_directory", names)
         self.assertIn("download_file", names)
+
+    async def test_tool_registry_uses_cli_for_background_launch(self):
+        registry = ToolRegistry(
+            self._make_config(ENABLE_SHELL_TOOL=True)
+        )
+        await registry.load_all()
+
+        tools_by_name = {tool.name: tool for tool in registry.tools}
+        self.assertIn("cli_exec", tools_by_name)
+        self.assertIn("cli_exec", registry.tool_metadata)
+        for removed in ("run_background_process", "stop_background_process", "find_process_by_port"):
+            self.assertNotIn(removed, tools_by_name)
+            self.assertNotIn(removed, {tool.name for tool in registry.builtin_tools})
+            self.assertNotIn(removed, registry.tool_metadata)
+        background_schema = tools_by_name["cli_exec"].args_schema.model_json_schema()["properties"]["background"]
+        self.assertEqual(background_schema["type"], "boolean")
+        self.assertFalse(background_schema["default"])
 
     async def test_tool_registry_filters_disabled_local_tool(self):
         tmp = self._workspace_tempdir()
@@ -747,20 +760,6 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ForbiddenError", captured.output[0])
         self.assertIn("403 Forbidden for https://example.com", captured.output[0])
 
-    def test_run_background_process_schema_uses_array_command_for_gemini_compatibility(self):
-        schema = run_background_process.get_input_schema().model_json_schema()
-        command_schema = schema["properties"]["command"]
-
-        self.assertEqual(command_schema["type"], "array")
-        self.assertEqual(command_schema["items"]["type"], "string")
-        self.assertNotIn("anyOf", command_schema)
-
-    def test_run_background_process_schema_normalizes_single_command_string_into_list(self):
-        schema = run_background_process.get_input_schema()
-        validated = schema.model_validate({"command": "python -V"})
-
-        self.assertEqual(validated.command, ["python -V"])
-
     def test_max_file_size_numeric_value_is_bytes(self):
         config = self._make_config(MAX_FILE_SIZE="4096")
         self.assertEqual(config.max_file_size, 4096)
@@ -804,75 +803,6 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.dict(sys.modules, {"prompt_toolkit": None, "prompt_toolkit.key_binding": None}):
             reloaded = importlib.reload(text_utils)
             self.assertTrue(callable(reloaded.prepare_markdown_for_render))
-
-    def test_run_background_process_rejects_shell_operators(self):
-        result = process_tools.run_background_process.invoke({"command": "python -c \"print(1)\" && whoami"})
-        self.assertIn("ERROR[VALIDATION]", result)
-        self.assertIn("Shell operators are not allowed", result)
-
-    def test_run_background_process_rejects_cwd_outside_workspace(self):
-        tmp = self._workspace_tempdir()
-        process_tools.set_working_directory(str(tmp))
-        result = process_tools.run_background_process.invoke(
-            {"command": [sys.executable, "-c", "print('ok')"], "cwd": ".."}
-        )
-        self.assertIn("ERROR[VALIDATION]", result)
-        self.assertIn("ACCESS DENIED", result)
-
-    def test_run_background_process_accepts_argument_list(self):
-        tmp = self._workspace_tempdir()
-        process_tools.set_working_directory(str(tmp))
-        result = process_tools.run_background_process.invoke(
-            {"command": [sys.executable, "-c", "import time; time.sleep(30)"], "cwd": "."}
-        )
-        self.assertIn("Success: Process started with PID", result)
-        match = re.search(r"PID (\d+)", result)
-        self.assertIsNotNone(match)
-        stop_result = process_tools.stop_background_process.invoke({"pid": int(match.group(1))})
-        self.assertIn("Success:", stop_result)
-
-    def test_find_process_by_port_uses_net_connections(self):
-        class FakePsutil:
-            class AccessDenied(Exception):
-                pass
-
-            class NoSuchProcess(Exception):
-                pass
-
-            class ZombieProcess(Exception):
-                pass
-
-            @staticmethod
-            def net_connections(kind="inet"):
-                return [SimpleNamespace(laddr=SimpleNamespace(port=8000), pid=4321)]
-
-            @staticmethod
-            def Process(pid):
-                return SimpleNamespace(name=lambda: "python")
-
-        with mock.patch.object(process_tools, "psutil", FakePsutil):
-            result = process_tools.find_process_by_port.invoke({"port": 8000})
-        self.assertIn("Found process 'python' (PID: 4321) on port 8000.", result)
-
-    def test_find_process_by_port_returns_non_error_when_port_is_free(self):
-        class FakePsutil:
-            class AccessDenied(Exception):
-                pass
-
-            class NoSuchProcess(Exception):
-                pass
-
-            class ZombieProcess(Exception):
-                pass
-
-            @staticmethod
-            def net_connections(kind="inet"):
-                return []
-
-        with mock.patch.object(process_tools, "psutil", FakePsutil):
-            result = process_tools.find_process_by_port.invoke({"port": 8000})
-        self.assertEqual(result, "No process found listening on port 8000.")
-        self.assertNotIn("ERROR[", result)
 
 
 if __name__ == "__main__":

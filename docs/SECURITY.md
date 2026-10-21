@@ -8,7 +8,9 @@
 - Tool errors переводят выполнение в recovery, не игнорируются
 - Workspace boundary check: мутирующие операции не могут выйти за пределы рабочей папки
 - API keys, bearer tokens и query tokens редактируются из логов через `SensitiveDataFilter`
-- `MAX_BACKGROUND_PROCESSES` ограничивает количество фоновых процессов
+- `MAX_BACKGROUND_PROCESSES` ограничивает общее количество фоновых процессов для `cli_exec(background=true)`
+- Фоновый `cli_exec(background=true)` всегда считается protected: detached-запуск требует approval и не проходит как inspect-only
+- Поиск и остановка процессов выполняются системными командами через `cli_exec` и подчиняются общей shell-политике; внутренний реестр сохраняет лимит, очистку и завершение процессов при выходе.
 
 ---
 

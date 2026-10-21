@@ -929,9 +929,11 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
     async def test_retryable_cli_exec_issue_gets_auto_retry_then_finishes_after_success(self):
         cli_tool = FakeTool(
             "cli_exec",
-            "ERROR[VALIDATION]: Foreground service/server commands are not supported. Use run_background_process.",
+            lambda args: "Success: process started" if args.get("background") else (
+                "ERROR[VALIDATION]: Foreground service/server commands are not supported. "
+                "Re-run the same command with background=true."
+            ),
         )
-        bg_tool = FakeTool("run_background_process", "Success: process started")
         app, agent_llm = self._build_app(
             agent_responses=[
                 AIMessage(
@@ -942,15 +944,15 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
                     content="",
                     tool_calls=[
                         {
-                            "name": "run_background_process",
-                            "args": {"command": ["python", "-m", "http.server"]},
+                            "name": "cli_exec",
+                            "args": {"command": "python -m http.server", "background": True},
                             "id": "tc-2",
                         }
                     ],
                 ),
                 AIMessage(content="Готово."),
             ],
-            tools=[cli_tool, bg_tool],
+            tools=[cli_tool],
         )
 
         result = await app.ainvoke(
@@ -958,8 +960,10 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
             config={"configurable": {"thread_id": "single-retry-success"}, "recursion_limit": 48},
         )
 
-        self.assertEqual(len(cli_tool.calls), 1)
-        self.assertEqual(len(bg_tool.calls), 1)
+        self.assertEqual(cli_tool.calls, [
+            {"command": "python -m http.server"},
+            {"command": "python -m http.server", "background": True},
+        ])
         self.assertGreaterEqual(len(agent_llm.invocations), 3)
         self.assertEqual(result["turn_outcome"], "finish_turn")
         self.assertIsNone(result["open_tool_issue"])
@@ -967,9 +971,11 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
     async def test_retry_counter_resets_after_success_before_later_retryable_error(self):
         cli_tool = FakeTool(
             "cli_exec",
-            "ERROR[VALIDATION]: Foreground service/server commands are not supported. Use run_background_process.",
+            lambda args: "Success: process started" if args.get("background") else (
+                "ERROR[VALIDATION]: Foreground service/server commands are not supported. "
+                "Re-run the same command with background=true."
+            ),
         )
-        bg_tool = FakeTool("run_background_process", "Success: process started")
         app, agent_llm = self._build_app(
             agent_responses=[
                 AIMessage(
@@ -980,8 +986,8 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
                     content="",
                     tool_calls=[
                         {
-                            "name": "run_background_process",
-                            "args": {"command": ["python", "-m", "http.server"]},
+                            "name": "cli_exec",
+                            "args": {"command": "python -m http.server", "background": True},
                             "id": "tc-2",
                         }
                     ],
@@ -994,15 +1000,15 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
                     content="",
                     tool_calls=[
                         {
-                            "name": "run_background_process",
-                            "args": {"command": ["python", "-m", "http.server"]},
+                            "name": "cli_exec",
+                            "args": {"command": "python -m http.server", "background": True},
                             "id": "tc-4",
                         }
                     ],
                 ),
                 AIMessage(content="Готово."),
             ],
-            tools=[cli_tool, bg_tool],
+            tools=[cli_tool],
         )
 
         result = await app.ainvoke(
@@ -1010,8 +1016,12 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
             config={"configurable": {"thread_id": "retry-reset-after-success"}, "recursion_limit": 64},
         )
 
-        self.assertEqual(len(cli_tool.calls), 2)
-        self.assertEqual(len(bg_tool.calls), 2)
+        self.assertEqual(cli_tool.calls, [
+            {"command": "python -m http.server"},
+            {"command": "python -m http.server", "background": True},
+            {"command": "python -m http.server"},
+            {"command": "python -m http.server", "background": True},
+        ])
         self.assertEqual(result["turn_outcome"], "finish_turn")
         self.assertIsNone(result["open_tool_issue"])
         self.assertEqual(str(result["messages"][-1].content), "Готово.")
@@ -1242,14 +1252,17 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("повторный запуск", str(result["messages"][-1].content).lower())
 
     async def test_read_file_not_found_can_fallback_to_direct_verification(self):
-        bg_tool = FakeTool("run_background_process", "Success: Process started with PID 4321.")
         read_tool = FakeTool("read_file", "ERROR[NOT_FOUND]: File 'demo.output' not found.")
-        cli_tool = FakeTool("cli_exec", "stdout: service healthy")
+        cli_tool = FakeTool(
+            "cli_exec",
+            lambda args: "Success: Process started with PID 4321." if args.get("background")
+            else "stdout: service healthy",
+        )
         app, _agent_llm = self._build_app(
             agent_responses=[
                 AIMessage(
                     content="",
-                    tool_calls=[{"name": "run_background_process", "args": {"command": ["demo.exe"], "cwd": "."}, "id": "tc-bg-1"}],
+                    tool_calls=[{"name": "cli_exec", "args": {"command": "demo.exe", "background": True}, "id": "tc-bg-1"}],
                 ),
                 AIMessage(
                     content="",
@@ -1261,9 +1274,8 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 AIMessage(content="Файл вывода не появился, поэтому состояние проверено напрямую через процесс."),
             ],
-            tools=[bg_tool, read_tool, cli_tool],
+            tools=[read_tool, cli_tool],
             tool_metadata={
-                "run_background_process": ToolMetadata(name="run_background_process", mutating=True),
                 "read_file": ToolMetadata(name="read_file", read_only=True),
                 "cli_exec": ToolMetadata(name="cli_exec", mutating=True),
             },
@@ -1274,9 +1286,11 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
             config={"configurable": {"thread_id": "read-fallback"}, "recursion_limit": 64},
         )
 
-        self.assertEqual(len(bg_tool.calls), 1)
         self.assertEqual(len(read_tool.calls), 1)
-        self.assertEqual(len(cli_tool.calls), 1)
+        self.assertEqual(cli_tool.calls, [
+            {"command": "demo.exe", "background": True},
+            {"command": "Get-Process | Select-Object -First 1"},
+        ])
         self.assertEqual(result["turn_outcome"], "finish_turn")
         self.assertIsNone(result["open_tool_issue"])
         self.assertIn("проверено напрямую", str(result["messages"][-1].content).lower())
@@ -1346,9 +1360,11 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
     async def test_provider_safe_order_is_kept_during_internal_retry(self):
         cli_tool = FakeTool(
             "cli_exec",
-            "ERROR[VALIDATION]: Foreground service/server commands are not supported. Use run_background_process.",
+            lambda args: "Success: process started" if args.get("background") else (
+                "ERROR[VALIDATION]: Foreground service/server commands are not supported. "
+                "Re-run the same command with background=true."
+            ),
         )
-        bg_tool = FakeTool("run_background_process", "Success: process started")
         app, agent_llm = self._build_app(
             agent_responses=[
                 AIMessage(
@@ -1359,15 +1375,15 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
                     content="",
                     tool_calls=[
                         {
-                            "name": "run_background_process",
-                            "args": {"command": ["python", "-m", "http.server"]},
+                            "name": "cli_exec",
+                            "args": {"command": "python -m http.server", "background": True},
                             "id": "tc-2",
                         }
                     ],
                 ),
                 AIMessage(content="Готово после повтора."),
             ],
-            tools=[cli_tool, bg_tool],
+            tools=[cli_tool],
             agent_llm_cls=ProviderSafeFakeLLM,
         )
 
@@ -1377,8 +1393,10 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(result["turn_outcome"], "finish_turn")
-        self.assertEqual(len(cli_tool.calls), 1)
-        self.assertEqual(len(bg_tool.calls), 1)
+        self.assertEqual(cli_tool.calls, [
+            {"command": "python -m http.server"},
+            {"command": "python -m http.server", "background": True},
+        ])
         self.assertGreaterEqual(len(agent_llm.invocations), 3)
 
     async def test_pending_tool_call_executes_even_when_last_message_is_not_ai(self):

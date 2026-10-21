@@ -14,7 +14,12 @@ from core.tool_args import (
     tool_loop_budget,
 )
 from core.tool_issues import build_tool_issue
-from core.policy_engine import classify_shell_command, shell_command_requires_approval, tool_requires_approval
+from core.policy_engine import (
+    classify_shell_command,
+    is_background_cli_exec,
+    shell_command_requires_approval,
+    tool_requires_approval,
+)
 from core.self_correction_engine import normalize_tool_args, repair_fingerprint
 
 logger = logging.getLogger("agent")
@@ -131,9 +136,11 @@ class ToolPreflightMixin:
     def _missing_required_tool_fields(self, tool_name: str, tool_args: Dict[str, Any]) -> List[str]:
         normalized_args = canonicalize_tool_args(tool_args)
         tool = self.tools_map.get(tool_name)
+        schema_fields = {}
         if tool:
             try:
                 schema = tool.get_input_schema()
+                schema_fields = getattr(schema, "model_fields", {}) or {}
                 validated = schema.model_validate(normalized_args)
                 payload = validated.model_dump() if hasattr(validated, "model_dump") else normalized_args
                 if isinstance(payload, dict):
@@ -146,7 +153,7 @@ class ToolPreflightMixin:
                     loc = error.get("loc") or ()
                     if not loc:
                         continue
-                    field_name = str(loc[-1]).strip()
+                    field_name = ".".join(str(part) for part in loc).strip()
                     if field_name and field_name not in missing_from_schema:
                         missing_from_schema.append(field_name)
                 if missing_from_schema:
@@ -154,7 +161,20 @@ class ToolPreflightMixin:
             except Exception:
                 pass
 
-        if self._normalize_tool_name(tool_name) == "write_file":
+        normalized_name = self._normalize_tool_name(tool_name)
+        if normalized_name == "read_file" and "requests" in schema_fields and not normalized_args.get("requests"):
+            if not normalized_args.get("path"):
+                return ["path"]
+        if normalized_name == "edit_file" and "edits" in schema_fields:
+            if not normalized_args.get("path"):
+                return ["path"]
+            if normalized_args.get("edits") is None:
+                old_text = normalized_args.get("old_string")
+                if old_text is None or (isinstance(old_text, str) and not old_text.strip()):
+                    return ["old_string"]
+                if normalized_args.get("new_string") is None:
+                    return ["new_string"]
+        if normalized_name == "write_file":
             content = normalized_args.get("content")
             if content is None or (isinstance(content, str) and not content.strip()):
                 return ["content"]
@@ -218,12 +238,15 @@ class ToolPreflightMixin:
             return metadata
 
         profile = classify_shell_command(command)
-        approval_required = shell_command_requires_approval(command)
-        inspect_only = bool(profile.get("inspect_only") and not profile.get("long_running_service"))
+        background = is_background_cli_exec(tool_args)
+        approval_required = shell_command_requires_approval(command) or background
+        inspect_only = bool(
+            profile.get("inspect_only") and not profile.get("long_running_service") and not background
+        )
         return ToolMetadata(
             name=metadata.name,
             read_only=inspect_only,
-            mutating=bool(profile.get("mutating") or profile.get("long_running_service")),
+            mutating=bool(profile.get("mutating") or profile.get("long_running_service") or background),
             destructive=bool(profile.get("destructive")),
             requires_approval=approval_required,
             networked=bool(metadata.networked or profile.get("network_diagnostic") or profile.get("http_probe")),
@@ -253,10 +276,16 @@ class ToolPreflightMixin:
         if not isinstance(tool_args, dict):
             return []
         targets: List[Tuple[str, str]] = []
-        for key in ("path", "file_path", "dir_path", "source", "destination", "cwd"):
+        for key in ("path", "file_path", "filepath", "dir_path", "directory_path", "source", "destination", "cwd"):
             raw_value = tool_args.get(key)
             if isinstance(raw_value, str) and raw_value.strip():
                 targets.append((key, raw_value.strip()))
+        for key in ("requests", "edits"):
+            items = tool_args.get(key)
+            if isinstance(items, list):
+                for index, item in enumerate(items):
+                    for nested_key, value in self._iter_path_like_targets(item):
+                        targets.append((f"{key}[{index}].{nested_key}", value))
         return targets
 
     def _tool_mutates_workspace(self, tool_name: str) -> bool:
@@ -266,15 +295,6 @@ class ToolPreflightMixin:
     def _workspace_boundary_violated(self, tool_name: str, tool_args: Dict[str, Any]) -> bool:
         if not self._tool_mutates_workspace(tool_name):
             return False
-
-        if tool_name == "run_background_process":
-            try:
-                from tools import process_tools
-
-                process_tools._resolve_cwd(str((tool_args or {}).get("cwd") or "."))
-                return False
-            except Exception:
-                return True
 
         path_targets = self._iter_path_like_targets(tool_args)
         if not path_targets:

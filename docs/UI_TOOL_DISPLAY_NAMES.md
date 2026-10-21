@@ -12,14 +12,17 @@
 - `Running 2 commands` → `Ran 2 commands`;
 - `Reading 1 file` → `Read 1 file`.
 
-Считаются объекты, а не вызовы: один вызов `read_images` с двумя изображениями даёт `Read 2 files`.
+Считаются объекты, а не вызовы: один вызов `read_images` с двумя изображениями даёт `Reading 2 images` → `Read 2 images`. Для одного изображения используется `Reading 1 image` → `Read 1 image`.
 
 Для групп смешанных или неизвестных инструментов используется нейтральное `Running N tools` → `Completed N tools`.
 
 ## Основные инструменты
 
 - `read_file` → `Reading` → `Read`
-- `read_images` → `Reading images` → `Read images` (`Preparing image read` до получения аргументов)
+  - пакетное чтение (`requests`) подписывает файлы: `Reading src/a.py, src/b.py` → `Read src/a.py, src/b.py`;
+  - в группе считаются файлы, а не вызовы: два файла в одном пакете дают `Reading 2 files` → `Read 2 files`, повторные диапазоны одного файла считаются один раз;
+  - если видимая строка обрезается, полный список путей остаётся в подсказке карточки.
+- `read_images` → `Reading images` → `Read images` (при ошибке `Reading images failed`, до получения аргументов `Preparing image read`)
 - `write_file` → `Writing` → `Wrote`
 - `edit_file` → `Editing` → `Edited`
 - `list_directory` → `Listing` → `Listed`
@@ -29,9 +32,6 @@
 - `batch_web_search` → `Searching` → `Searched`
 - `fetch_content` → `Fetching` → `Fetched`
 - `cli_exec` → `Running` → `Ran`
-- `run_background_process` → `Starting process` → `Started process`
-- `stop_background_process` → `Stopping process` → `Stopped process`
-- `find_process_by_port` → `Finding process` → `Found process`
 - `request_user_input` → `Requesting input` → `Requested input`
 - `read_skills` → `Reading Skills` → `Read Skills` (при ошибке `Reading Skills failed`)
 
@@ -45,7 +45,8 @@
 - `Running python -m pytest` → `Ran python -m pytest`
 - `Searching Python asyncio` → `Searched Python asyncio`
 - `Reading Skills pdf, design` → `Read Skills pdf, design`
-- `Reading img/one.png, img/two.png` → `Read img/one.png, img/two.png`
+- `Reading images img/one.png, img/two.png` → `Read images img/one.png, img/two.png`
+- `Reading src/a.py, src/b.py` → `Read src/a.py, src/b.py` (пакетное чтение `read_file` с `requests`)
 
 Если инструмент принимает несколько путей, показываются все запрошенные пути через запятую, а не только первый.
 

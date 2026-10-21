@@ -455,7 +455,29 @@ def _paths_summary(value: Any, max_length: int = 120) -> str:
     return truncate_value(", ".join(parts), max_length) if parts else ""
 
 
+def read_file_request_paths(requests: Any) -> list[str]:
+    """Collect distinct batch-read targets from complete or streamed arguments."""
+    if not isinstance(requests, (list, tuple)):
+        return []
+    paths: list[str] = []
+    for request in requests:
+        if not isinstance(request, dict):
+            continue
+        for key in ("path", "file_path", "filepath", "dir_path", "directory_path"):
+            value = request.get(key)
+            if isinstance(value, str) and value.strip():
+                path = value.strip()
+                if path not in paths:
+                    paths.append(path)
+                break
+    return paths
+
+
 def _format_path_tool(tool_name: str, tool_args: Dict[str, Any]) -> str | None:
+    if tool_name in {"read_file", "Read"}:
+        paths = read_file_request_paths(tool_args.get("requests"))
+        if paths:
+            return f"{tool_name}({', '.join(paths)})"
     path_value = tool_args.get("file_path") or tool_args.get("path") or tool_args.get("dir_path")
     if not path_value:
         # read_images accepts several images per call; showing only the first one
@@ -560,6 +582,8 @@ def classify_tool_args_state(tool_name: str, tool_args: Dict[str, Any]) -> str:
     args = dict(tool_args or {})
     if not args:
         return "pending"
+    if tool_name in {"read_file", "Read"} and read_file_request_paths(args.get("requests")):
+        return "complete"
 
     anchor_keys: tuple[str, ...] = ()
     if tool_name == "read_images":
@@ -668,6 +692,10 @@ def tool_target_summary(tool_name: str, tool_args: Dict[str, Any]) -> str:
         "Write",
         "SearchReplace",
     }:
+        if normalized_name in {"read_file", "Read"}:
+            paths = read_file_request_paths(args.get("requests"))
+            if paths:
+                return _paths_summary(paths)
         if normalized_name == "read_images":
             paths_summary = _paths_summary(args.get("paths"))
             if paths_summary:

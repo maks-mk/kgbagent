@@ -196,11 +196,9 @@ class AgentConfig(BaseSettings):
     model_supports_tools: bool = Field(default=True, alias="MODEL_SUPPORTS_TOOLS")
     enable_filesystem_tools: bool = Field(default=True, alias="ENABLE_FILESYSTEM_TOOLS")
     enable_skills_tool: bool = Field(default=True, alias="ENABLE_SKILLS_TOOL")
-    enable_process_tools: bool = Field(default=False, alias="ENABLE_PROCESS_TOOLS")
     enable_shell_tool: bool = Field(default=False, alias="ENABLE_SHELL_TOOL")
     enable_approvals: bool = Field(default=True, alias="ENABLE_APPROVALS")
     enable_text_tool_call_recovery: bool = Field(default=False, alias="ENABLE_TEXT_TOOL_CALL_RECOVERY")
-    allow_external_process_control: bool = Field(default=False, alias="ALLOW_EXTERNAL_PROCESS_CONTROL")
 
     # Tools Limits
     max_parallel_tool_calls: int = Field(
@@ -503,7 +501,6 @@ class AgentConfig(BaseSettings):
                 max_search_chars=self.max_search_chars,
                 max_read_lines=self.max_read_lines,
                 allow_shell=self.enable_shell_tool,
-                allow_external_process_control=self.allow_external_process_control,
             )
         return self._cache_safety
 

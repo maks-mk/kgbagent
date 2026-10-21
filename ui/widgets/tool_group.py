@@ -6,6 +6,7 @@ from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QPropertyAnimation,
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
+from core.text_utils import read_file_request_paths
 from .foundation import _fa_icon
 from .tools import ToolCardWidget
 from ui.theme import ERROR_RED, SUCCESS_GREEN, TEXT_MUTED
@@ -108,8 +109,12 @@ class ToolGroupWidget(QFrame):
 
     @staticmethod
     def _card_target_count(card: ToolCardWidget) -> int:
-        """Count touched files, so a call reading several images is not reported as one."""
+        """Count files/images rather than calls or repeated ranges of one file."""
         args = card.payload.get("args")
+        if str(card.payload.get("name", "")).strip() in {"read_file", "Read"} and isinstance(args, dict):
+            paths = read_file_request_paths(args.get("requests"))
+            if paths:
+                return len(paths)
         paths = args.get("paths") if isinstance(args, dict) else None
         if isinstance(paths, (list, tuple)):
             return max(1, sum(1 for item in paths if str(item).strip()))
@@ -122,8 +127,10 @@ class ToolGroupWidget(QFrame):
             return "write"
         if name in {"edit_file", "SearchReplace"}:
             return "edit"
-        if name in {"read_file", "Read", "read_images"}:
+        if name in {"read_file", "Read"}:
             return "read"
+        if name == "read_images":
+            return "read_images"
         if name in {"execute", "RunCommand", "cli_exec"}:
             return "command"
         if name in {"grep", "Grep", "glob", "Glob"}:
@@ -140,12 +147,6 @@ class ToolGroupWidget(QFrame):
             return "list"
         if name in {"safe_delete_file", "safe_delete_directory"}:
             return "delete"
-        if name == "run_background_process":
-            return "start_process"
-        if name == "stop_background_process":
-            return "stop_process"
-        if name == "find_process_by_port":
-            return "find_process"
         if name == "request_user_input":
             return "input"
         if name == "read_skills":
@@ -173,6 +174,7 @@ class ToolGroupWidget(QFrame):
             "write": ("Writing", "Wrote", "file", "files"),
             "edit": ("Editing", "Edited", "file", "files"),
             "read": ("Reading", "Read", "file", "files"),
+            "read_images": ("Reading", "Read", "image", "images"),
             "command": ("Running", "Ran", "command", "commands"),
         }
         titles = role_titles.get(role)
@@ -190,9 +192,6 @@ class ToolGroupWidget(QFrame):
             "download": "Downloading",
             "list": "Listing",
             "delete": "Deleting",
-            "start_process": "Starting process",
-            "stop_process": "Stopping process",
-            "find_process": "Finding process",
             "input": "Requesting input",
             "skills": "Reading skills",
         }
@@ -204,9 +203,6 @@ class ToolGroupWidget(QFrame):
             "download": "Downloaded",
             "list": "Listed",
             "delete": "Deleted",
-            "start_process": "Started process",
-            "stop_process": "Stopped process",
-            "find_process": "Found process",
             "input": "Requested input",
             "skills": "Read skills",
         }
@@ -224,6 +220,7 @@ class ToolGroupWidget(QFrame):
                 "write": "Writing failed",
                 "edit": "Editing failed",
                 "read": "Reading failed",
+                "read_images": "Reading images failed",
                 "command": "Running failed",
                 "search": "Searching failed",
                 "network": "Searching failed",
@@ -232,9 +229,6 @@ class ToolGroupWidget(QFrame):
                 "download": "Downloading failed",
                 "list": "Listing failed",
                 "delete": "Deleting failed",
-                "start_process": "Starting process failed",
-                "stop_process": "Stopping process failed",
-                "find_process": "Finding process failed",
                 "input": "Requesting input failed",
                 "skills": "Reading skills failed",
             }.get(role, "Tool failed")

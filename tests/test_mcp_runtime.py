@@ -79,7 +79,6 @@ class MCPRuntimeTests(unittest.IsolatedAsyncioTestCase):
             PROMPT_PATH=ROOT / "prompt.txt",
             MCP_CONFIG_PATH=self.config_path,
             ENABLE_SEARCH_TOOLS=False,
-            ENABLE_PROCESS_TOOLS=False,
             ENABLE_SHELL_TOOL=False,
         )
 

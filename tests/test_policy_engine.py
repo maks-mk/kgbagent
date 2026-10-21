@@ -26,6 +26,32 @@ class ToolApprovalPolicyTests(unittest.TestCase):
         self.assertTrue(profile["long_running_service"])
         self.assertTrue(profile["mutating"])
 
+    def test_classify_shell_command_detects_foreground_service_with_interpreter_path(self):
+        for command in (
+            r".\venv\Scripts\python.exe -m http.server 8765 --bind 127.0.0.1",
+            "./venv/bin/python -m http.server 8765",
+            r"C:\Python313\python.exe -m http.server",
+            '& "C:\\Program Files\\Python\\python.exe" -m http.server',
+            "py -m http.server 8000",
+            "python3.14 -m http.server",
+            r".\venv\Scripts\uvicorn.exe app.main:app",
+            "python -m uvicorn app.main:app",
+            r".\venv\Scripts\flask.exe run",
+        ):
+            profile = classify_shell_command(command)
+            self.assertTrue(profile["long_running_service"], command)
+            self.assertTrue(profile["mutating"], command)
+
+    def test_classify_shell_command_ignores_short_lived_interpreter_commands(self):
+        for command in (
+            r".\venv\Scripts\python.exe -m pytest -q",
+            r".\venv\Scripts\python.exe -m pip install requests",
+            "python -m pytest",
+            "echo python -m http.server",
+        ):
+            profile = classify_shell_command(command)
+            self.assertFalse(profile["long_running_service"], command)
+
     def test_classify_shell_command_detects_http_write_as_mutating(self):
         profile = classify_shell_command("curl -X POST https://example.com -d 'x=1'")
         self.assertTrue(profile["mutating"])

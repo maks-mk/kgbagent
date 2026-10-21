@@ -43,9 +43,11 @@ The project does not try to compete with AI IDEs by feature count and does not t
 - GUI Session size setting; automatic context compaction is also checked after tool execution
 - Fuzzy replay suppression: the model's repeated preface after a tool call is suppressed even with minor text drift (typos, punctuation)
 - Live CLI output streaming: shell command output is shown in the tool card in real time, not only after completion
+- Background mode `cli_exec(background=true)`: servers and watchers start detached, the call returns the PID and a log path in `.agent_state/cli_exec` immediately, and the process can be stopped with a system command via `cli_exec`
 - Exit-code-neutral commands: `grep`, `rg`, `vulture`, `pytest`, `diff`, etc. with a non-zero exit code are not marked as errors — the output is returned with an `Exit Code: N` prefix
 - Stream-interruption recovery with error classification (`rate_limit` / `timeout` / `server_error` / `network`) and exponential backoff with jitter before auto-continue
-- Tools: filesystem (including `download_file`), shell, Tavily web search/fetch, process management, MCP
+- Tools: filesystem (including `download_file`), shell, Tavily web search/fetch, MCP
+- Batch file operations: `read_file` reads up to 8 files or ranges per call, `edit_file` applies up to 20 sequential replacements in one file
 - Approval pauses before mutating and destructive actions
 - Agent Skills support: extend agent capabilities via external instructions in the `skills/` folder (automatically indexed, loaded on demand)
 - Automatic context summarization for long sessions

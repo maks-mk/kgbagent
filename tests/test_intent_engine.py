@@ -13,15 +13,15 @@ class MessageContextHelperTests(unittest.TestCase):
     def test_recent_tool_context_uses_previous_turn_activity(self):
         messages = [
             HumanMessage(content="Запусти сервер"),
-            AIMessage(content="", tool_calls=[{"id": "tc-1", "name": "run_background_process", "args": {}}]),
-            ToolMessage(name="run_background_process", tool_call_id="tc-1", content="ok"),
+            AIMessage(content="", tool_calls=[{"id": "tc-1", "name": "cli_exec", "args": {}}]),
+            ToolMessage(name="cli_exec", tool_call_id="tc-1", content="ok"),
             HumanMessage(content="Повтори ещё раз"),
         ]
         recent_names = self.helper.recent_tool_context_names(
             messages=messages,
             is_internal_retry=self.no_internal_retry,
         )
-        self.assertEqual(recent_names, ["run_background_process"])
+        self.assertEqual(recent_names, ["cli_exec"])
 
     def test_current_turn_has_tool_evidence_detects_tool_result(self):
         messages = [

@@ -33,7 +33,9 @@ __all__ = [
     "format_character_size",
     "format_persisted_output_pointer",
     "is_persisted_output",
+    "new_background_log_path",
     "prune_artifacts",
+    "prune_background_logs",
     "resolve_artifact_directory",
     "resolve_max_persisted_chars",
 ]
@@ -47,6 +49,12 @@ DEFAULT_KEEP_ARTIFACTS = 20
 ARTIFACT_SUBDIRECTORY = (".agent_state", "cli_exec")
 _ARTIFACT_NAME_PREFIX = "cli-exec-"
 _ARTIFACT_NAME_RE = re.compile(r"^cli-exec-\d{8}-\d{6}-[0-9a-f]{8}\.log$")
+# Background processes write to their own log for their whole lifetime, so these
+# files are pruned separately from one-shot artifacts and never while fresh.
+BACKGROUND_LOG_PREFIX = "cli-exec-bg-"
+_BACKGROUND_LOG_RE = re.compile(r"^cli-exec-bg-\d{8}-\d{6}-[0-9a-f]{8}\.log$")
+DEFAULT_KEEP_BACKGROUND_LOGS = 20
+BACKGROUND_LOG_MIN_AGE_SECONDS = 24 * 60 * 60
 _TRUNCATION_MARKER = "\n[ARTIFACT TRUNCATED: output exceeded {limit} characters]\n"
 _READ_HINT = "Use read_file with offset/limit on that path to inspect the rest."
 
@@ -94,6 +102,49 @@ def prune_artifacts(directory: Path, keep: int) -> None:
         return
     for entry in candidates[: max(0, len(candidates) - keep)]:
         try:
+            entry.unlink()
+        except OSError:
+            continue
+
+
+def new_background_log_path(directory: Path) -> Path:
+    """Unique log file for one detached ``cli_exec`` process."""
+
+    return directory / (
+        f"{BACKGROUND_LOG_PREFIX}{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}.log"
+    )
+
+
+def prune_background_logs(
+    directory: Path,
+    *,
+    keep: int = DEFAULT_KEEP_BACKGROUND_LOGS,
+    min_age_seconds: float = BACKGROUND_LOG_MIN_AGE_SECONDS,
+) -> None:
+    """Drop old background logs, never touching files a live process may use.
+
+    Only logs older than ``min_age_seconds`` are candidates: a fresh file can
+    still belong to a running process and is left alone.
+    """
+
+    if keep < 1:
+        return
+    now = time.time()
+    try:
+        candidates = sorted(
+            (
+                entry
+                for entry in directory.iterdir()
+                if entry.is_file() and _BACKGROUND_LOG_RE.match(entry.name)
+            ),
+            key=lambda entry: (entry.stat().st_mtime, entry.name),
+        )
+    except OSError:
+        return
+    for entry in candidates[: max(0, len(candidates) - keep)]:
+        try:
+            if now - entry.stat().st_mtime < min_age_seconds:
+                continue
             entry.unlink()
         except OSError:
             continue
@@ -192,6 +243,27 @@ class _InlineBuffer:
         return self.head + self.tail
 
 
+class PersistedOutputWriter:
+    """Bound decoded output using the same cap and marker for every shell log."""
+
+    def __init__(self, handle, limit: int) -> None:
+        self.handle = handle
+        self.limit = max(0, int(limit))
+        self.written = 0
+        self.truncated = False
+
+    def append(self, text: str) -> None:
+        if not text or self.truncated:
+            return
+        remaining = max(0, self.limit - self.written)
+        payload = text[:remaining]
+        self.handle.write(payload)
+        self.written += len(payload)
+        if len(payload) < len(text):
+            self.truncated = True
+            self.handle.write(_TRUNCATION_MARKER.format(limit=self.limit))
+
+
 class ShellOutputCapture:
     """Bound inline memory per stream while mirroring everything to an artifact.
 
@@ -221,7 +293,7 @@ class ShellOutputCapture:
             "stderr": _InlineBuffer(self.inline_limit, self.inline_limit),
         }
         self._handle = None
-        self._persisted_chars = 0
+        self._writer: Optional[PersistedOutputWriter] = None
         self._history: Optional[list[str]] = [] if self.artifact_directory else None
 
     @property
@@ -276,19 +348,12 @@ class ShellOutputCapture:
             return
         if self._handle is None and not self._open_artifact():
             return
-        remaining = self.max_persisted_chars - self._persisted_chars
-        if remaining <= 0:
-            self._note_artifact_truncated()
-            return
-        payload = text if len(text) <= remaining else text[:remaining]
         try:
-            self._handle.write(payload)
+            self._writer.append(text)
         except OSError:
             self._disable_persistence()
             return
-        self._persisted_chars += len(payload)
-        if len(payload) < len(text):
-            self._note_artifact_truncated()
+        self.artifact_truncated = self._writer.truncated
 
     def _open_artifact(self) -> bool:
         directory = self.artifact_directory
@@ -301,20 +366,12 @@ class ShellOutputCapture:
                 f"{_ARTIFACT_NAME_PREFIX}{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}.log"
             )
             self._handle = path.open("w", encoding="utf-8", errors="replace", newline="")
+            self._writer = PersistedOutputWriter(self._handle, self.max_persisted_chars)
         except OSError:
             self._disable_persistence()
             return False
         self.persisted_path = str(path)
         return True
-
-    def _note_artifact_truncated(self) -> None:
-        if self.artifact_truncated:
-            return
-        self.artifact_truncated = True
-        try:
-            self._handle.write(_TRUNCATION_MARKER.format(limit=self.max_persisted_chars))
-        except (AttributeError, OSError):
-            return
 
     def _disable_persistence(self) -> None:
         """Fall back to plain inline truncation when the artifact cannot be used."""

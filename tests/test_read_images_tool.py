@@ -175,7 +175,6 @@ class ReadImagesRegistryTests(unittest.TestCase):
             "PROMPT_PATH": Path(__file__).resolve().parents[1] / "prompt.txt",
             "MCP_CONFIG_PATH": Path(__file__).resolve().parents[1] / "tests" / "missing_mcp.json",
             "ENABLE_SEARCH_TOOLS": False,
-            "ENABLE_PROCESS_TOOLS": False,
             "ENABLE_SHELL_TOOL": False,
         }
         defaults.update(overrides)
@@ -302,7 +301,6 @@ class ReadImagesContextBuilderTests(unittest.TestCase):
             "PROMPT_PATH": Path(__file__).resolve().parents[1] / "prompt.txt",
             "MCP_CONFIG_PATH": Path(__file__).resolve().parents[1] / "tests" / "missing_mcp.json",
             "ENABLE_SEARCH_TOOLS": False,
-            "ENABLE_PROCESS_TOOLS": False,
             "ENABLE_SHELL_TOOL": False,
         }
         defaults.update(overrides)
@@ -457,19 +455,19 @@ class ReadImagesContextBuilderTests(unittest.TestCase):
 class ReadImagesPresentationTests(unittest.TestCase):
     """UI labels and recovery guidance must treat read_images as a read tool."""
 
-    def test_ui_role_is_read_in_both_tool_widgets(self):
+    def test_ui_role_keeps_read_icon_and_separates_image_group(self):
         from ui.widgets.tool_group import ToolGroupWidget
         from ui.widgets.tools import ToolCardWidget
 
         card = SimpleNamespace(payload={"name": "read_images"})
         self.assertEqual(ToolCardWidget._tool_role("read_images"), "read")
-        self.assertEqual(ToolGroupWidget._tool_role(card), "read")
+        self.assertEqual(ToolGroupWidget._tool_role(card), "read_images")
 
-    def test_card_title_uses_read_role_titles(self):
+    def test_card_title_uses_image_title_with_read_icon(self):
         from ui.widgets.tools import ToolCardWidget
 
         payload = {"name": "read_images", "args": {"paths": ["shot.png"]}, "phase": "finished"}
-        self.assertEqual(ToolCardWidget._localized_title("read_images", payload), "Read")
+        self.assertEqual(ToolCardWidget._localized_title("read_images", payload), "Read images")
         self.assertEqual(ToolCardWidget._tool_icon_name("read_images"), TOOL_ROLE_ICONS["read"])
 
     def test_card_renders_first_path_instead_of_raw_list(self):
@@ -485,7 +483,7 @@ class ReadImagesPresentationTests(unittest.TestCase):
         )
         self.addCleanup(card.deleteLater)
 
-        self.assertEqual(card.action_label.full_text(), "Reading shots/one.png, shots/two.png")
+        self.assertEqual(card.action_label.full_text(), "Reading images shots/one.png, shots/two.png")
 
     def test_group_header_counts_every_requested_image(self):
         from PySide6.QtWidgets import QApplication
@@ -505,7 +503,7 @@ class ReadImagesPresentationTests(unittest.TestCase):
         group.add_tool(card)
         group.refresh_completion()
 
-        self.assertEqual(group.header_btn.text(), "Read 2 files")
+        self.assertEqual(group.header_btn.text(), "Read 2 images")
 
     def test_build_tool_ui_labels_renders_every_path(self):
         labels = build_tool_ui_labels("read_images", {"paths": ["shots/one.png", "shots/two.png"]})

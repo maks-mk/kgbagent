@@ -3,7 +3,6 @@ import os
 import shutil
 import stat
 import tempfile
-from functools import lru_cache
 from pathlib import Path
 
 
@@ -16,15 +15,8 @@ IGNORED_DIRS = {
     ".idea", ".vscode",
 }
 
-_KNOWN_TEXT_EXTS = {
-    ".py", ".js", ".ts", ".jsx", ".tsx", ".html", ".css", ".scss", ".less",
-    ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
-    ".md", ".rst", ".txt", ".csv", ".log", ".sh", ".bat", ".ps1",
-    ".c", ".cpp", ".h", ".hpp", ".java", ".go", ".rs", ".rb", ".php",
-    ".sql", ".env", ".gitignore", ".dockerignore", ".editorconfig",
-}
 _KNOWN_BINARY_EXTS = {
-    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".svg",
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp",
     ".mp3", ".mp4", ".avi", ".mkv", ".wav", ".flac", ".ogg",
     ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar", ".xz",
     ".exe", ".dll", ".so", ".dylib", ".bin", ".dat",
@@ -34,38 +26,28 @@ _KNOWN_BINARY_EXTS = {
 }
 
 
-@lru_cache(maxsize=512)
 def is_binary_path(path_str: str) -> bool:
     path = Path(path_str)
-    ext = path.suffix.lower()
-    if ext in _KNOWN_TEXT_EXTS:
-        return False
-    if ext in _KNOWN_BINARY_EXTS:
+    if path.suffix.lower() in _KNOWN_BINARY_EXTS:
         return True
-    try:
-        with open(path_str, "rb") as file_obj:
-            return b"\x00" in file_obj.read(8192)
-    except Exception:
-        return True
+    # Content can change at the same path; never cache this probe by filename.
+    with open(path_str, "rb") as file_obj:
+        return b"\x00" in file_obj.read(8192)
 
 
 def count_file_lines(path: Path) -> int:
-    try:
-        if path.stat().st_size == 0:
-            return 0
-
-        count = 0
-        last_chunk = b""
-        with open(path, "rb") as file_obj:
-            while chunk := file_obj.read(65536):
-                count += chunk.count(b"\n")
-                last_chunk = chunk
-
-        if last_chunk and not last_chunk.endswith(b"\n"):
-            count += 1
-        return count
-    except Exception:
-        return 0
+    """Count universal newlines and validate UTF-8 without loading the whole file."""
+    count = 0
+    last_chunk = ""
+    with open(path, "r", encoding="utf-8") as file_obj:
+        while chunk := file_obj.read(65536):
+            if "\x00" in chunk:
+                raise ValueError("File contains NUL bytes; binary content is not supported.")
+            count += chunk.count("\n")
+            last_chunk = chunk
+    if last_chunk and not last_chunk.endswith("\n"):
+        count += 1
+    return count
 
 
 def candidate_path_inputs(path_str: str) -> list[str]:

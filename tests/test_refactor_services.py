@@ -26,7 +26,6 @@ class RefactorServicesTests(unittest.TestCase):
             "PROMPT_PATH": Path(__file__).resolve().parents[1] / "prompt.txt",
             "MCP_CONFIG_PATH": Path(__file__).resolve().parents[1] / "tests" / "missing_mcp.json",
             "ENABLE_SEARCH_TOOLS": False,
-            "ENABLE_PROCESS_TOOLS": False,
             "ENABLE_SHELL_TOOL": False,
         }
         defaults.update(overrides)
@@ -1587,14 +1586,14 @@ class RefactorServicesTests(unittest.TestCase):
         manager = RecoveryManager()
         message = manager.build_recovery_system_message(
             {
-                "active_issue": {"summary": "Port must be integer"},
+                "active_issue": {"summary": "Limit must be integer"},
                 "active_strategy": {
                     "strategy": "normalize_args",
                     "strategy_kind": "fix_args",
                     "llm_guidance": "Retry with normalized arguments.",
-                    "suggested_tool_name": "find_process_by_port",
-                    "patched_args": {"port": 8080, "extra": "x" * 200},
-                    "notes": "Normalize the port before retry.",
+                    "suggested_tool_name": "read_file",
+                    "patched_args": {"path": "demo.txt", "limit": 100, "extra": "x" * 200},
+                    "notes": "Normalize the limit before retry.",
                 },
             }
         )

@@ -8,6 +8,9 @@ import os
 import re
 import shutil
 import subprocess
+import threading
+import logging
+import time
 from typing import Annotated, Any, Callable, Iterator, Optional
 from langchain_core.tools import tool
 from pydantic import Field
@@ -16,10 +19,14 @@ from core.utils import truncate_output
 from core.errors import format_error, ErrorType
 from core.safety_policy import SafetyPolicy
 from core.policy_engine import classify_shell_command
+from tools import background_processes
 from tools.shell_output import (
+    PersistedOutputWriter,
     ShellOutputCapture,
     build_persisted_output_envelope,
     format_persisted_output_pointer,
+    new_background_log_path,
+    prune_background_logs,
     resolve_artifact_directory,
     resolve_max_persisted_chars,
 )
@@ -31,6 +38,17 @@ DEFAULT_TIMEOUT = 120
 # default 120000 ms, max 600000 ms), overridable through the env var below.
 BASH_TOOL_MAX_TIMEOUT_MS = 600_000
 MAX_TIMEOUT_ENV = "CLI_EXEC_MAX_TIMEOUT_MS"
+
+# A command may exit while a process it spawned keeps the inherited stdout/stderr
+# handles open; the pipe readers then never see EOF. Bound that wait so one tool
+# call can never block the agent forever.
+STREAM_DRAIN_TIMEOUT = 2.0
+_STREAMS_ABANDONED_NOTE = (
+    "[note] Output capture stopped because another process kept the command's "
+    "stdout/stderr open (a background process was likely started without "
+    "background=true). Start long-running commands with background=true to get a "
+    "PID and a log file instead of a hanging call."
+)
 
 # Global settings
 _SAFETY_POLICY: Optional[SafetyPolicy] = None
@@ -123,20 +141,6 @@ _DESTRUCTIVE_COMMAND_PATTERNS = (
 # (grep/rg → 1 = no matches, vulture → 1 = dead code found, pytest → 1 = test
 # failures, diff → 1 = files differ) are interpreted by tools.shell_semantics,
 # which matches real executable segments instead of words inside arguments.
-
-_LONG_RUNNING_SERVICE_PATTERNS = (
-    re.compile(r"\bpython(?:3(?:\.\d+)?)?\s+-m\s+http\.server\b"),
-    re.compile(r"\bhttp-server\b"),
-    re.compile(r"\bnpm\s+start\b"),
-    re.compile(r"\bnpm\s+run\s+dev\b"),
-    re.compile(r"\bnpm\s+exec\b.*\bhttp-server\b"),
-    re.compile(r"\bnpx\b.*\bhttp-server\b"),
-    re.compile(r"\buvicorn\b"),
-    re.compile(r"\bflask\s+run\b"),
-    re.compile(r"\bwebpack(?:\.cmd)?\s+serve\b"),
-    re.compile(r"\bserve\b"),
-)
-
 
 def _get_windows_command_hint(command: str, stderr: str) -> str:
     """Return a friendly Windows-specific hint for common Unix commands."""
@@ -386,9 +390,13 @@ class _CliOutputDecoder:
         try:
             text = raw.decode(self._encoding, errors="strict")
         except UnicodeDecodeError as exc:
-            # Keep an incomplete UTF-8 character for the next pipe chunk.
-            if self._encoding == "utf-8" and not final and exc.end == len(raw):
-                return ""
+            # Keep only an incomplete UTF-8 suffix, not the decoded prefix.
+            if (
+                self._encoding == "utf-8" and not final
+                and exc.reason == "unexpected end of data"
+            ):
+                self._pending[:] = raw[exc.start:]
+                return raw[:exc.start].decode("utf-8", errors="strict")
             prefix = raw[:exc.start].decode(self._encoding, errors="strict")
             suffix = raw[exc.start:]
             self._encoding = next(
@@ -447,6 +455,212 @@ async def _terminate_process_tree(process: Any) -> None:
         await asyncio.wait_for(process.wait(), timeout=3)
     except Exception:
         return
+
+
+def _background_process_kwargs() -> dict[str, Any]:
+    """Start a child that keeps running after the tool call returns."""
+
+    if os.name != "nt":
+        return {"start_new_session": True}
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
+        subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+    )
+    return {"creationflags": flags} if flags else {}
+
+
+def _workspace_relative_path(path: Path) -> str:
+    """Workspace-relative path when possible, so read_file can open it directly."""
+
+    try:
+        return str(path.relative_to(Path(_WORKING_DIRECTORY).resolve()))
+    except (OSError, ValueError):
+        return str(path)
+
+
+def _capture_background_output(process: subprocess.Popen, log_file, writer: PersistedOutputWriter) -> None:
+    """Drain the pipe even after truncation or a disk error, until all writers exit."""
+
+    decoder = _CliOutputDecoder()
+    writing = True
+    try:
+        while True:
+            chunk = process.stdout.read1(65536)
+            text = decoder.decode(chunk, final=not chunk) if not writer.truncated and writing else ""
+            if writing:
+                try:
+                    writer.append(text.replace("\x00", "\ufffd"))
+                    log_file.flush()
+                except OSError:
+                    writing = False
+                    logging.getLogger(__name__).warning("Cannot write background log for PID %s.", process.pid)
+            if not chunk:
+                break
+    finally:
+        for handle in (process.stdout, log_file):
+            try:
+                handle.close()
+            except OSError:
+                logging.getLogger(__name__).warning("Cannot close background output for PID %s.", process.pid)
+
+
+def _background_stop_hint(pid: int) -> str:
+    command = f"taskkill /PID {pid} /T /F" if os.name == "nt" else f"kill -TERM -{pid}"
+    return f'cli_exec(command="{command}")'
+
+
+def _start_background_command(
+    command: str, command_env: dict[str, str], *, started_processes: list[subprocess.Popen] | None = None
+) -> str:
+    """Start ``command`` detached; return at once with its PID and log path."""
+
+    limit = _SAFETY_POLICY.max_background_processes if _SAFETY_POLICY else 5
+    process = None
+    log_file = None
+    try:
+        with background_processes.reserve_slot(limit) as register:
+            artifact_directory = resolve_artifact_directory(_WORKING_DIRECTORY)
+            artifact_directory.mkdir(parents=True, exist_ok=True)
+            prune_background_logs(artifact_directory)
+            log_path = new_background_log_path(artifact_directory)
+            log_file = log_path.open("w", encoding="utf-8", errors="replace", newline="")
+            writer = PersistedOutputWriter(log_file, resolve_max_persisted_chars())
+            header = f"# cli_exec background ({time.strftime('%Y-%m-%d %H:%M:%S')}): {command}\n"
+            writer.append(header.replace("\x00", "\ufffd"))
+            log_file.flush()
+            if os.name == "nt":
+                argv = [
+                    _powershell_executable(), "-NoProfile", "-NonInteractive", "-Command",
+                    _windows_powershell_command(command),
+                ]
+            else:
+                argv = ["/bin/sh", "-c", command]
+            process = subprocess.Popen(
+                argv,
+                cwd=_WORKING_DIRECTORY,
+                env=command_env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                **_background_process_kwargs(),
+            )
+            pid = register(process)
+            if started_processes is not None:
+                started_processes.append(process)
+            reader = threading.Thread(
+                target=_capture_background_output, args=(process, log_file, writer),
+                name=f"cli-exec-output-{pid}", daemon=True,
+            )
+            reader.start()
+            process._cli_output_reader = reader
+            log_file = None  # The reader owns the file from here on.
+    except background_processes.BackgroundProcessLimitError as exc:
+        return format_error(ErrorType.LIMIT_EXCEEDED, f"{exc} Stop a running background process with cli_exec before starting another.")
+    except Exception as exc:
+        stop_hint = ""
+        if process is not None:
+            try:
+                background_processes.terminate(process.pid)
+            except (OSError, subprocess.SubprocessError):
+                logging.getLogger(__name__).warning("Cannot stop failed background startup for PID %s.", process.pid)
+            finally:
+                if process.stdout is not None:
+                    process.stdout.close()
+            if process.poll() is None:
+                stop_hint = f" Process {process.pid} is still running and registered; stop it with {_background_stop_hint(process.pid)}."
+        return format_error(ErrorType.EXECUTION, f"Error starting the background command: {exc}{stop_hint}")
+    finally:
+        if log_file is not None:
+            try:
+                log_file.close()
+            except OSError:
+                logging.getLogger(__name__).warning("Cannot close the log after failed background startup.")
+
+    return (
+        f"Success: Started background command with PID {pid}.\n"
+        f"Log: {_workspace_relative_path(log_path)}\n"
+        "The command keeps running after this call returns; do not start it again. "
+        "Read the log to follow its output. "
+        f"Stop it with {_background_stop_hint(pid)}."
+    )
+
+
+async def _start_background_async(command: str, command_env: dict[str, str]) -> str:
+    """Keep startup off the event loop and stop any child created during cancellation."""
+
+    started_processes: list[subprocess.Popen] = []
+
+    def stop_started_processes() -> None:
+        for process in started_processes:
+            try:
+                stopped = background_processes.terminate(process.pid)
+            except (OSError, subprocess.SubprocessError):
+                stopped = False
+            if not stopped and background_processes.get(process.pid) is not None:
+                logging.getLogger(__name__).warning(
+                    "Cancelled startup left PID %s running and registered.", process.pid
+                )
+
+    starter = asyncio.create_task(asyncio.to_thread(
+        _start_background_command, command, command_env, started_processes=started_processes
+    ))
+    try:
+        return await asyncio.shield(starter)
+    except asyncio.CancelledError:
+        # to_thread cannot interrupt Popen: wait for registration before cleanup.
+        while not starter.done():
+            try:
+                await asyncio.shield(starter)
+            except asyncio.CancelledError:
+                continue
+        starter.result()
+        cleanup = asyncio.create_task(asyncio.to_thread(stop_started_processes))
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                continue
+        cleanup.result()
+        raise
+
+
+async def _drain_output_streams(
+    reader_tasks: list[asyncio.Task],
+    collector_task: asyncio.Task,
+    *,
+    timeout: float | None = None,
+) -> bool:
+    """Finish pipe reading without ever blocking the tool call forever.
+
+    The readers stop on EOF, but a process spawned by the command can inherit
+    stdout/stderr and keep them open after the command itself exited. After
+    ``timeout`` the readers are cancelled; they emit their sentinels on
+    cancellation, so the collector finishes as well.
+
+    Returns True when a reader had to be cancelled.
+    """
+
+    wait_timeout = STREAM_DRAIN_TIMEOUT if timeout is None else timeout
+    abandoned = False
+    try:
+        _, pending = await asyncio.wait(reader_tasks, timeout=wait_timeout)
+        if pending:
+            abandoned = True
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+        _, pending_collector = await asyncio.wait([collector_task], timeout=wait_timeout)
+        if pending_collector:
+            collector_task.cancel()
+            await asyncio.gather(collector_task, return_exceptions=True)
+        elif not collector_task.cancelled():
+            # Surface collector failures exactly like the previous direct await.
+            collector_task.result()
+    except asyncio.CancelledError:
+        for task in (*reader_tasks, collector_task):
+            task.cancel()
+        await asyncio.gather(*reader_tasks, collector_task, return_exceptions=True)
+        raise
+    return abandoned
 
 
 def set_safety_policy(policy: SafetyPolicy):
@@ -555,8 +769,17 @@ async def cli_exec(
             ),
         ),
     ] = DEFAULT_TIMEOUT,
+    background: Annotated[
+        bool,
+        Field(
+            description=(
+                "Start the command detached and return immediately with its PID and a log "
+                "file. Use for servers, watchers and any command that never exits."
+            ),
+        ),
+    ] = False,
 ) -> str:
-    """Run one non-interactive shell command in the workspace; stateless, chain cd in the same call. Supports pipes, redirects, &&. Use run_background_process for servers, avoid interactive TUI. Windows runs PowerShell directly. Bare python/pip resolve to venv/.venv if present; else use its full path."""
+    """Run one non-interactive shell command in the workspace; stateless, chain cd in the same call. Foreground waits for exit; servers/watchers need background=true (returns PID and log). Never `&`/Start-Process. Avoid interactive TUI. Windows runs PowerShell; bare python/pip use venv/.venv."""
     if _SAFETY_POLICY and not _SAFETY_POLICY.allow_shell:
         return format_error(ErrorType.ACCESS_DENIED, "Shell execution is disabled by SafetyPolicy.")
 
@@ -568,11 +791,18 @@ async def cli_exec(
     normalized_command = _normalize_windows_python_heredoc(command)
     normalized_command = _strip_nested_windows_powershell_wrapper(normalized_command)
     normalized_command = _normalize_windows_null_device(normalized_command)
+    if background:
+        # Background mode exists exactly for the commands rejected right below.
+        return await _start_background_async(
+            normalized_command, _prepare_shell_env(normalized_command)
+        )
     command_profile = classify_cli_command(normalized_command)
     if command_profile["long_running_service"]:
         return format_error(
             ErrorType.VALIDATION,
-            "Foreground service/server commands are not supported in cli_exec. Use run_background_process instead.",
+            "Foreground service/server commands are not supported in cli_exec because they "
+            "never exit. Re-run the same command with background=true: it starts detached and "
+            "returns the PID and a log path immediately.",
         )
     command_env = _prepare_shell_env(normalized_command)
     detect_interactive_prompts = _should_detect_interactive_prompts(normalized_command)
@@ -677,20 +907,23 @@ async def cli_exec(
             await _terminate_process_tree(process)
             raise
         finally:
-            await asyncio.gather(stdout_reader_task, stderr_reader_task, return_exceptions=True)
-            await collector_task
+            streams_abandoned = await _drain_output_streams(
+                [stdout_reader_task, stderr_reader_task], collector_task
+            )
+            capture.close()
 
-        capture.close()
         stdout = capture.stdout.strip()
         stderr = capture.stderr.strip()
 
-        output_parts =[]
+        output_parts = []
         if stdout:
             output_parts.append(stdout)
         if stderr:
             output_parts.append(f"[stderr]\n{stderr}")
 
         output = "\n".join(output_parts)
+        if streams_abandoned:
+            output = f"{output}\n{_STREAMS_ABANDONED_NOTE}".strip()
 
         if interactive_prompt:
             details = f"\nOutput tail:\n{interactive_prompt_sample}" if interactive_prompt_sample else ""
@@ -707,7 +940,7 @@ async def cli_exec(
 
         if timed_out:
             details = f"\nPartial output:\n{output}" if output else ""
-            timeout_reason = f"Command timed out after {timeout_seconds} seconds."
+            timeout_reason = f"Command timed out after {timeout_seconds} seconds and was terminated."
             if timeout_clamped:
                 timeout_reason += (
                     f" The requested timeout ({timeout} seconds) was clamped by"
@@ -717,7 +950,10 @@ async def cli_exec(
                 _limit_raw_output(
                     format_error(
                         ErrorType.TIMEOUT,
-                        f"{timeout_reason} Did you run an interactive command (like nano/vim) or a blocking server?{details}",
+                        f"{timeout_reason} Did you run an interactive command (like nano/vim) or a blocking server? "
+                        "For servers, watchers and other long-running commands use background=true: "
+                        "cli_exec starts them detached and returns the PID and a log path immediately."
+                        f"{details}",
                     )
                 ),
                 capture,
