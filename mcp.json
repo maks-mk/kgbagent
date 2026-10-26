@@ -33,7 +33,7 @@
       "duckduckgo-mcp-server"
     ],
     "transport": "stdio",
-    "enabled": false,
+    "enabled": true,
     "policy": {
       "read_only": true
     }
@@ -78,7 +78,7 @@
     "write_file": true,
     "read_skills": false,
     "cli_exec": true,
-    "read_images": false,
+    "read_images": true,
     "safe_delete_file": false
   }
 }

@@ -42,19 +42,25 @@ def _match_failure_hint(content: str, old_text: str) -> str:
     )
     file_lines = content.replace("\r\n", "\n").split("\n")
     search_lines = old_text.split("\n")
-    # A shared non-blank line is a bounded, linear-time hint, not fuzzy matching.
-    # Ignoring spaces/tabs here also exposes internal and trailing differences.
+    # Index all non-blank search anchors in one file pass. The longest line may
+    # itself be stale; another unchanged line can still locate useful context.
+    # Whitespace is ignored for diagnostics only, never for applying an edit.
     whitespace = str.maketrans("", "", " \t")
-    anchor_index = max(range(len(search_lines)), key=lambda index: len(search_lines[index].strip()))
-    anchor = search_lines[anchor_index].translate(whitespace)
-    starts = []
+    anchors: dict[str, tuple[int, list[int]]] = {}
+    for index, line in enumerate(search_lines):
+        anchor = line.translate(whitespace)
+        if anchor:
+            anchors.setdefault(anchor, (index, []))
     for index, line in enumerate(file_lines):
-        if index >= anchor_index and line.translate(whitespace) == anchor:
-            starts.append(index - anchor_index)
-            if len(starts) == 3:
-                break
-    if not starts:
+        candidate = anchors.get(line.translate(whitespace))
+        if candidate is not None:
+            anchor_index, locations = candidate
+            if index >= anchor_index and len(locations) < 3:
+                locations.append(index - anchor_index)
+    available = [candidate for anchor, candidate in anchors.items() if candidate[1]]
+    if not available:
         return guidance
+    _, starts = max(available, key=lambda candidate: len(search_lines[candidate[0]].strip()))
     if len(starts) > 1:
         locations = ", ".join(str(start + 1) for start in starts)
         return f"Possible target blocks start at lines {locations} (up to 3 shown); no block was selected. {guidance}"
@@ -64,9 +70,35 @@ def _match_failure_hint(content: str, old_text: str) -> str:
     for index, expected in enumerate(search_lines):
         actual = file_lines[start + index] if start + index < len(file_lines) else None
         if expected != actual:
-            expected_preview = repr(expected[:160]) + ("..." if len(expected) > 160 else "")
-            actual_preview = "<EOF>" if actual is None else repr(actual[:160]) + ("..." if len(actual) > 160 else "")
-            hint += f"First differing line {start + index + 1}: old_string={expected_preview}; file={actual_preview}. "
+            column = 0
+            if actual is not None:
+                while column < min(len(expected), len(actual)) and expected[column] == actual[column]:
+                    column += 1
+            preview_start = max(0, column - 60)
+
+            def preview(line: str | None) -> str:
+                if line is None:
+                    return "<EOF>"
+                return (
+                    ("..." if preview_start else "") + repr(line[preview_start:preview_start + 160])
+                    + ("..." if len(line) > preview_start + 160 else "")
+                )
+
+            def character(line: str | None) -> str:
+                if line is None:
+                    return "<EOF>"
+                if column >= len(line):
+                    return "<end of line>"
+                return f"{ascii(line[column])} (U+{ord(line[column]):04X})"
+
+            hint += (
+                f"First differing line {start + index + 1}: old_string={preview(expected)}; file={preview(actual)}. "
+                f"First differing column {column + 1}: old_string={character(expected)}; file={character(actual)}. "
+            )
+            if actual is None:
+                hint += "The requested block extends beyond EOF (possibly a missing final newline). "
+            elif expected.translate(whitespace) == actual.translate(whitespace):
+                hint += "Spaces/tabs differ; leading, internal and trailing whitespace remain significant. "
             break
     return hint + guidance
 

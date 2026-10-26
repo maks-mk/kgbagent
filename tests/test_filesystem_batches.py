@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 import tempfile
@@ -349,6 +350,7 @@ def test_match_failure_explains_missing_final_newline(workspace):
     result = editing.edit_text_file(target, "sample.txt", "old()\n", "new()\n")
     assert result.startswith("ERROR[VALIDATION]")
     assert "file=<EOF>" in result
+    assert "possibly a missing final newline" in result
     assert target.read_bytes() == b"old()"
 
 
@@ -390,6 +392,88 @@ def test_stale_block_hint_shows_changed_code_without_applying_it(workspace):
     assert "Possible target starts at line 2" in result
     assert "First differing line 3" in result
     assert "old_string='    return 1'; file='    return 2'" in result
+    assert target.read_bytes() == original
+
+
+def test_stale_longest_line_uses_another_anchor_without_writing(workspace):
+    target = workspace / "sample.py"
+    original = b"# header\ndef run():\n    return calculate_total(current_values)\n"
+    target.write_bytes(original)
+    with mock.patch.object(editing, "atomic_write_text") as write:
+        result = editing.edit_text_file(
+            target, "sample.py", "def run():\n    return calculate_total(stale_values)\n", "def run():\n    return 0\n",
+        )
+    assert result.startswith("ERROR[VALIDATION]")
+    assert "Possible target starts at line 2" in result
+    assert "First differing line 3" in result
+    assert "stale_values" in result and "current_values" in result
+    write.assert_not_called()
+    assert target.read_bytes() == original
+
+
+def test_stale_first_line_uses_later_anchor_without_writing(workspace):
+    target = workspace / "sample.py"
+    original = b"# header\ndef renamed_function():\n    return 1\n"
+    target.write_bytes(original)
+    with mock.patch.object(editing, "atomic_write_text") as write:
+        result = editing.edit_text_file(
+            target, "sample.py", "def original_function():\n    return 1\n", "def new_function():\n    return 2\n",
+        )
+    assert "Possible target starts at line 2" in result
+    assert "First differing line 2" in result
+    assert "original_function" in result and "renamed_function" in result
+    write.assert_not_called()
+    assert target.read_bytes() == original
+
+
+@pytest.mark.parametrize("mode", ["exact", "indentation"])
+@pytest.mark.parametrize("actual,requested,column,expected_character,actual_character", [
+    ("\told()", " old()", 1, "' ' (U+0020)", "'\\t' (U+0009)"),
+    ("old()  ", "old()", 6, "<end of line>", "' ' (U+0020)"),
+    ("value = 1", "value=1", 6, "'=' (U+003D)", "' ' (U+0020)"),
+    ("value = '\u00a0'", "value = ' '", 10, "' ' (U+0020)", "'\\xa0' (U+00A0)"),
+    ("value = '\u200b'", "value = ''", 10, "\"'\" (U+0027)", "'\\u200b' (U+200B)"),
+])
+def test_match_failure_identifies_first_differing_character(
+    workspace, mode, actual, requested, column, expected_character, actual_character,
+):
+    target = workspace / "sample.py"
+    original = (actual + "\n# unchanged context\n").encode("utf-8")
+    target.write_bytes(original)
+    with mock.patch.object(editing, "atomic_write_text") as write:
+        result = editing.edit_text_file(
+            target, "sample.py", requested + "\n# unchanged context\n", "changed()\n", match_mode=mode,
+        )
+    assert result.startswith("ERROR[VALIDATION]")
+    assert f"First differing column {column}: old_string={expected_character}; file={actual_character}" in result
+    write.assert_not_called()
+    assert target.read_bytes() == original
+
+
+def test_long_line_preview_centers_on_difference(workspace):
+    target = workspace / "sample.txt"
+    prefix = "x" * 10000
+    original = (prefix + "CURRENT\nanchor\n").encode()
+    target.write_bytes(original)
+    with mock.patch.object(editing, "atomic_write_text") as write:
+        result = editing.edit_text_file(target, "sample.txt", prefix + "STALE\nanchor\n", "new\n")
+    assert "First differing column 10001" in result
+    assert "STALE" in result and "CURRENT" in result
+    assert len(result) < 1500
+    write.assert_not_called()
+    assert target.read_bytes() == original
+
+
+def test_fallback_anchor_keeps_ambiguous_locations_bounded(workspace):
+    target = workspace / "sample.py"
+    original = b"def run():\n    return current_value\n" * 10
+    target.write_bytes(original)
+    with mock.patch.object(editing, "atomic_write_text") as write:
+        result = editing.edit_text_file(target, "sample.py", "def run():\n    return stale_value\n", "changed()\n")
+    assert "Possible target blocks start at lines 1, 3, 5 (up to 3 shown)" in result
+    assert "no block was selected" in result
+    assert "First differing" not in result
+    write.assert_not_called()
     assert target.read_bytes() == original
 
 
@@ -630,9 +714,84 @@ def test_batch_top_level_limit_is_shared(tools, workspace):
     assert result.count("To continue:") == 2
 
 
+@pytest.mark.parametrize("method", ["invoke", "ainvoke"])
+def test_batch_read_accepts_redundant_top_level_numbering(tools, manager, workspace, method):
+    (workspace / "src").mkdir()
+    (workspace / "src/agent.rs").write_bytes(b"line\n" * 1600)
+    (workspace / "build.rs").write_bytes(b"build\n" * 40)
+    (workspace / ".gitignore").write_bytes(b"target/\n" * 40)
+    requests = [
+        {"path": "src/agent.rs", "offset": 195, "limit": 250, "show_line_numbers": True},
+        {"path": "src/agent.rs", "offset": 473, "limit": 350, "show_line_numbers": True},
+        {"path": "src/agent.rs", "offset": 884, "limit": 325, "show_line_numbers": True},
+        {"path": "src/agent.rs", "offset": 1207, "limit": 336, "show_line_numbers": True},
+        {"path": "build.rs", "offset": 0, "limit": 40, "show_line_numbers": True},
+        {"path": ".gitignore", "offset": 0, "limit": 40, "show_line_numbers": True},
+    ]
+    payload = {"path": None, "offset": 0, "limit": 1350, "show_line_numbers": True, "requests": requests}
+    result = getattr(tools.read_file_tool, method)(payload)
+    if method == "ainvoke":
+        result = asyncio.run(result)
+    assert result.startswith("Batch read:")
+    assert result.count("status=") == 6
+    assert result.count("--- End request") == 6
+    assert len(result) <= manager._tool_limit()
+    ranges = re.findall(r"lines=(\d+)-(\d+) of", result)
+    assert [int(start) for start, _ in ranges] == [196, 474, 885, 1208, 1, 1]
+    assert sum(int(end) - int(start) + 1 for start, end in ranges) <= 1350
+    for start in (196, 474, 885, 1208):
+        assert f"{start:6}  line" in result
+
+
+@pytest.mark.parametrize("overrides,start,content", [
+    ({}, 2, "     2  second\n     3  third"),
+    ({"offset": 0}, 1, "     1  first\n     2  second\n     3  third"),
+    ({"show_line_numbers": False}, 2, "second\nthird"),
+    ({"offset": 0, "show_line_numbers": False}, 1, "first\nsecond\nthird"),
+    ({"offset": 2, "show_line_numbers": True}, 3, "     3  third"),
+])
+def test_batch_read_defaults_preserve_explicit_item_values(tools, workspace, overrides, start, content):
+    (workspace / "sample.txt").write_bytes(b"first\nsecond\nthird\n")
+    request = {"filepath": "sample.txt", **overrides}
+    original = dict(request)
+    result = tools.read_file_tool.invoke({
+        "offset": 1, "show_line_numbers": True, "requests": [request],
+    })
+    assert result.startswith("Batch read: OK")
+    assert f"status=OK; lines={start}-3 of 3" in result
+    assert f"\n{content}\n" in result
+    assert request == original
+
+
+@pytest.mark.parametrize("as_model", [False, True])
+def test_batch_read_normalizes_each_request_without_mutating_it(tools, manager, as_model):
+    requests = [
+        {"path": "first.txt"},
+        {"path": "second.txt", "offset": 0, "show_line_numbers": False, "limit": 2},
+    ]
+    if as_model:
+        requests = [filesystem.ReadFileRequest(**item) for item in requests]
+    with mock.patch.object(manager.__class__, "read_files", return_value="batch") as read:
+        assert tools.read_file_tool.func(offset=3, show_line_numbers=True, limit=7, requests=requests) == "batch"
+    read.assert_called_once_with([
+        {"path": "first.txt", "offset": 3, "show_line_numbers": True},
+        {"path": "second.txt", "offset": 0, "show_line_numbers": False, "limit": 2},
+    ], limit=7)
+    first = requests[0].model_dump(exclude_unset=True) if as_model else requests[0]
+    assert first == {"path": "first.txt"}
+
+
+@pytest.mark.parametrize("path", [None, "", "  "])
+def test_batch_read_accepts_empty_top_level_path(tools, workspace, path):
+    (workspace / "sample.txt").write_bytes(b"text")
+    result = tools.read_file_tool.invoke({"path": path, "requests": [{"path": "sample.txt"}]})
+    assert result.startswith("Batch read: OK")
+    assert "\ntext\n" in result
+
+
 @pytest.mark.parametrize("tool_name,payload", [
     ("read_file_tool", {"path": "sample.txt", "requests": [{"path": "sample.txt"}]}),
-    ("read_file_tool", {"offset": 1, "requests": [{"path": "sample.txt"}]}),
+    ("read_file_tool", {"file_path": "other.txt", "requests": [{"path": "sample.txt"}]}),
     ("edit_file_tool", {"path": "sample.txt", "old_string": "old", "edits": [{"old_string": "old", "new_string": "new"}]}),
     ("edit_file_tool", {"path": "sample.txt", "match_mode": "indentation", "edits": [{"old_string": "old", "new_string": "new"}]}),
 ])

@@ -6,7 +6,7 @@
   "providers": [
     {
       "id": "openai",
-      "hosts": ["api.openai.com", "api.ashna.ai", "tooken.club", "anymodel.org"],
+      "hosts": ["api.openai.com", "api.ashna.ai", "tooken.club", "anymodel.org", "api.drakezakuru.com"],
       "rules": [
         {
           "models": { "prefix": ["gpt-6"] },

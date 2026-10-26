@@ -165,19 +165,19 @@ class ReadFileRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     path: str = Field(min_length=1, validation_alias=AliasChoices("path", *_PATH_ALIASES), description="Text file path.")
-    offset: int = Field(default=0, ge=0, description="Zero-based starting line.")
+    offset: int = Field(default=0, ge=0, description="Zero-based starting line; omit to inherit the top-level offset.")
     limit: int = Field(default=2000, ge=1, description="Maximum lines; shares the call's line/output budget.")
-    show_line_numbers: bool = Field(default=False, description="Prefix lines with their one-based numbers.")
+    show_line_numbers: bool = Field(default=False, description="Prefix lines with their one-based numbers; omit to inherit the top-level setting.")
 
 
 class ReadFileInput(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-    path: str | None = Field(default=None, validation_alias=AliasChoices("path", *_PATH_ALIASES), description="Single text file path; omit when using requests.")
-    offset: int = Field(default=0, ge=0, description="Zero-based starting line for a single file.")
+    path: str | None = Field(default=None, validation_alias=AliasChoices("path", *_PATH_ALIASES), description="Single text file path; omit or use null when using requests.")
+    offset: int = Field(default=0, ge=0, description="Zero-based starting line for a single file, or default offset for requests. Explicit per-item offsets take precedence.")
     limit: int = Field(default=2000, ge=1, description="Maximum lines for a single file or shared across all requests.")
-    show_line_numbers: bool = Field(default=False, description="Show one-based line numbers for a single file.")
-    requests: list[ReadFileRequest] | None = Field(default=None, min_length=1, max_length=8, description="Read 1-8 known file ranges in order with one shared output/line budget. Use instead of path; specify ranges inside each item.")
+    show_line_numbers: bool = Field(default=False, description="Show one-based line numbers for a single file, or by default for requests. Explicit per-item settings take precedence.")
+    requests: list[ReadFileRequest] | None = Field(default=None, min_length=1, max_length=8, description="Read 1-8 known file ranges in order with one shared output/line budget. Use instead of path; per-item offset/show_line_numbers override top-level defaults.")
 
 
 class EditFileInput(BaseModel):
@@ -320,12 +320,19 @@ def read_file_tool(
     path: str | None = None, offset: int = 0, limit: int = 2000, show_line_numbers: bool = False,
     requests: list[ReadFileRequest] | None = None,
 ) -> str:
-    """Read one text file with pagination, or up to 8 file ranges with a shared budget."""
+    """Read one text file with pagination, or up to 8 file ranges with a shared budget and optional defaults."""
     backend = _get_synced_backend()
     if requests is not None:
-        if path is not None or offset != 0 or show_line_numbers:
-            return format_error(ErrorType.VALIDATION, "Do not mix requests with top-level path/offset/show_line_numbers; limit is shared across requests.")
-        return backend.read_files([item.model_dump() if isinstance(item, BaseModel) else item for item in requests], limit=limit)
+        if path is not None and path.strip():
+            return format_error(ErrorType.VALIDATION, "Provide either path or requests, not both. For batch reads, put every path inside requests and omit the top-level path (or set it to null).")
+        ranges = []
+        for item in requests:
+            # Keep explicit 0/False overrides while inheriting only omitted fields.
+            request = item.model_dump(exclude_unset=True) if isinstance(item, BaseModel) else item
+            if isinstance(request, dict):
+                request = {"offset": offset, "show_line_numbers": show_line_numbers, **request}
+            ranges.append(request)
+        return backend.read_files(ranges, limit=limit)
     if not path or not path.strip():
         return format_error(ErrorType.VALIDATION, "Provide path or requests.")
     return backend.read_file(path, offset, limit, show_line_numbers)

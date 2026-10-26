@@ -395,17 +395,19 @@ class SessionItemDelegate(QStyledItemDelegate):
         painter.drawText(time_rect, Qt.AlignRight | Qt.AlignVCenter, updated_at)
 
         if is_selected:
-            dot_diameter = 6
-            dot_rect = QRect(
-                rect.left() + 12,
-                rect.center().y() - dot_diameter // 2,
-                dot_diameter,
-                dot_diameter,
+            bar_width = 3
+            bar_height = 14
+            bar_gap = 5
+            bar_rect = QRect(
+                title_rect.left() - bar_gap - bar_width,
+                rect.center().y() - bar_height // 2,
+                bar_width,
+                bar_height,
             )
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.setPen(Qt.NoPen)
             painter.setBrush(QColor(SUCCESS_GREEN))
-            painter.drawEllipse(dot_rect)
+            painter.drawRoundedRect(bar_rect, 1.5, 1.5)
         painter.restore()
 
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:  # type: ignore[override]
