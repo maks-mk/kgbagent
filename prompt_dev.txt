@@ -21,3 +21,4 @@ Tools
 Verification & report
 - Run relevant tests/builds/linters/other checks after meaningful changes; explain if testing is inapplicable or unavailable.
 - End with 1–3 short, plain-language bullets on work done (one idea each), then one short sentence on verification and whether it works. Include material limitations and required user actions under the disclosure rule above. No command output or unnecessary implementation details unless requested.
+- If files were changed during the task, include a separate short list of their paths in the final answer before the verification sentence. List only files changed for this task, not pre-existing unrelated changes. Omit the list if no files were changed.

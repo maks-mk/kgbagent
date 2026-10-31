@@ -325,7 +325,7 @@ class LLMMixin:
     @staticmethod
     def _is_transient_llm_error(error: Exception) -> bool:
         if isinstance(error, ApiKeyRotationExhaustedError):
-            return False
+            return error.error_kind == "rate_limit"
         if classify_api_key_error(error) == "rate_limit":
             return True
 
@@ -354,7 +354,7 @@ class LLMMixin:
 
     def _is_fatal_llm_error(self, error: Exception) -> bool:
         if isinstance(error, ApiKeyRotationExhaustedError):
-            return True
+            return error.error_kind != "rate_limit"
         error_kind = classify_api_key_error(error)
         if error_kind in {"auth", "billing"}:
             return True

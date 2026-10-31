@@ -2758,31 +2758,64 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(llm.invocations), 1)
             sleep_mock.assert_not_awaited()
 
-    async def test_invoke_llm_with_retry_does_not_restart_exhausted_key_pool(self):
-        config = self._make_config(MAX_RETRIES=3, RETRY_DELAY=0)
-        cause = RuntimeError("429 Too Many Requests")
-        cause.status_code = 429
-        exhausted = ApiKeyRotationExhaustedError(
-            "Все API-ключи исчерпаны. Последняя ошибка: HTTP 429",
-            error_kind="rate_limit",
-            keys_tried=3,
-            pool_size=3,
-        )
-        exhausted.__cause__ = cause
-        llm = FakeLLM([exhausted, AIMessage(content="must not be used")])
-        nodes = AgentNodes(config=config, llm=llm, tools=[], llm_with_tools=llm)
-
-        with mock.patch("core.nodes.llm.asyncio.sleep", new=mock.AsyncMock()) as sleep_mock:
-            with self.assertRaises(ApiKeyRotationExhaustedError):
-                await nodes._invoke_llm_with_retry(
-                    llm,
-                    [HumanMessage(content="Проверь задачу")],
-                    state=self._initial_state(),
-                    node_name="agent",
+    async def test_invoke_llm_with_retry_restarts_rate_limited_key_pool(self):
+        for error in (
+            RuntimeError("APIError | type: rate_limit | Token limit exceeded"),
+            ApiKeyRotationExhaustedError(
+                "All API keys were exhausted. Last error: APIError | type: rate_limit",
+                error_kind="rate_limit",
+                keys_tried=3,
+                pool_size=3,
+            ),
+        ):
+            with self.subTest(error_type=type(error).__name__):
+                llm = FakeLLM([error, AIMessage(content="ok")])
+                nodes = AgentNodes(
+                    config=self._make_config(MAX_RETRIES=1, RETRY_DELAY=0),
+                    llm=llm, tools=[], llm_with_tools=llm,
                 )
+                self.assertFalse(nodes._is_fatal_llm_error(error))
+                with mock.patch("core.nodes.llm.asyncio.sleep", new=mock.AsyncMock()) as sleep_mock:
+                    response = await nodes._invoke_llm_with_retry(llm, [HumanMessage(content="Retry")])
+                self.assertEqual(response.content, "ok")
+                self.assertEqual(len(llm.invocations), 2)
+                sleep_mock.assert_awaited_once_with(2)
 
-        self.assertEqual(len(llm.invocations), 1)
-        sleep_mock.assert_not_awaited()
+    async def test_invoke_llm_with_retry_limits_rate_limited_key_pool_retries(self):
+        errors = [
+            ApiKeyRotationExhaustedError("Token limit exceeded", error_kind="rate_limit")
+            for _ in range(4)
+        ]
+        llm = FakeLLM([*errors, AIMessage(content="must not be used")])
+        nodes = AgentNodes(
+            config=self._make_config(MAX_RETRIES=10, RETRY_DELAY=0),
+            llm=llm, tools=[], llm_with_tools=llm,
+        )
+        with mock.patch("core.nodes.llm.asyncio.sleep", new=mock.AsyncMock()) as sleep_mock:
+            with self.assertRaises(ApiKeyRotationExhaustedError) as captured:
+                await nodes._invoke_llm_with_retry(llm, [HumanMessage(content="Retry")])
+        self.assertIs(captured.exception, errors[-1])
+        self.assertTrue(captured.exception.llm_retry_exhausted)
+        self.assertEqual(len(llm.invocations), 4)
+        self.assertEqual([call.args[0] for call in sleep_mock.await_args_list], [2, 4, 8])
+
+    async def test_invoke_llm_with_retry_does_not_restart_exhausted_key_pool(self):
+        for error_kind in ("auth", "billing", None):
+            with self.subTest(error_kind=error_kind):
+                exhausted = ApiKeyRotationExhaustedError(
+                    "All API keys were exhausted", error_kind=error_kind,
+                    keys_tried=3, pool_size=3,
+                )
+                llm = FakeLLM([exhausted, AIMessage(content="must not be used")])
+                nodes = AgentNodes(
+                    config=self._make_config(MAX_RETRIES=3, RETRY_DELAY=0),
+                    llm=llm, tools=[], llm_with_tools=llm,
+                )
+                with mock.patch("core.nodes.llm.asyncio.sleep", new=mock.AsyncMock()) as sleep_mock:
+                    with self.assertRaises(ApiKeyRotationExhaustedError):
+                        await nodes._invoke_llm_with_retry(llm, [HumanMessage(content="Retry")])
+                self.assertEqual(len(llm.invocations), 1)
+                sleep_mock.assert_not_awaited()
 
     async def test_invoke_llm_with_retry_does_not_retry_closed_client_cause(self):
         config = self._make_config(MAX_RETRIES=3, RETRY_DELAY=0)
