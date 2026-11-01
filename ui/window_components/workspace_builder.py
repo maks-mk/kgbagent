@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui.theme import TEXT_MUTED
+from ui.theme import SURFACE_BG, TEXT_MUTED
 from ui.widgets import (
     ApprovalRequestCardWidget,
     ChatTranscriptWidget,
@@ -158,6 +158,7 @@ class WorkspaceBuilder:
         sidebar_layout.addWidget(sidebar, 1)
 
         center_panel = QWidget()
+        center_panel.setObjectName("ChatWorkspace")
         center_layout = QGridLayout(center_panel)
         center_layout.setContentsMargins(0, 0, 0, 0)
         center_layout.setHorizontalSpacing(8)
@@ -331,7 +332,7 @@ class WorkspaceBuilder:
         summary_progress_ring = SummaryProgressRing()
         control_row.addWidget(summary_progress_ring, 0, Qt.AlignVCenter)
 
-        send_button = QPushButton(_fa_icon("fa5s.arrow-up", color="#08090B", size=14), "")
+        send_button = QPushButton(_fa_icon("fa5s.arrow-up", color=SURFACE_BG, size=14), "")
         send_button.setObjectName("ComposerSendButton")
         send_button.setToolTip("Send (Enter)")
         send_button.setFixedSize(32, 32)
@@ -339,7 +340,7 @@ class WorkspaceBuilder:
         send_button.setAccessibleDescription("Submit the current request")
         control_row.addWidget(send_button, 0, Qt.AlignVCenter)
 
-        stop_action_button = QPushButton(_fa_icon("fa5s.stop", color="#08090B", size=14), "")
+        stop_action_button = QPushButton(_fa_icon("fa5s.stop", color=SURFACE_BG, size=14), "")
         stop_action_button.setObjectName("ComposerStopButton")
         stop_action_button.setToolTip("Stop")
         stop_action_button.setFixedSize(32, 32)

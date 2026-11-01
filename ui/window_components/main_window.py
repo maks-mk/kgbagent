@@ -19,7 +19,7 @@ from core.std_streams import ensure_standard_streams
 from core.text_utils import format_compact_tokens, prepare_markdown_for_render
 from ui.main_window_state import ComposerStateController, RunStatusController, StreamEventRouter
 from ui.runtime import AgentRuntimeController
-from ui.theme import ACCENT_BLUE, build_stylesheet
+from ui.theme import ACCENT_BLUE, SURFACE_BG, TEXT_MUTED, build_stylesheet
 from ui.widgets.window_chrome import build_main_window_header, install_dialog_chrome
 from ui.widgets import ModelSettingsDialog, _fa_icon
 from ui.window_components.inspector_controller import InspectorController
@@ -354,7 +354,7 @@ class MainWindow(QMainWindow):
         self._set_input_enabled(True)
 
     def _update_send_button_visual(self, can_send: bool) -> None:
-        icon_color = "#08090B" if can_send else "#8A857E"
+        icon_color = SURFACE_BG if can_send else TEXT_MUTED
         self.send_button.setIcon(_fa_icon("fa5s.arrow-up", color=icon_color, size=14))
 
     def _on_run_started(self, payload: dict) -> None:

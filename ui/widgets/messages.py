@@ -72,6 +72,8 @@ class NoticeWidget(QFrame):
 class RunStatsWidget(QWidget):
     def __init__(self, stats: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setObjectName("RunStatsRow")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 60)
         layout.setSpacing(0)
@@ -96,9 +98,9 @@ class RunStatsWidget(QWidget):
 
 
 class ShimmerLabel(QLabel):
-    """Метка с бегущим белым бликом во время активной работы."""
+    """Метка с бегущим светло-серым бликом во время активной работы."""
 
-    _HIGHLIGHT_COLOR = QColor("#FFFFFF")
+    _HIGHLIGHT_COLOR = QColor(TEXT_PRIMARY)
     _BASE_COLOR = QColor(TEXT_MUTED)
 
     def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
@@ -405,6 +407,7 @@ class AssistantMessageWidget(QFrame):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("TranscriptRow")
+        self.setProperty("messageRole", "assistant")
         self.setFrameShape(QFrame.NoFrame)
         self._markdown = ""
         self._parts_source_text = ""
@@ -416,8 +419,9 @@ class AssistantMessageWidget(QFrame):
         self._layout.setSpacing(6)
 
         self.content_widget = QWidget()
+        self.content_widget.setObjectName("AssistantContent")
         self.content_layout = QVBoxLayout(self.content_widget)
-        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setContentsMargins(14, 6, 14, 6)
         self.content_layout.setSpacing(8)
         self._layout.addWidget(self.content_widget, 1)
 

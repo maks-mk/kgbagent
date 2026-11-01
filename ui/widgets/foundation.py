@@ -476,12 +476,12 @@ class AutoTextBrowser(QTextBrowser):
         self._queue_height_sync()
 
     def _highlight_filenames(self) -> None:
-        """Tint filename-like tokens in rendered assistant markdown.
+        """Tint links and filename-like tokens in rendered assistant markdown.
 
         Runs on the already-rendered document, so Markdown structure (code
-        blocks, links, inline code) is respected: only plain-text fragments
-        are scanned, and anchors/links keep their own styling. Ranges are
-        collected first and formats applied afterwards, because merging a
+        blocks, links, inline code) is respected: links retain their anchors
+        and underlines, while plain-text fragments are scanned for filenames.
+        Ranges are collected first and formats applied afterwards, because merging a
         char format splits fragments and would invalidate the iterator.
         """
         document = self.document()
@@ -497,7 +497,11 @@ class AutoTextBrowser(QTextBrowser):
                     is_fenced_code = (
                         _is_monospace_format(char_format) and not char_format.font().fixedPitch()
                     )
-                    if not char_format.isAnchor() and not is_fenced_code:
+                    if char_format.isAnchor():
+                        highlight_ranges.append(
+                            (fragment.position(), fragment.position() + fragment.length())
+                        )
+                    elif not is_fenced_code:
                         # Keep inline-code typography, but tint filenames inside
                         # it. Fenced code blocks use a generic monospace format
                         # and remain untouched.
@@ -694,14 +698,14 @@ class CodeHighlighter(QSyntaxHighlighter):
 
     def _build_rules(self) -> None:
         keyword_format = QTextCharFormat()
-        keyword_format.setForeground(QColor("#7CC7FF"))
+        keyword_format.setForeground(QColor(ACCENT_BLUE))
         keyword_format.setFontWeight(QFont.Bold)
 
         string_format = QTextCharFormat()
-        string_format.setForeground(QColor("#A8E6A2"))
+        string_format.setForeground(QColor(SUCCESS_GREEN))
 
         comment_format = QTextCharFormat()
-        comment_format.setForeground(QColor("#8093A7"))
+        comment_format.setForeground(QColor(TEXT_MUTED))
         comment_format.setFontItalic(True)
 
         if self.language == "diff":
@@ -740,11 +744,11 @@ class CodeHighlighter(QSyntaxHighlighter):
             marker = marker_match.group("marker") if marker_match else ""
 
             if marker == "+":
-                text_format.setForeground(QColor("#8FE388"))
+                text_format.setForeground(QColor(SUCCESS_GREEN))
                 line_bg = DIFF_ADD_LINE_BG
                 text_format.setBackground(line_bg)
             elif marker == "-":
-                text_format.setForeground(QColor("#FF8B8B"))
+                text_format.setForeground(QColor(ERROR_RED))
                 line_bg = DIFF_REMOVE_LINE_BG
                 text_format.setBackground(line_bg)
             elif (
@@ -754,14 +758,14 @@ class CodeHighlighter(QSyntaxHighlighter):
                 or text.lstrip().startswith("--- ")
                 or text.lstrip().startswith("+++ ")
             ):
-                text_format.setForeground(QColor("#7CC7FF"))
+                text_format.setForeground(QColor(ACCENT_BLUE))
                 text_format.setFontWeight(QFont.Bold)
             if text_format.foreground().color().isValid():
                 self.setFormat(0, len(text), text_format)
 
             if marker_match:
                 number_format = QTextCharFormat()
-                number_format.setForeground(QColor("#747C89"))
+                number_format.setForeground(QColor(TEXT_MUTED))
                 if line_bg is not None:
                     number_format.setBackground(line_bg)
                 self.setFormat(
@@ -781,6 +785,8 @@ class CodeHighlighter(QSyntaxHighlighter):
 class CodeBlockWidget(QWidget):
     def __init__(self, code: str, language: str = "", title: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setObjectName("CodeBlock")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)

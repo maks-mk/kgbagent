@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QApplication, QLabel
 
 from ui.main_window_state import StreamEventRouter
 from ui.streaming import StreamEvent
-from ui.theme import SURFACE_BG, TEXT_PRIMARY, build_stylesheet
+from ui.theme import ACCENT_BLUE, SURFACE_BG, TEXT_PRIMARY, build_stylesheet
 from ui.widgets.attachments import ImageAttachmentChipWidget
 from ui.widgets.composer import ComposerTextEdit
 from ui.widgets.foundation import SummaryProgressRing
@@ -47,16 +47,16 @@ class UiHelperTests(unittest.TestCase):
         self.assertIn("border: 1px solid", stylesheet)
         self.assertNotIn("checkbox-check.svg", stylesheet)
 
-    def test_enabled_tool_switch_uses_white_track(self):
+    def test_enabled_tool_switch_uses_accent_track(self):
         stylesheet = build_stylesheet()
         selector = "QCheckBox#ToolAvailabilitySwitch:checked"
         start = stylesheet.index(selector)
         checked_rule = stylesheet[start:stylesheet.index("}", start)]
 
-        self.assertIn("background: #FFFFFF;", checked_rule)
-        self.assertIn("border: 1px solid #FFFFFF;", checked_rule)
+        self.assertIn(f"background: {ACCENT_BLUE};", checked_rule)
+        self.assertIn(f"border: 1px solid {ACCENT_BLUE};", checked_rule)
 
-    def test_enabled_model_switch_uses_white_track(self):
+    def test_enabled_model_switch_uses_accent_track(self):
         stylesheet = build_stylesheet()
         selector = "QCheckBox#ModelProfileEnabledSwitch:checked"
         start = stylesheet.index(selector)
@@ -65,9 +65,9 @@ class UiHelperTests(unittest.TestCase):
         indicator_start = stylesheet.index(indicator_selector)
         indicator_rule = stylesheet[indicator_start:stylesheet.index("}", indicator_start)]
 
-        self.assertIn("background: #FFFFFF;", checked_rule)
-        self.assertIn("border: 1px solid #FFFFFF;", checked_rule)
-        self.assertIn("background: #1E1D1B;", indicator_rule)
+        self.assertIn(f"background: {ACCENT_BLUE};", checked_rule)
+        self.assertIn(f"border: 1px solid {ACCENT_BLUE};", checked_rule)
+        self.assertIn(f"background: {SURFACE_BG};", indicator_rule)
 
     def test_tool_card_meta_labels_have_transparent_background(self):
         stylesheet = build_stylesheet()

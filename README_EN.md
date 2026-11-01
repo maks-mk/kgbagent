@@ -13,7 +13,7 @@ Run from source: `python main.py`.
 Build a portable Windows `.exe`: `build.bat`.
 
 <div align="center">
-  <img src="./img/agent.webp" alt="KGB|Agent" width="800">
+  <img src="./img/ui.jpg" alt="KGB|Agent" width="800">
 </div>
 ---
 

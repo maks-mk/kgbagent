@@ -746,7 +746,7 @@ class ModelSettingsDialog(QDialog):
         self.save_button = actions.button(QDialogButtonBox.StandardButton.Save)
         if self.save_button is not None:
             self.save_button.setObjectName("PrimaryButton")
-            self.save_button.setIcon(_fa_icon("fa5s.save", color="#FFFFFF", size=11))
+            self.save_button.setIcon(_fa_icon("fa5s.save", color=TEXT_PRIMARY, size=11))
             self.save_button.setMinimumHeight(24)
         root.addWidget(actions)
 
@@ -1546,7 +1546,7 @@ class ModelSettingsDialog(QDialog):
     def _refresh_profile_counts(self) -> None:
         active_name = str(self._active_profile or "").strip() or "none"
         self.active_profile_label.setText(
-            f"Active: <span style='color:#D5D9DF;font-weight:700'>{active_name}</span>"
+            f"Active: <span style='color:{TEXT_PRIMARY};font-weight:700'>{active_name}</span>"
         )
 
     def _apply_profile_filter(self, value: str) -> None:

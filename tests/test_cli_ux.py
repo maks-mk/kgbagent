@@ -24,7 +24,7 @@ from core.tool_policy import ToolMetadata
 from ui.runtime import build_runtime_snapshot, summarize_approval_request
 from ui.runtime_worker import AgentRunWorker, AgentRuntimeController
 from ui.streaming import StreamEvent, StreamProcessor
-from ui.theme import AMBER_WARNING, BORDER, ERROR_RED, SUCCESS_GREEN, SURFACE_BG, SURFACE_CARD, TEXT_MUTED, build_stylesheet
+from ui.theme import AMBER_WARNING, BORDER, ERROR_RED, FILENAME_BLUE, SUCCESS_GREEN, SURFACE_BG, SURFACE_CARD, TEXT_MUTED, build_stylesheet
 from ui.widgets.composer import _ComposerMentionItemWidget
 from ui.widgets.foundation import AutoTextBrowser, CodeBlockWidget, CopySafePlainTextEdit, DiffBlockWidget, TRANSCRIPT_MAX_WIDTH
 from ui.widgets.messages import AssistantMessageWidget, NoticeWidget, SpinnerGlyph
@@ -378,10 +378,10 @@ class GuiUxTests(unittest.TestCase):
                 card = ToolCardWidget({"name": "read_images", "args": args, "phase": "running"})
                 try:
                     self.assertEqual(card.action_label.full_text(), f"Reading images {target}")
-                    self.assertIn("color:#7CC7FF", card.action_label.text())
+                    self.assertIn(f"color:{FILENAME_BLUE}", card.action_label.text())
                     card.finish({"content": "Success"})
                     self.assertEqual(card.action_label.full_text(), f"Read images {target}")
-                    self.assertIn("color:#7CC7FF", card.action_label.text())
+                    self.assertIn(f"color:{FILENAME_BLUE}", card.action_label.text())
                 finally:
                     card.deleteLater()
 
@@ -404,7 +404,7 @@ class GuiUxTests(unittest.TestCase):
             with self.subTest(name=name):
                 card = ToolCardWidget({"name": name, "args": {"path": path}, "phase": "running"})
                 self.assertEqual(card.action_label.full_text(), f"Deleting {path}")
-                self.assertIn("color:#7CC7FF", card.action_label.text())
+                self.assertIn(f"color:{FILENAME_BLUE}", card.action_label.text())
 
                 card.finish({"name": name, "args": {"path": path}, "content": "Success"})
 
@@ -2159,7 +2159,10 @@ class GuiUxTests(unittest.TestCase):
                 fragment = iterator.fragment()
                 if fragment.isValid():
                     color = fragment.charFormat().foreground().color()
-                    if color.name().upper() == FILENAME_BLUE.upper():
+                    if (
+                        not fragment.charFormat().isAnchor()
+                        and color.name().upper() == FILENAME_BLUE.upper()
+                    ):
                         highlighted.append(fragment.text())
                 iterator += 1
             block = block.next()
@@ -2680,7 +2683,7 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(tool_card.tool_button.text(), "")
         self.assertEqual(tool_card.action_label.full_text(), "Edited demo.txt +1 -1")
         action_markup = tool_card.action_label.text()
-        self.assertIn('color:#7CC7FF', action_markup)
+        self.assertIn(f'color:{FILENAME_BLUE}', action_markup)
         self.assertIn(f'color:{SUCCESS_GREEN}', action_markup)
         self.assertIn(f'color:{ERROR_RED}', action_markup)
         self.assertFalse(tool_card.tool_button.isChecked())

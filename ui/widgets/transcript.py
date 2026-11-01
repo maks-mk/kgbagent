@@ -22,6 +22,8 @@ class ConversationTurnWidget(QWidget):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self.setObjectName("ConversationTurn")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         self._assistant_markdown = ""
         self._force_new_assistant_block = False
         self._layout = QVBoxLayout(self)
@@ -309,6 +311,8 @@ class ChatTranscriptWidget(QWidget):
 
     def __init__(self, history_batch_size: int | None = None) -> None:
         super().__init__()
+        self.setObjectName("ChatTranscript")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         try:
             requested = int(history_batch_size) if history_batch_size is not None else self.HISTORY_BATCH_SIZE
         except (TypeError, ValueError):
@@ -339,6 +343,8 @@ class ChatTranscriptWidget(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
 
         self.scroll = QScrollArea(self)
+        self.scroll.setObjectName("TranscriptScrollArea")
+        self.scroll.viewport().setObjectName("TranscriptViewport")
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 

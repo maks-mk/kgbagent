@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QPush
 from shiboken6 import isValid
 
 from core.text_utils import build_tool_ui_labels, format_tool_display
-from ui.theme import ERROR_RED, FILENAME_BLUE, SUCCESS_GREEN, TEXT_MUTED
+from ui.theme import ACCENT_BLUE, ERROR_RED, FILENAME_BLUE, SUCCESS_GREEN, TEXT_MUTED
 from .foundation import (
     CodeBlockWidget,
     CollapsibleSection,
@@ -262,6 +262,7 @@ class ToolCardWidget(QFrame):
         layout.setSpacing(2)
 
         self.header_container = QWidget(self)
+        self.header_container.setObjectName("ToolCardHeaderRow")
         header = QHBoxLayout(self.header_container)
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(4)
@@ -327,6 +328,7 @@ class ToolCardWidget(QFrame):
         # tool cards then never allocates documents it will not show.
         self.args_view: QPlainTextEdit | None = None
         self.args_container = QWidget(self)
+        self.args_container.setObjectName("ToolArgsContainer")
         self._args_layout = QHBoxLayout(self.args_container)
         self._args_layout.setContentsMargins(15, 2, 0, 2)
         self._args_layout.setSpacing(0)
@@ -704,7 +706,7 @@ class ToolCardWidget(QFrame):
         self._is_mcp = is_mcp
         icon_color = TEXT_MUTED
         if phase_variant == "active":
-            icon_color = "#A8A49E"
+            icon_color = ACCENT_BLUE
         elif phase_variant == "success":
             icon_color = SUCCESS_GREEN
         elif phase_variant == "error":
