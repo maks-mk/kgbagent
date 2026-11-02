@@ -7,7 +7,7 @@ ACCENT_BLUE = "#8AB4F8"
 ACCENT_BLUE_SOFT = "#303030"
 
 TEXT_PRIMARY = "#D0D0D0"
-TEXT_CHAT = "#E0E0E0"
+TEXT_CHAT = "#ECECEC"
 TEXT_SECONDARY = "#929292"
 TEXT_MUTED = TEXT_SECONDARY
 TEXT_DIM = "#6E6E6E"
@@ -15,11 +15,12 @@ TEXT_DIM = "#6E6E6E"
 # Keep the conversation canvas uniform; only user bubbles and controls are raised.
 SURFACE_BG = "#212121"
 SURFACE_DIALOG = "#242424"
+SURFACE_SETTINGS = "#1C1C1C"
 SURFACE_CARD = "#262626"
 SURFACE_ALT = "#303030"
 USER_MESSAGE_BG = "#2D2D2D"
 AI_MESSAGE_BG = SURFACE_DIALOG
-INPUT_BG = SURFACE_ALT
+INPUT_BG = "#363636"
 BORDER = "#3A3A3A"
 
 AMBER_WARNING = "#D6AE72"
@@ -85,7 +86,7 @@ def build_stylesheet() -> str:
     tool_toggle_text = palette["tool_toggle_text"]
     tool_toggle_hover_text = palette["tool_toggle_hover_text"]
     tool_call_hover = palette["tool_call_hover"]
-    model_dialog_bg = blend_hex(SURFACE_BG, TEXT_PRIMARY, 0.03)
+    model_dialog_bg = SURFACE_SETTINGS
     model_dialog_card = blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.03)
     model_dialog_card_alt = blend_hex(SURFACE_CARD, SURFACE_ALT, 0.28)
     model_dialog_editor = blend_hex(model_dialog_card, TEXT_PRIMARY, 0.035)
@@ -292,7 +293,7 @@ def build_stylesheet() -> str:
 
     QDialog#ModelSettingsDialog {{
         background: {model_dialog_bg};
-        border: none;
+        border: 1px solid {BORDER};
     }}
 
     QDialog#ModelSettingsDialog QWidget {{
