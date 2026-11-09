@@ -7,15 +7,18 @@ ACCENT_BLUE = "#8AB4F8"
 ACCENT_BLUE_SOFT = "#303030"
 
 TEXT_PRIMARY = "#D0D0D0"
-TEXT_CHAT = "#ECECEC"
+TEXT_CHAT = "#F5F5F5"
 TEXT_SECONDARY = "#929292"
 TEXT_MUTED = TEXT_SECONDARY
 TEXT_DIM = "#6E6E6E"
+CONTEXT_INDICATOR_GRAY = "#BFBFBF"
+CONTEXT_INDICATOR_TRACK = "#5C5C5C"
 
 # Keep the conversation canvas uniform; only user bubbles and controls are raised.
 SURFACE_BG = "#212121"
+SURFACE_PROJECTS = "#1C1C1C"
 SURFACE_DIALOG = "#242424"
-SURFACE_SETTINGS = "#1C1C1C"
+SURFACE_SETTINGS = "#2A2A2A"
 SURFACE_CARD = "#262626"
 SURFACE_ALT = "#303030"
 USER_MESSAGE_BG = "#2D2D2D"
@@ -106,6 +109,7 @@ def build_stylesheet() -> str:
     model_dialog_field_border = blend_hex(BORDER, TEXT_PRIMARY, 0.09)
     model_dialog_switch_off = blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.10)
     model_dialog_switch_thumb = TEXT_PRIMARY
+    model_dialog_saved_bg = "#238636"
     approval_dialog_bg = blend_hex(SURFACE_BG, TEXT_PRIMARY, 0.02)
     approval_dialog_card = blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.03)
     approval_dialog_border = blend_hex(BORDER, TEXT_PRIMARY, 0.10)
@@ -135,8 +139,12 @@ def build_stylesheet() -> str:
         border: none;
     }}
 
-    QWidget#MainWindowTitleBar {{
-        background: {SURFACE_BG};
+    QWidget#MainWindowHeader,
+    QWidget#MainWindowTitleBar,
+    QWidget#MainWindowTopBar,
+    QWidget#MainWindowTopBarSection,
+    QWidget#MainWindowCentral {{
+        background: {SURFACE_DIALOG};
     }}
 
     QWidget#MainWindowTitleBar QToolButton {{
@@ -154,6 +162,7 @@ def build_stylesheet() -> str:
     }}
 
     QLabel#DialogWindowTitle {{
+        background: transparent;
         color: {TEXT_PRIMARY};
         font-weight: 600;
     }}
@@ -168,6 +177,10 @@ def build_stylesheet() -> str:
 
     QFrame#SidebarCard {{
         border: 1px solid {BORDER};
+    }}
+
+    QFrame#SidebarCard[panelRole="projects"] {{
+        background: {SURFACE_PROJECTS};
     }}
 
     QWidget#SessionSidebar {{
@@ -226,7 +239,7 @@ def build_stylesheet() -> str:
 
     QLabel#TopStatusChip[statusState="success"] {{
         background: {blend_hex(SUCCESS_GREEN, SURFACE_ALT, 0.82)};
-        color: {blend_hex(SUCCESS_GREEN, TEXT_PRIMARY, 0.18)};
+        color: {TEXT_CHAT};
     }}
 
     QLabel#TopStatusChip[statusState="error"] {{
@@ -854,25 +867,28 @@ def build_stylesheet() -> str:
     }}
 
     QDialog#ModelSettingsDialog QPushButton#PrimaryButton {{
-        background: {blend_hex(ACCENT_BLUE, SURFACE_ALT, 0.82)};
-        color: {TEXT_PRIMARY};
-        border: 1px solid {blend_hex(ACCENT_BLUE, TEXT_PRIMARY, 0.10)};
+        background: #FFFFFF;
+        color: #000000;
+        border: 1px solid #FFFFFF;
         border-radius: {SOFT_RADIUS_MD + 4}px;
         font-weight: 700;
         padding: 3px 10px;
     }}
 
     QDialog#ModelSettingsDialog QPushButton#PrimaryButton:hover {{
-        background: {blend_hex(ACCENT_BLUE, SURFACE_ALT, 0.72)};
+        background: #F0F0F0;
+        border-color: #F0F0F0;
     }}
 
     QDialog#ModelSettingsDialog QPushButton#PrimaryButton[savedState="true"] {{
-        background: {blend_hex(SUCCESS_GREEN, SURFACE_ALT, 0.78)};
-        border-color: {blend_hex(SUCCESS_GREEN, TEXT_PRIMARY, 0.18)};
+        background: {model_dialog_saved_bg};
+        color: #FFFFFF;
+        border-color: {model_dialog_saved_bg};
     }}
 
     QDialog#ModelSettingsDialog QPushButton#PrimaryButton[savedState="true"]:hover {{
-        background: {blend_hex(SUCCESS_GREEN, TEXT_PRIMARY, 0.10)};
+        background: {blend_hex(model_dialog_saved_bg, "#000000", 0.10)};
+        border-color: {blend_hex(model_dialog_saved_bg, "#000000", 0.10)};
     }}
 
     QDialog#ModelSettingsDialog QPushButton {{
@@ -1284,6 +1300,20 @@ def build_stylesheet() -> str:
     QToolButton:pressed,
     QPushButton:pressed {{
         background: {blend_hex(SURFACE_ALT, ACCENT_BLUE_SOFT, 0.8)};
+    }}
+
+    QToolButton#MainWindowToolButton {{
+        background: transparent;
+        border: none;
+        border-radius: {SOFT_RADIUS_SM}px;
+    }}
+
+    QToolButton#MainWindowToolButton:hover {{
+        background: {SURFACE_ALT};
+    }}
+
+    QToolButton#MainWindowToolButton:pressed {{
+        background: {blend_hex(SURFACE_ALT, ACCENT_BLUE_SOFT, 0.35)};
     }}
 
     QPushButton#PrimaryButton {{
@@ -2278,7 +2308,7 @@ def build_stylesheet() -> str:
     }}
 
     QMenuBar {{
-        background: {SURFACE_BG};
+        background: {SURFACE_DIALOG};
         color: {TEXT_SECONDARY};
     }}
 

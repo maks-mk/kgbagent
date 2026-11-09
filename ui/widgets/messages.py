@@ -8,7 +8,7 @@ from PySide6.QtGui import QBrush, QColor, QFontMetrics, QIcon, QLinearGradient, 
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
 from core.text_utils import build_tool_ui_labels, has_visible_text, split_markdown_segments
-from ui.theme import ACCENT_BLUE, AMBER_WARNING, ERROR_RED, SUCCESS_GREEN, TEXT_MUTED, TEXT_PRIMARY, blend_hex
+from ui.theme import ACCENT_BLUE, AMBER_WARNING, CONTEXT_INDICATOR_GRAY, ERROR_RED, SUCCESS_GREEN, TEXT_MUTED, TEXT_PRIMARY, blend_hex
 from .attachments import ImageAttachmentStripWidget
 from .foundation import (
     AutoTextBrowser,
@@ -332,7 +332,10 @@ class StatusIndicatorWidget(QFrame):
         elif phase == "waiting":
             self.spinner.set_static_icon(_fa_icon("fa5s.pause-circle", color=TEXT_MUTED, size=12))
         else:
-            icon_color = TEXT_MUTED if phase not in {"active", "reviewing"} else ACCENT_BLUE
+            if phase == "system":
+                icon_color = CONTEXT_INDICATOR_GRAY
+            else:
+                icon_color = TEXT_MUTED if phase not in {"active", "reviewing"} else ACCENT_BLUE
             self.spinner.set_color(icon_color)
             self.spinner.set_spinning(True)
 

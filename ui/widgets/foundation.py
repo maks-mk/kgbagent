@@ -17,8 +17,8 @@ from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QPlainT
 
 from ui.theme import (
     ACCENT_BLUE,
-    AMBER_WARNING,
-    BORDER,
+    CONTEXT_INDICATOR_GRAY,
+    CONTEXT_INDICATOR_TRACK,
     ERROR_RED,
     FILENAME_BLUE,
     MONO_FONT_FAMILY,
@@ -259,7 +259,7 @@ class SummaryProgressRing(QWidget):
             side - (margin * 2),
         )
 
-        track = QPen(QColor(BORDER), pen_width)
+        track = QPen(QColor(CONTEXT_INDICATOR_TRACK), pen_width)
         track.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(track)
         painter.drawArc(rect, 0, 360 * 16)
@@ -270,10 +270,7 @@ class SummaryProgressRing(QWidget):
         # The filled arc shows used context, so the ring is never an empty gray circle
         # while the threshold is configured; remaining share is exposed via the tooltip.
         used = 1.0 - self._remaining
-        color = ACCENT_BLUE if used < 0.85 else AMBER_WARNING
-        if self._will_summarize:
-            color = SUCCESS_GREEN
-        arc = QPen(QColor(color), pen_width)
+        arc = QPen(QColor(CONTEXT_INDICATOR_GRAY), pen_width)
         arc.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(arc)
         painter.drawArc(rect, 90 * 16, -int(360 * 16 * used))

@@ -15,7 +15,6 @@
 <div align="center">
   <img src="./img/ui.jpg" alt="KGB|Agent" width="800">
 </div>
----
 
 ## Цель проекта
 

@@ -4736,7 +4736,7 @@ class GuiUxTests(unittest.TestCase):
         self.assertIn("keep this window open", dialog.save_state_label.text())
         self.assertEqual(dialog.save_button.text(), "Saved")
         self.assertTrue(bool(dialog.save_button.property("savedState")))
-        self.assertEqual(dialog._save_button_reset_timer.interval(), 3000)
+        self.assertEqual(dialog._save_button_reset_timer.interval(), 2000)
         self.assertTrue(dialog._save_button_reset_timer.isActive())
 
         dialog._save_button_reset_timer.start(1)

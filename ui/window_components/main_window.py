@@ -168,6 +168,7 @@ class MainWindow(QMainWindow):
         status_refs.status_bar.setSizeGripEnabled(True)
 
         central = QWidget()
+        central.setObjectName("MainWindowCentral")
         central.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         root = QVBoxLayout(central)
         root.setContentsMargins(8, 8, 8, 8)

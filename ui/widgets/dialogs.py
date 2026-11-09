@@ -386,7 +386,7 @@ class ModelSettingsDialog(QDialog):
         self._fetch_debounce.timeout.connect(self._start_fetch)
         self._save_button_reset_timer = QTimer(self)
         self._save_button_reset_timer.setSingleShot(True)
-        self._save_button_reset_timer.setInterval(3000)
+        self._save_button_reset_timer.setInterval(2000)
         self._save_button_reset_timer.timeout.connect(self._restore_save_button_text)
         self._name_manual_flags = self._compute_initial_name_manual_flags()
         self._model_manual_flags = [False] * len(self._profiles)
@@ -746,7 +746,7 @@ class ModelSettingsDialog(QDialog):
         self.save_button = actions.button(QDialogButtonBox.StandardButton.Save)
         if self.save_button is not None:
             self.save_button.setObjectName("PrimaryButton")
-            self.save_button.setIcon(_fa_icon("fa5s.save", color=TEXT_PRIMARY, size=11))
+            self.save_button.setIcon(_fa_icon("fa5s.save", color="#000000", size=11))
             self.save_button.setMinimumHeight(24)
         root.addWidget(actions)
 
@@ -2198,6 +2198,7 @@ class ModelSettingsDialog(QDialog):
     def _restore_save_button_text(self) -> None:
         if self.save_button is not None:
             self.save_button.setText("Save")
+            self.save_button.setIcon(_fa_icon("fa5s.save", color="#000000", size=11))
             self.save_button.setProperty("savedState", False)
             self.save_button.style().unpolish(self.save_button)
             self.save_button.style().polish(self.save_button)
@@ -2206,6 +2207,7 @@ class ModelSettingsDialog(QDialog):
         if self.save_button is None:
             return
         self.save_button.setText("Saved")
+        self.save_button.setIcon(_fa_icon("fa5s.save", color="#FFFFFF", size=11))
         self.save_button.setProperty("savedState", True)
         self.save_button.style().unpolish(self.save_button)
         self.save_button.style().polish(self.save_button)

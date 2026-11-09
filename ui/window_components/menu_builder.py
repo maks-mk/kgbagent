@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui.theme import ACCENT_BLUE, ERROR_RED
+from ui.theme import ERROR_RED, TEXT_PRIMARY
 from ui.widgets import _fa_icon
 
 
@@ -40,10 +40,10 @@ class MenuBuilder:
         self.window = window
 
     def build(self) -> MenuBuildResult:
-        toggle_sidebar_action = QAction(_fa_icon("fa5s.columns", color=ACCENT_BLUE, size=14), "Toggle Sidebar", self.window)
-        new_session_action = QAction(_fa_icon("fa5s.plus", color=ACCENT_BLUE, size=14), "New Session", self.window)
-        settings_action = QAction(_fa_icon("fa5s.cog", color=ACCENT_BLUE, size=14), "Settings", self.window)
-        info_action = QAction(_fa_icon("fa5s.sliders-h", color=ACCENT_BLUE, size=14), "Toggle Inspector", self.window)
+        toggle_sidebar_action = QAction(_fa_icon("fa5s.columns", color=TEXT_PRIMARY, size=14), "Toggle Sidebar", self.window)
+        new_session_action = QAction(_fa_icon("fa5s.plus", color=TEXT_PRIMARY, size=14), "New Session", self.window)
+        settings_action = QAction(_fa_icon("fa5s.cog", color=TEXT_PRIMARY, size=14), "Settings", self.window)
+        info_action = QAction(_fa_icon("fa5s.sliders-h", color=TEXT_PRIMARY, size=14), "Toggle Inspector", self.window)
         quit_action = QAction(_fa_icon("fa5s.sign-out-alt", color=ERROR_RED, size=14), "Quit", self.window)
 
         toggle_sidebar_action.setShortcut("Ctrl+B")
@@ -110,6 +110,7 @@ class MenuBuilder:
         )
 
         right_buttons = QWidget()
+        right_buttons.setObjectName("MainWindowTopBarSection")
         right_layout = QHBoxLayout(right_buttons)
         right_layout.setContentsMargins(0, 2, 4, 2)
         right_layout.setSpacing(6)
@@ -120,6 +121,7 @@ class MenuBuilder:
         right_layout.addWidget(info_button)
 
         left_controls = QWidget()
+        left_controls.setObjectName("MainWindowTopBarSection")
         left_layout = QHBoxLayout(left_controls)
         left_layout.setContentsMargins(0, 2, 4, 2)
         left_layout.setSpacing(4)
@@ -127,6 +129,7 @@ class MenuBuilder:
         left_layout.addWidget(actual_menu)
 
         top_bar = QWidget()
+        top_bar.setObjectName("MainWindowTopBar")
         top_layout = QHBoxLayout(top_bar)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(0)
@@ -153,8 +156,9 @@ class MenuBuilder:
 
     def _build_tool_button(self, icon=None, *, tooltip: str, status_tip: str) -> QToolButton:
         button = QToolButton()
+        button.setObjectName("MainWindowToolButton")
         if isinstance(icon, str):
-            button.setIcon(_fa_icon(icon, color=ACCENT_BLUE, size=14))
+            button.setIcon(_fa_icon(icon, color=TEXT_PRIMARY, size=14))
         elif icon is not None:
             button.setIcon(icon)
         button.setIconSize(QSize(14, 14))

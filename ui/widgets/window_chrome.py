@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QColor, QIcon, QPainter, QPaintEvent
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFileDialog, QHBoxLayout, QLabel,
     QStyle, QToolButton, QVBoxLayout, QWidget,
 )
 
-from ui.theme import TEXT_PRIMARY, TEXT_SECONDARY, build_stylesheet
+from ui.theme import SURFACE_DIALOG, TEXT_PRIMARY, TEXT_SECONDARY, build_stylesheet
 from ui.widgets.foundation import _fa_icon
 
 
@@ -99,6 +99,13 @@ class MainWindowTitleBar(_DialogTitleBar):
         window.installEventFilter(self)
         self._sync_window_state()
 
+    def paintEvent(self, event: QPaintEvent) -> None:
+        # Keep the caption strip identical to the chat canvas; the QSS rule for
+        # this custom QWidget subclass is not applied reliably by Qt.
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(SURFACE_DIALOG))
+        super().paintEvent(event)
+
     def _toggle_maximized(self) -> None:
         if self._dialog.isMaximized():
             self._dialog.showNormal()
@@ -129,6 +136,7 @@ class MainWindowTitleBar(_DialogTitleBar):
 
 def build_main_window_header(window: QWidget, menu: QWidget) -> QWidget:
     header = QWidget(window)
+    header.setObjectName("MainWindowHeader")
     layout = QVBoxLayout(header)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(0)

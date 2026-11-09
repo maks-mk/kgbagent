@@ -148,6 +148,7 @@ class WorkspaceBuilder:
 
         sidebar_container = QFrame()
         sidebar_container.setObjectName("SidebarCard")
+        sidebar_container.setProperty("panelRole", "projects")
         sidebar_container.setMinimumWidth(250)
         sidebar_container.setMaximumWidth(360)
         sidebar_layout = QVBoxLayout(sidebar_container)
