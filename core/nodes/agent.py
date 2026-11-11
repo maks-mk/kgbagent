@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import AIMessage
 
-from core.state import AgentState, OpenToolIssue, RecoveryState, transcript_message_delta
+from core.state import AgentState, OpenToolIssue, RecoveryState, AgentTurnResult, message_state_update
 from core.tool_args import canonicalize_tool_args
 from core.constants import TOOL_ISSUE_UI_NOTICE
 from core.message_utils import iter_message_tool_calls, stringify_content, visible_text_content
@@ -79,7 +79,7 @@ class AgentMixin:
         recovery_state: RecoveryState | None = None,
         allowed_tool_names: List[str] | None = None,
         chat_only: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> AgentTurnResult:
         token_usage_update = {}
         if getattr(response, "usage_metadata", None):
             token_usage_update = {"token_usage": response.usage_metadata}
@@ -315,9 +315,8 @@ class AgentMixin:
         else:
             turn_outcome = TURN_OUTCOME_FINISH_TURN
 
-        return {
-            "messages": outbound_messages,
-            "transcript_messages": transcript_message_delta(outbound_messages),
+        return AgentTurnResult(state_update={
+            **message_state_update(outbound_messages),
             "turn_id": turn_id,
             "current_task": current_task,
             "turn_outcome": turn_outcome,
@@ -326,7 +325,5 @@ class AgentMixin:
             "open_tool_issue": next_open_tool_issue,
             "last_tool_error": protocol_error,
             "last_tool_result": "",
-            "_retry_user_input_turn": retry_user_input_turn,
-            "_rejected_tool_calls": rejected_tool_calls,
             **token_usage_update,
-        }
+        }, retry_user_input_turn=retry_user_input_turn, rejected_tool_calls=rejected_tool_calls)

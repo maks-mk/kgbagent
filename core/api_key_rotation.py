@@ -124,6 +124,7 @@ def describe_provider_error(error: Exception) -> dict[str, Any]:
         root_cause = next_cause
 
     return {
+        **classify_provider_error(error),
         "error_type": type(error).__name__,
         "http_status": _extract_status_code(error),
         "url_host": _extract_request_host(error),
@@ -165,7 +166,7 @@ def _format_error_for_user(error: Exception | None, error_kind: str | None = Non
     return " | ".join(parts)
 
 
-def classify_api_key_error(error: Exception) -> str | None:
+def _classify_key_error(error: Exception) -> str | None:
     status_code = _extract_status_code(error)
     if status_code in {401, 403}:
         return "auth"
@@ -186,7 +187,6 @@ def classify_api_key_error(error: Exception) -> str | None:
         "incorrect api key",
         "authentication failed",
         "unauthorized",
-        "forbidden",
         "permission denied",
         "permission_denied",
         "invalid api key",
@@ -200,16 +200,18 @@ def classify_api_key_error(error: Exception) -> str | None:
         "resource_exhausted",
         "429",
         "too many requests",
+        "resource exhausted",
         "rate limit",
+        "rate_limit",
         "quota exceeded",
         "insufficient_quota",
-        "resource_exhausted",
     )
     billing_markers = (
         "402",
         "payment required",
         "insufficient_balance",
         "insufficient balance",
+        "insufficient account balance",
         "billing",
         "credit balance",
     )
@@ -220,6 +222,80 @@ def classify_api_key_error(error: Exception) -> str | None:
     if any(marker in combined for marker in rate_limit_markers):
         return "rate_limit"
     return None
+
+
+def _provider_exception_chain(error: Exception):
+    pending = [error]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+        pending.extend(cause for cause in (
+            getattr(current, "__context__", None), getattr(current, "__cause__", None)
+        ) if cause is not None)
+
+
+def classify_provider_error(error: Exception | str, details: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Share error categories while keeping each caller's retry budget separate."""
+    details = details or {}
+    causes = list(_provider_exception_chain(error)) if isinstance(error, Exception) else []
+    try:
+        status = int(details["http_status"]) if details.get("http_status") is not None else None
+    except (TypeError, ValueError):
+        status = None
+    if status is None:
+        status = next((value for cause in causes if (value := _extract_status_code(cause)) is not None), None)
+    if status is None and not causes:
+        status = _extract_status_code(RuntimeError(str(error)))
+    text = " ".join(" ".join([
+        *(f"{_extract_provider_code_text(cause)} {cause}" for cause in causes),
+        str(error), str(details.get("root_cause_message") or "")
+    ]).lower().split())
+    key_kind = details.get("rotation_error_kind") or next((
+        kind for cause in causes if (kind := getattr(cause, "error_kind", None) or _classify_key_error(cause))
+    ), None)
+    if not key_kind and not causes:
+        key_kind = _classify_key_error(RuntimeError(str(error)))
+    # A rate-limited key pool can be retried by the outer LLM policy. Only the
+    # exhausted budget explicitly supplied in diagnostics prevents stream retry.
+    if details.get("retry_exhausted"):
+        kind = "retry_exhausted"
+    elif "client has been closed" in text or "client is closed" in text:
+        kind = "closed_client"
+    elif status in {401, 403} or key_kind == "auth":
+        kind = "auth"
+    elif status == 402 or key_kind == "billing":
+        kind = "billing"
+    elif status is not None and 400 <= status < 500 and status not in {408, 429}:
+        kind = "client_error"
+    elif status == 429 or key_kind == "rate_limit":
+        kind = "rate_limit"
+    elif status == 408 or any(marker in text for marker in ("timeout", "timed out", "deadline exceeded", "deadline_exceeded")):
+        kind = "timeout"
+    elif (status is not None and 500 <= status < 600) or any(marker in text for marker in (
+        "bad gateway", "service unavailable", "temporarily unavailable", "internal server error", "temporary failure"
+    )):
+        kind = "server_error"
+    elif any(marker in text for marker in ("connection", "network", "reset by peer", "broken pipe", "eof", "stream ended", "disconnected")):
+        kind = "network"
+    else:
+        # Preserve code-only categories already captured in safe diagnostics.
+        kind = details.get("kind") if details.get("kind") in {"timeout", "server_error", "network"} else "unknown"
+    labels = {
+        "retry_exhausted": "Retry budget exhausted", "closed_client": "Client is closed",
+        "auth": "Authentication error", "billing": "Billing error", "client_error": f"HTTP {status}",
+        "rate_limit": "Rate limit", "timeout": "Timeout", "server_error": "Server error",
+        "network": "Network error", "unknown": "Stream error",
+    }
+    return {"kind": kind, "retryable": kind in {"rate_limit", "timeout", "server_error", "network"}, "label": labels[kind]}
+
+
+def classify_api_key_error(error: Exception) -> str | None:
+    kind = classify_provider_error(error)["kind"]
+    return kind if kind in {"auth", "billing", "rate_limit"} else None
 
 
 def _setup_rotation_logger(config: Any) -> logging.Logger:

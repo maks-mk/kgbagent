@@ -347,7 +347,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             turn_id=1,
             messages=[HumanMessage(content="Найди последнюю информацию")],
             allowed_tool_names=["batch_web_search"],
-        )
+        ).state_update
 
         message = next(item for item in result["messages"] if isinstance(item, AIMessage))
         self.assertNotIn("__gemini_function_call_thought_signatures__", message.additional_kwargs)
@@ -372,7 +372,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             turn_id=1,
             messages=[HumanMessage(content="прочитай файл")],
             allowed_tool_names=["read_file"],
-        )
+        ).state_update
 
         message = next(item for item in result["messages"] if isinstance(item, AIMessage))
         self.assertEqual(result["turn_outcome"], TURN_OUTCOME_RECOVER_AGENT)
@@ -404,7 +404,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             turn_id=1,
             messages=[HumanMessage(content="прочитай файл")],
             allowed_tool_names=["read_file"],
-        )
+        ).state_update
 
         message = next(item for item in result["messages"] if isinstance(item, AIMessage))
         self.assertEqual(result["turn_outcome"], TURN_OUTCOME_RUN_TOOLS)
@@ -485,7 +485,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             turn_id=1,
             messages=[HumanMessage(content="Найди последнюю информацию")],
             allowed_tool_names=["batch_web_search"],
-        )
+        ).state_update
 
         message = next(item for item in result["messages"] if isinstance(item, AIMessage))
         signature_map = message.additional_kwargs["__gemini_function_call_thought_signatures__"]
@@ -4417,10 +4417,10 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         )()
 
         with (
-            mock.patch.object(gui_runtime, "setup_runtime", return_value=config),
-            mock.patch.object(gui_runtime, "build_agent_app", new=mock.AsyncMock(return_value=(fake_app, tool_registry))),
-            mock.patch.object(gui_runtime, "repair_session_if_needed", new=mock.AsyncMock()),
-            mock.patch.object(gui_runtime.Path, "cwd", return_value=project_path),
+            mock.patch("ui.runtime_setup.setup_runtime", return_value=config),
+            mock.patch("agent.build_agent_app", new=mock.AsyncMock(return_value=(fake_app, tool_registry))),
+            mock.patch("core.session_utils.repair_session_if_needed", new=mock.AsyncMock()),
+            mock.patch("ui.runtime_session.Path.cwd", return_value=project_path),
         ):
             await worker._initialize_async(force_new_session=True)
 
@@ -4471,10 +4471,10 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         )()
 
         with (
-            mock.patch.object(gui_runtime, "setup_runtime", return_value=config),
-            mock.patch.object(gui_runtime, "build_agent_app", new=mock.AsyncMock(return_value=(fake_app, tool_registry))),
-            mock.patch.object(gui_runtime, "repair_session_if_needed", new=mock.AsyncMock()),
-            mock.patch.object(gui_runtime.Path, "cwd", return_value=project_path),
+            mock.patch("ui.runtime_setup.setup_runtime", return_value=config),
+            mock.patch("agent.build_agent_app", new=mock.AsyncMock(return_value=(fake_app, tool_registry))),
+            mock.patch("core.session_utils.repair_session_if_needed", new=mock.AsyncMock()),
+            mock.patch("ui.runtime_session.Path.cwd", return_value=project_path),
         ):
             await worker._initialize_async(preserve_session=pending_session)
 
@@ -4559,9 +4559,9 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         worker.current_session = first
 
         with (
-            mock.patch.object(gui_runtime, "repair_session_if_needed", new=mock.AsyncMock()),
-            mock.patch.object(gui_runtime.os, "chdir") as chdir_mock,
-            mock.patch.object(gui_runtime.Path, "cwd", return_value=(tmp / "project-a")),
+            mock.patch("core.session_utils.repair_session_if_needed", new=mock.AsyncMock()),
+            mock.patch("ui.runtime_session.os.chdir") as chdir_mock,
+            mock.patch("ui.runtime_session.Path.cwd", return_value=(tmp / "project-a")),
         ):
             await worker._switch_session_async(second)
 
@@ -4599,11 +4599,11 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         )()
 
         with (
-            mock.patch.object(gui_runtime, "setup_runtime", return_value=config),
-            mock.patch.object(gui_runtime, "build_agent_app", new=mock.AsyncMock(return_value=(fake_app, tool_registry))),
-            mock.patch.object(gui_runtime, "repair_session_if_needed", new=mock.AsyncMock(return_value=[])),
-            mock.patch.object(gui_runtime.Path, "cwd", return_value=fallback_project),
-            mock.patch.object(gui_runtime.os, "chdir", side_effect=PermissionError("denied")),
+            mock.patch("ui.runtime_setup.setup_runtime", return_value=config),
+            mock.patch("agent.build_agent_app", new=mock.AsyncMock(return_value=(fake_app, tool_registry))),
+            mock.patch("core.session_utils.repair_session_if_needed", new=mock.AsyncMock(return_value=[])),
+            mock.patch("ui.runtime_session.Path.cwd", return_value=fallback_project),
+            mock.patch("ui.runtime_session.os.chdir", side_effect=PermissionError("denied")),
             mock.patch.object(worker, "_log_ui_run_event") as log_mock,
         ):
             await worker._initialize_async()
@@ -4660,9 +4660,9 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         worker.current_session = first
 
         with (
-            mock.patch.object(gui_runtime, "repair_session_if_needed", new=mock.AsyncMock(return_value=[])),
-            mock.patch.object(gui_runtime.Path, "cwd", return_value=project_a),
-            mock.patch.object(gui_runtime.os, "chdir", side_effect=OSError("network share denied")),
+            mock.patch("core.session_utils.repair_session_if_needed", new=mock.AsyncMock(return_value=[])),
+            mock.patch("ui.runtime_session.Path.cwd", return_value=project_a),
+            mock.patch("ui.runtime_session.os.chdir", side_effect=OSError("network share denied")),
             mock.patch.object(worker, "_log_ui_run_event") as log_mock,
         ):
             await worker._switch_session_async(second)
@@ -4704,7 +4704,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             {"checkpoint_info": {"resolved_backend": "sqlite", "target": "demo.sqlite"}},
         )()
 
-        with mock.patch.object(gui_runtime.Path, "cwd", return_value=project_a):
+        with mock.patch("ui.runtime_session.Path.cwd", return_value=project_a):
             selected = worker._select_session_for_project()
 
         self.assertEqual(selected.session_id, second.session_id)
@@ -5247,9 +5247,9 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         )()
 
         with (
-            mock.patch.object(gui_runtime, "repair_session_if_needed", new=mock.AsyncMock(return_value=[])),
-            mock.patch.object(gui_runtime.Path, "cwd", return_value=project_b),
-            mock.patch.object(gui_runtime.os, "chdir"),
+            mock.patch("core.session_utils.repair_session_if_needed", new=mock.AsyncMock(return_value=[])),
+            mock.patch("ui.runtime_session.Path.cwd", return_value=project_b),
+            mock.patch("ui.runtime_session.os.chdir"),
         ):
             await worker._delete_project_async(str(project_b))
 
@@ -5300,7 +5300,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             {"get_state": lambda self, _config: type("State", (), {"values": {}})()},
         )()
 
-        with mock.patch.object(gui_runtime.os, "chdir") as chdir_mock:
+        with mock.patch("ui.runtime_session.os.chdir") as chdir_mock:
             await worker._delete_project_async(str(project_b))
 
         self.assertEqual(worker.current_session.session_id, active.session_id)
@@ -5344,9 +5344,9 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         )()
 
         with (
-            mock.patch.object(gui_runtime, "repair_session_if_needed", new=mock.AsyncMock(return_value=[])),
-            mock.patch.object(gui_runtime.Path, "cwd", return_value=(tmp / "project-a")),
-            mock.patch.object(gui_runtime.os, "chdir"),
+            mock.patch("core.session_utils.repair_session_if_needed", new=mock.AsyncMock(return_value=[])),
+            mock.patch("ui.runtime_session.Path.cwd", return_value=(tmp / "project-a")),
+            mock.patch("ui.runtime_session.os.chdir"),
         ):
             await worker._delete_session_async(second.session_id)
 
@@ -5391,9 +5391,9 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         )()
 
         with (
-            mock.patch.object(gui_runtime, "repair_session_if_needed", new=mock.AsyncMock(return_value=[])),
-            mock.patch.object(gui_runtime.Path, "cwd", return_value=project_b),
-            mock.patch.object(gui_runtime.os, "chdir", side_effect=OSError("access denied")),
+            mock.patch("core.session_utils.repair_session_if_needed", new=mock.AsyncMock(return_value=[])),
+            mock.patch("ui.runtime_session.Path.cwd", return_value=project_b),
+            mock.patch("ui.runtime_session.os.chdir", side_effect=OSError("access denied")),
             mock.patch.object(worker, "_log_ui_run_event") as log_mock,
         ):
             await worker._delete_session_async(second.session_id)
@@ -5433,11 +5433,9 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                 ],
             }
         )
-        worker._emit_session_payload = mock.AsyncMock(return_value={})
+        worker._coordinator.emit_session_payload = mock.AsyncMock(return_value={})
 
-        with mock.patch.object(
-            worker,
-            "_rebuild_runtime_for_active_profile",
+        with mock.patch.object(worker._coordinator, "rebuild_runtime_for_active_profile",
             new=mock.AsyncMock(return_value=None),
         ) as rebuild_mock:
             result = await worker._apply_model_profiles(
@@ -5488,11 +5486,9 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                 ],
             }
         )
-        worker._emit_session_payload = mock.AsyncMock(return_value={})
+        worker._coordinator.emit_session_payload = mock.AsyncMock(return_value={})
 
-        with mock.patch.object(
-            worker,
-            "_rebuild_runtime_for_active_profile",
+        with mock.patch.object(worker._coordinator, "rebuild_runtime_for_active_profile",
             new=mock.AsyncMock(return_value=None),
         ) as rebuild_mock:
             result = await worker._apply_model_profiles(
@@ -5563,12 +5559,12 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         fake_app = object()
         with (
             mock.patch.object(ToolRegistry, "reconfigure", autospec=True) as reconfigure_mock,
-            mock.patch.object(gui_runtime, "build_agent_app", new=mock.AsyncMock(side_effect=AssertionError("full rebuild not expected"))),
-            mock.patch.object(gui_runtime, "build_compiled_agent", return_value=(fake_app, tool_registry)) as compile_mock,
+            mock.patch("agent.build_agent_app", new=mock.AsyncMock(side_effect=AssertionError("full rebuild not expected"))),
+            mock.patch("agent.build_compiled_agent", return_value=(fake_app, tool_registry)) as compile_mock,
             mock.patch.object(worker, "_configure_cli_output_bridge"),
             mock.patch.object(worker, "_clear_cli_output_bridge"),
             mock.patch.object(worker, "_set_effective_model_capabilities"),
-            mock.patch.object(gui_runtime, "close_runtime_resources", new=mock.AsyncMock()) as close_mock,
+            mock.patch("ui.runtime_session.close_runtime_resources", new=mock.AsyncMock()) as close_mock,
         ):
             await worker._rebuild_runtime_for_active_profile(worker.model_profiles)
 
@@ -5585,7 +5581,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         worker = gui_runtime.AgentRunWorker()
         worker.profile_store = ModelProfileStore(profile_path)
         worker.model_profiles = worker.profile_store.save({"active_profile": None, "profiles": []})
-        worker._emit_session_payload = mock.AsyncMock(return_value={})
+        worker._coordinator.emit_session_payload = mock.AsyncMock(return_value={})
 
         result = await worker._apply_model_profiles(
             {
@@ -5636,11 +5632,9 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         )
         emitted_events = []
         worker.event_emitted.connect(emitted_events.append)
-        worker._emit_session_payload = mock.AsyncMock(return_value={})
+        worker._coordinator.emit_session_payload = mock.AsyncMock(return_value={})
 
-        with mock.patch.object(
-            worker,
-            "_rebuild_runtime_for_active_profile",
+        with mock.patch.object(worker._coordinator, "rebuild_runtime_for_active_profile",
             new=mock.AsyncMock(return_value=None),
         ) as rebuild_mock:
             await worker._set_active_profile_async("gemini-1-5-flash")
@@ -5672,11 +5666,9 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             ],
         }
         worker._runtime_profile_id = "gpt-4o"
-        worker._emit_session_payload = mock.AsyncMock(return_value={})
+        worker._coordinator.emit_session_payload = mock.AsyncMock(return_value={})
 
-        with mock.patch.object(
-            worker,
-            "_rebuild_runtime_for_active_profile",
+        with mock.patch.object(worker._coordinator, "rebuild_runtime_for_active_profile",
             new=mock.AsyncMock(return_value=None),
         ):
             result = await worker._ensure_runtime_matches_selected_profile()
@@ -5766,9 +5758,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         worker.event_emitted.connect(events.append)
         worker.busy_changed.connect(busy_values.append)
 
-        with mock.patch.object(
-            worker,
-            "_rebuild_runtime_for_active_profile",
+        with mock.patch.object(worker._coordinator, "rebuild_runtime_for_active_profile",
             new=mock.AsyncMock(side_effect=ValueError('does not support reasoning effort "medium". Allowed: none')),
         ):
             worker.start_run("hello")
@@ -6245,7 +6235,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         worker._repair_current_session_if_needed = mock.AsyncMock(
             side_effect=repairs, return_value=[]
         )
-        worker._emit_session_payload = mock.AsyncMock()
+        worker._coordinator.emit_session_payload = mock.AsyncMock()
         worker._stream_retry_backoff = mock.Mock(return_value=0)
         events = []
         worker.event_emitted.connect(events.append)

@@ -7,8 +7,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, RemoveMessage, ToolMessage
 
 from core.state import AgentState
+from core.tool_issues import active_open_tool_issue
 from core.message_utils import (
     iter_message_tool_calls,
+    current_turn_id,
+    last_ai_message,
     compact_text,
     is_internal_retry_message,
     is_user_turn_message,
@@ -79,41 +82,11 @@ class BaseMixin:
         return is_internal_retry_message(message)
 
     def _current_turn_id(self, state: AgentState, messages: List[BaseMessage]) -> int:
-        derived_turn_id = 0
-        for message in messages:
-            if is_user_turn_message(message):
-                derived_turn_id += 1
-        return max(int(state.get("turn_id", 0) or 0), derived_turn_id)
+        return current_turn_id(state, messages)
 
-    def _get_active_open_tool_issue(
-        self,
-        state: AgentState,
-        messages: List[BaseMessage],
-        current_turn_id: int | None = None,
-    ) -> Dict[str, Any] | None:
-        issue = state.get("open_tool_issue")
-        if not isinstance(issue, dict):
-            return None
-
-        active_turn_id = current_turn_id if current_turn_id is not None else self._current_turn_id(state, messages)
-        issue_turn_id = int(issue.get("turn_id", 0) or 0)
-        summary = str(issue.get("summary", "")).strip()
-        if issue_turn_id != active_turn_id or not summary:
-            return None
-
-        tool_names = [str(name) for name in (issue.get("tool_names") or []) if str(name).strip()]
-        return {
-            "turn_id": issue_turn_id,
-            "kind": str(issue.get("kind") or "tool_error"),
-            "summary": summary,
-            "tool_names": tool_names,
-            "tool_args": dict(issue.get("tool_args") or {}),
-            "source": str(issue.get("source") or "tools"),
-            "error_type": str(issue.get("error_type") or ""),
-            "fingerprint": str(issue.get("fingerprint") or ""),
-            "progress_fingerprint": str(issue.get("progress_fingerprint") or issue.get("fingerprint") or ""),
-            "details": dict(issue.get("details") or {}),
-        }
+    def _get_active_open_tool_issue(self, state: AgentState, messages: List[BaseMessage], current_turn_id: int | None = None) -> Dict[str, Any] | None:
+        turn_id = current_turn_id if current_turn_id is not None else self._current_turn_id(state, messages)
+        return active_open_tool_issue(state, turn_id)
 
     def _get_recovery_state(self, state: AgentState, *, current_turn_id: int) -> Dict[str, Any]:
         return self.recovery_manager.get_recovery_state(
@@ -250,10 +223,7 @@ class BaseMixin:
         return 3 if self._tool_is_read_only(tool_name) else 2
 
     def _get_last_ai_message(self, messages: List[BaseMessage]) -> Optional[AIMessage]:
-        for message in reversed(messages):
-            if isinstance(message, AIMessage):
-                return message
-        return None
+        return last_ai_message(messages)
 
     def _get_last_pending_ai_with_tool_calls(self, messages: List[BaseMessage]) -> Optional[AIMessage]:
         """

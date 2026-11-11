@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import difflib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,7 +9,8 @@ from typing import Any
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from core.config import AgentConfig
 from core.constants import AGENT_VERSION
-from core.message_utils import is_tool_message_error, stringify_content
+from core.message_utils import is_tool_message_error, stringify_content, strip_inline_thought_blocks, visible_text_content
+from core.text_replay import assistant_replay_remainder as _assistant_replay_remainder
 from core.model_profiles import find_active_profile, normalize_profiles_payload
 from core.multimodal import extract_user_turn_data, resolve_model_capabilities
 from core.session_store import (
@@ -29,10 +29,6 @@ from ui.visibility import get_internal_ui_notice, is_hidden_internal_message
 
 APPROVAL_MODE_PROMPT = "prompt"
 APPROVAL_MODE_ALWAYS = "always"
-_THINK_TAG_PATTERN = r"(think|thought|thinking)"
-_INLINE_THOUGHT_BLOCK_RE = re.compile(rf"<{_THINK_TAG_PATTERN}\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
-_INLINE_THOUGHT_CLOSE_PREFIX_RE = re.compile(rf"^.*?</{_THINK_TAG_PATTERN}\s*>\s*", re.IGNORECASE | re.DOTALL)
-_INLINE_THOUGHT_UNCLOSED_RE = re.compile(rf"<{_THINK_TAG_PATTERN}\b[^>]*>.*$", re.IGNORECASE | re.DOTALL)
 CHAT_TITLE_MAX_LENGTH = 50
 CHAT_TITLE_FALLBACK = DEFAULT_CHAT_TITLE
 CHAT_TITLE_LLM_TIMEOUT_SECONDS = 15.0
@@ -427,7 +423,7 @@ def _trim_title_words(text: str) -> str:
 
 
 def validate_chat_title(value: object) -> str | None:
-    text = strip_inline_thought_blocks(_extract_visible_text(value))
+    text = _extract_chat_title_text(value)
     text = " ".join(text.replace("\r", " ").replace("\n", " ").split()).strip()
     text = re.sub(r"^title\s*:\s*", "", text, flags=re.IGNORECASE).strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in ('\"', "'"):
@@ -464,7 +460,7 @@ async def generate_chat_title_with_llm(
                 timeout=CHAT_TITLE_LLM_TIMEOUT_SECONDS,
             )
             value = getattr(response, "content", response)
-            visible_text = strip_inline_thought_blocks(_extract_visible_text(value))
+            visible_text = _extract_chat_title_text(value)
             title = validate_chat_title(visible_text)
             if title is None:
                 if logger:
@@ -548,108 +544,19 @@ def serialize_session_entries(entries: list[SessionListEntry]) -> list[dict[str,
     ]
 
 
-def strip_inline_thought_blocks(text: str) -> str:
-    """Remove inline reasoning blocks (<think>...</think>, DeepSeek-style) from text."""
-    cleaned = _INLINE_THOUGHT_BLOCK_RE.sub("", text)
-    cleaned = _INLINE_THOUGHT_CLOSE_PREFIX_RE.sub("", cleaned)
-    return _INLINE_THOUGHT_UNCLOSED_RE.sub("", cleaned)
 
 
-def _extract_visible_text(content: Any) -> str:
-    """Select non-reasoning blocks; strip inline tags only after joining their text."""
-    if isinstance(content, str):
-        return content
-    if content is None:
-        return ""
-    if isinstance(content, (list, tuple)):
-        return "".join(_extract_visible_text(item) for item in content)
-    if isinstance(content, dict):
-        item_type = str(content.get("type") or "").strip().lower()
-        if bool(content.get("thought")) or item_type in {
-            "thinking",
-            "redacted_thinking",
-            "thought",
-            "reasoning",
-            "reasoning_text",
-            "reasoning_content",
-            "reasoning_summary",
-            "analysis",
-            "analysis_content",
-            "summary_text",
-        } or item_type.startswith(("reasoning.", "thinking.", "thought.", "analysis.")):
-            return ""
-        for key in ("text", "output_text", "content", "answer", "response", "final", "final_text"):
-            if key in content:
-                text = _extract_visible_text(content.get(key))
-                if text:
-                    return text
-        return "".join(
-            _extract_visible_text(content.get(key))
-            for key in ("parts", "items", "content_blocks", "message", "messages", "data")
-            if key in content
-        )
-    for key in ("content", "content_blocks", "text"):
-        try:
-            value = getattr(content, key)
-        except Exception:
-            continue
-        if callable(value) or value is None:
-            continue
-        text = _extract_visible_text(value)
-        if text:
-            return text
-    try:
-        additional_kwargs = getattr(content, "additional_kwargs")
-    except Exception:
-        additional_kwargs = None
-    if isinstance(additional_kwargs, dict):
-        return _extract_visible_text(additional_kwargs.get("content_blocks"))
-    return stringify_content(content)
+def _extract_chat_title_text(content: Any) -> str:
+    # A refusal is displayed in the transcript, but cannot name the chat.
+    return visible_text_content(content, strip_inline=True, include_refusal=False)
 
 
 def _extract_ai_text(message: AIMessage | AIMessageChunk) -> str:
-    return strip_inline_thought_blocks(_extract_visible_text(message.content)).strip()
+    return visible_text_content(message, strip_inline=True).strip()
 
 
-def _normalized_visible_text(text: str) -> str:
-    return " ".join(str(text or "").split())
 
 
-def _assistant_replay_remainder(previous: str, incoming: str) -> str | None:
-    previous_normalized = _normalized_visible_text(previous)
-    incoming_normalized = _normalized_visible_text(incoming)
-    if not previous_normalized or not incoming_normalized:
-        return None
-    if incoming.startswith(previous):
-        return incoming[len(previous) :].lstrip()
-    if incoming_normalized == previous_normalized:
-        return ""
-
-    best_index: int | None = None
-    for match in re.finditer(r"\S+", incoming):
-        prefix = incoming[: match.end()]
-        prefix_normalized = _normalized_visible_text(prefix)
-        if not prefix_normalized:
-            continue
-        if previous_normalized.startswith(prefix_normalized):
-            best_index = match.end()
-            continue
-        if prefix_normalized.startswith(previous_normalized):
-            return incoming[best_index if best_index is not None else match.end() :].lstrip()
-        if len(prefix_normalized) >= min(len(previous_normalized), 80):
-            similarity = difflib.SequenceMatcher(None, previous_normalized, prefix_normalized).quick_ratio()
-            if similarity >= 0.94:
-                best_index = match.end()
-
-    if best_index is not None:
-        replayed_prefix = _normalized_visible_text(incoming[:best_index])
-        significant_replay = (
-            len(replayed_prefix) >= min(len(previous_normalized), 48)
-            or len(replayed_prefix) >= int(len(previous_normalized) * 0.8)
-        )
-        if significant_replay:
-            return incoming[best_index:].lstrip()
-    return None
 
 
 def _diff_from_tool_content(content: str) -> str:

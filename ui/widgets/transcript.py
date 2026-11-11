@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import difflib
-import re
 
 from typing import Any
+
+from core.text_replay import assistant_replay_remainder, common_prefix_length, normalized_replay_text, similar_prefix_boundary
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import QHBoxLayout, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
@@ -38,74 +38,20 @@ class ConversationTurnWidget(QWidget):
 
     @staticmethod
     def _common_prefix_length(first: str, second: str) -> int:
-        limit = min(len(first), len(second))
-        index = 0
-        while index < limit and first[index] == second[index]:
-            index += 1
-        return index
+        return common_prefix_length(first, second)
 
     @staticmethod
     def _normalized_text(text: str) -> str:
-        return " ".join(str(text or "").split())
+        return normalized_replay_text(text)
 
     @classmethod
     def _markdown_boundary_after_visible_prefix(cls, visible: str, incoming: str) -> int | None:
-        visible_normalized = cls._normalized_text(visible)
-        if not visible_normalized:
-            return None
-
-        best_index: int | None = None
-        for match in re.finditer(r"\S+", incoming):
-            prefix = incoming[: match.end()]
-            prefix_normalized = cls._normalized_text(prefix)
-            if not prefix_normalized:
-                continue
-            if visible_normalized.startswith(prefix_normalized):
-                best_index = match.end()
-                continue
-            if prefix_normalized.startswith(visible_normalized):
-                return best_index if best_index is not None else match.end()
-            if len(prefix_normalized) >= min(len(visible_normalized), 80):
-                similarity = difflib.SequenceMatcher(None, visible_normalized, prefix_normalized).quick_ratio()
-                if similarity >= 0.94:
-                    best_index = match.end()
-
-        return best_index
+        return similar_prefix_boundary(visible, incoming)
 
     @classmethod
     def _assistant_resume_text(cls, visible: str, incoming: str) -> str:
-        prefix_len = cls._common_prefix_length(visible, incoming)
-        exact_prefix = incoming.startswith(visible)
-        significant_prefix = bool(visible) and (
-            prefix_len >= min(len(visible), 48)
-            or prefix_len >= int(len(visible) * 0.8)
-        )
-        partial_word_prefix = (
-            bool(visible)
-            and prefix_len == len(visible)
-            and prefix_len < len(incoming)
-            and not visible[-1].isspace()
-            and not incoming[prefix_len].isspace()
-        )
-        if prefix_len > 0 and (exact_prefix or significant_prefix) and not partial_word_prefix:
-            return incoming[prefix_len:].lstrip()
-
-        boundary = cls._markdown_boundary_after_visible_prefix(visible, incoming)
-        if boundary is not None:
-            replayed_prefix = incoming[:boundary]
-            replayed_words = re.findall(r"\S+", replayed_prefix)
-            replayed_normalized = cls._normalized_text(replayed_prefix)
-            significant_replay = bool(replayed_normalized) and (
-                len(replayed_normalized) >= min(len(cls._normalized_text(visible)), 48)
-                or len(replayed_normalized) >= int(len(cls._normalized_text(visible)) * 0.8)
-            )
-            # A shared first word is ambiguous: it can be the beginning of a
-            # new comment, especially when the stream split that word across
-            # chunks. Only remove a replay after at least two complete words.
-            if significant_replay and len(replayed_words) >= 2:
-                return incoming[boundary:].lstrip()
-
-        return incoming
+        remainder = assistant_replay_remainder(visible, incoming)
+        return incoming if remainder is None else remainder
 
     def _append_block(self, kind: str, widget: QWidget) -> QWidget:
         self._layout.addWidget(widget)

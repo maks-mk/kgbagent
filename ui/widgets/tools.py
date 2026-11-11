@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QPush
 from shiboken6 import isValid
 
 from core.text_utils import build_tool_ui_labels, format_tool_display
-from ui.theme import ACCENT_BLUE, ERROR_RED, FILENAME_BLUE, SUCCESS_GREEN, TEXT_MUTED
+from ui.theme import ACCENT, ERROR_RED, FILENAME_BLUE, SUCCESS_GREEN, TEXT_ERROR, TEXT_MUTED, TEXT_SUCCESS
 from .foundation import (
     CodeBlockWidget,
     CollapsibleSection,
@@ -706,11 +706,11 @@ class ToolCardWidget(QFrame):
         self._is_mcp = is_mcp
         icon_color = TEXT_MUTED
         if phase_variant == "active":
-            icon_color = ACCENT_BLUE
+            icon_color = ACCENT
         elif phase_variant == "success":
-            icon_color = SUCCESS_GREEN
+            icon_color = TEXT_SUCCESS
         elif phase_variant == "error":
-            icon_color = ERROR_RED
+            icon_color = TEXT_ERROR
         icon_key = (icon_name, icon_color)
         if icon_key != self._last_icon_key:
             self._last_icon_key = icon_key

@@ -17,6 +17,7 @@ applies reasoning kwargs from the provider registry.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -42,6 +43,17 @@ from core.text_utils import extract_cache_hit_tokens
 
 logger = logging.getLogger("agent")
 reasoning_logger = logging.getLogger("agent.reasoning_debug")
+
+
+@dataclass
+class _OpenAIStreamState:
+    first_chunk: bool = True
+    index: int = -1
+    output_index: int = -1
+    sub_index: int = -1
+    has_reasoning: bool = False
+    reasoning: dict[str, Any] = field(default_factory=dict)
+    chunk_class: type = AIMessageChunk
 
 
 def _safe_openai_model_dump(value: Any) -> dict[str, Any]:
@@ -515,10 +527,45 @@ def _build_reasoning_debug_chat_openai(base_cls: type) -> type:
                 resolved["encrypted_content"] = encrypted_content
             return ChatGenerationChunk(message=AIMessageChunk(content=[resolved]))
 
+        def _process_responses_chunk(self, chunk, state: _OpenAIStreamState, headers: dict, schema):
+            from langchain_openai.chat_models.base import _convert_responses_chunk_to_generation_chunk
+
+            chunk, reasoning_delta = _normalize_responses_text_delta(chunk)
+            self._log_raw_provider_chunk("openai_responses_stream", chunk)
+            state.index, state.output_index, state.sub_index, generation = _convert_responses_chunk_to_generation_chunk(
+                chunk, state.index, state.output_index, state.sub_index,
+                schema=schema, metadata=headers if state.first_chunk else {},
+                has_reasoning=state.has_reasoning, output_version=self.output_version,
+            )
+            generation = self._restore_responses_reasoning_text(chunk, generation, state.reasoning)
+            if generation is not None:
+                self._attach_reasoning_content(generation, reasoning_delta)
+                state.first_chunk = False
+                state.has_reasoning |= "reasoning" in generation.message.additional_kwargs
+            return generation
+
+        def _process_chat_chunk(self, chunk, state: _OpenAIStreamState, headers: dict):
+            self._log_raw_provider_chunk("openai_chat_completions_stream", chunk)
+            if not isinstance(chunk, dict):
+                chunk = _safe_openai_model_dump(chunk)
+            generation = self._convert_chunk_to_generation_chunk(
+                chunk, state.chunk_class, headers if state.first_chunk else {},
+            )
+            if generation is not None:
+                state.chunk_class = generation.message.__class__
+                state.first_chunk = False
+            return generation
+
+        def _final_completion_chunk(self, completion):
+            debug_event(
+                "final_response_object", provider="openai",
+                source="openai_chat_completions_stream_final_completion",
+                response_preview=preview_value(completion),
+            )
+            return self._get_generation_chunk_from_completion(completion)
+
         def _stream(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager: Any = None, **kwargs: Any):
-            from langchain_core.messages import AIMessageChunk, BaseMessageChunk
             from langchain_openai.chat_models.base import (
-                _convert_responses_chunk_to_generation_chunk,
                 _handle_openai_api_error,
                 _handle_openai_bad_request,
             )
@@ -541,41 +588,14 @@ def _build_reasoning_debug_chat_openai(base_cls: type) -> type:
                     original_schema_obj = kwargs.get("response_format")
 
                     with context_manager as response:
-                        is_first_chunk = True
-                        current_index = -1
-                        current_output_index = -1
-                        current_sub_index = -1
-                        has_reasoning = False
-                        reasoning_state = self._responses_reasoning_state()
+                        stream_state = _OpenAIStreamState(reasoning=self._responses_reasoning_state())
                         for chunk in response:
-                            chunk, reasoning_delta = _normalize_responses_text_delta(chunk)
-                            self._log_raw_provider_chunk("openai_responses_stream", chunk)
-                            metadata = headers if is_first_chunk else {}
-                            (
-                                current_index,
-                                current_output_index,
-                                current_sub_index,
-                                generation_chunk,
-                            ) = _convert_responses_chunk_to_generation_chunk(
-                                chunk,
-                                current_index,
-                                current_output_index,
-                                current_sub_index,
-                                schema=original_schema_obj,
-                                metadata=metadata,
-                                has_reasoning=has_reasoning,
-                                output_version=self.output_version,
-                            )
-                            generation_chunk = self._restore_responses_reasoning_text(
-                                chunk, generation_chunk, reasoning_state
+                            generation_chunk = self._process_responses_chunk(
+                                chunk, stream_state, headers, original_schema_obj
                             )
                             if generation_chunk:
-                                self._attach_reasoning_content(generation_chunk, reasoning_delta)
                                 if run_manager:
                                     run_manager.on_llm_new_token(generation_chunk.text, chunk=generation_chunk)
-                                is_first_chunk = False
-                                if "reasoning" in generation_chunk.message.additional_kwargs:
-                                    has_reasoning = True
                                 yield generation_chunk
                 except openai.BadRequestError as exc:
                     _handle_openai_bad_request(exc)
@@ -583,13 +603,10 @@ def _build_reasoning_debug_chat_openai(base_cls: type) -> type:
                     _handle_openai_api_error(exc)
                 return
 
-            from langchain_openai.chat_models.base import _handle_openai_api_error, _handle_openai_bad_request
-
             stream_usage = self._should_stream_usage(kwargs.pop("stream_usage", None), **kwargs)
             if stream_usage:
                 kwargs["stream_options"] = {"include_usage": stream_usage}
             payload = self._get_request_payload(messages, stop=stop, **kwargs)
-            default_chunk_class: type[BaseMessageChunk] = AIMessageChunk
             base_generation_info = {}
             response = None
 
@@ -610,19 +627,11 @@ def _build_reasoning_debug_chat_openai(base_cls: type) -> type:
                         response = self.client.create(**payload)
                     context_manager = response
                 with context_manager as response:
-                    is_first_chunk = True
+                    stream_state = _OpenAIStreamState()
                     for chunk in response:
-                        self._log_raw_provider_chunk("openai_chat_completions_stream", chunk)
-                        if not isinstance(chunk, dict):
-                            chunk = _safe_openai_model_dump(chunk)
-                        generation_chunk = self._convert_chunk_to_generation_chunk(
-                            chunk,
-                            default_chunk_class,
-                            base_generation_info if is_first_chunk else {},
-                        )
+                        generation_chunk = self._process_chat_chunk(chunk, stream_state, base_generation_info)
                         if generation_chunk is None:
                             continue
-                        default_chunk_class = generation_chunk.message.__class__
                         logprobs = (generation_chunk.generation_info or {}).get("logprobs")
                         if run_manager:
                             run_manager.on_llm_new_token(
@@ -630,7 +639,6 @@ def _build_reasoning_debug_chat_openai(base_cls: type) -> type:
                                 chunk=generation_chunk,
                                 logprobs=logprobs,
                             )
-                        is_first_chunk = False
                         yield generation_chunk
             except openai.BadRequestError as exc:
                 _handle_openai_bad_request(exc)
@@ -638,13 +646,7 @@ def _build_reasoning_debug_chat_openai(base_cls: type) -> type:
                 _handle_openai_api_error(exc)
             if response is not None and hasattr(response, "get_final_completion") and "response_format" in payload:
                 final_completion = response.get_final_completion()
-                debug_event(
-                    "final_response_object",
-                    provider="openai",
-                    source="openai_chat_completions_stream_final_completion",
-                    response_preview=preview_value(final_completion),
-                )
-                generation_chunk = self._get_generation_chunk_from_completion(final_completion)
+                generation_chunk = self._final_completion_chunk(final_completion)
                 if run_manager:
                     run_manager.on_llm_new_token(generation_chunk.text, chunk=generation_chunk)
                 yield generation_chunk
@@ -656,10 +658,8 @@ def _build_reasoning_debug_chat_openai(base_cls: type) -> type:
             run_manager: Any = None,
             **kwargs: Any,
         ):
-            from langchain_core.messages import AIMessageChunk, BaseMessageChunk
             from langchain_openai.chat_models.base import (
                 _astream_with_chunk_timeout,
-                _convert_responses_chunk_to_generation_chunk,
                 _handle_openai_api_error,
                 _handle_openai_bad_request,
             )
@@ -683,48 +683,21 @@ def _build_reasoning_debug_chat_openai(base_cls: type) -> type:
                     original_schema_obj = kwargs.get("response_format")
 
                     async with context_manager as response:
-                        is_first_chunk = True
-                        current_index = -1
-                        current_output_index = -1
-                        current_sub_index = -1
-                        has_reasoning = False
-                        reasoning_state = self._responses_reasoning_state()
+                        stream_state = _OpenAIStreamState(reasoning=self._responses_reasoning_state())
                         async for chunk in _astream_with_chunk_timeout(
                             response,
                             self.stream_chunk_timeout,
                             model_name=self.model_name,
                         ):
-                            chunk, reasoning_delta = _normalize_responses_text_delta(chunk)
-                            self._log_raw_provider_chunk("openai_responses_stream", chunk)
-                            metadata = headers if is_first_chunk else {}
-                            (
-                                current_index,
-                                current_output_index,
-                                current_sub_index,
-                                generation_chunk,
-                            ) = _convert_responses_chunk_to_generation_chunk(
-                                chunk,
-                                current_index,
-                                current_output_index,
-                                current_sub_index,
-                                schema=original_schema_obj,
-                                metadata=metadata,
-                                has_reasoning=has_reasoning,
-                                output_version=self.output_version,
-                            )
-                            generation_chunk = self._restore_responses_reasoning_text(
-                                chunk, generation_chunk, reasoning_state
+                            generation_chunk = self._process_responses_chunk(
+                                chunk, stream_state, headers, original_schema_obj
                             )
                             if generation_chunk:
-                                self._attach_reasoning_content(generation_chunk, reasoning_delta)
                                 if run_manager:
                                     await run_manager.on_llm_new_token(
                                         generation_chunk.text,
                                         chunk=generation_chunk,
                                     )
-                                is_first_chunk = False
-                                if "reasoning" in generation_chunk.message.additional_kwargs:
-                                    has_reasoning = True
                                 yield generation_chunk
                 except openai.BadRequestError as exc:
                     _handle_openai_bad_request(exc)
@@ -736,7 +709,6 @@ def _build_reasoning_debug_chat_openai(base_cls: type) -> type:
             if stream_usage:
                 kwargs["stream_options"] = {"include_usage": stream_usage}
             payload = self._get_request_payload(messages, stop=stop, **kwargs)
-            default_chunk_class: type[BaseMessageChunk] = AIMessageChunk
             base_generation_info = {}
             response = None
 
@@ -757,23 +729,15 @@ def _build_reasoning_debug_chat_openai(base_cls: type) -> type:
                         response = await self.async_client.create(**payload)
                     context_manager = response
                 async with context_manager as response:
-                    is_first_chunk = True
+                    stream_state = _OpenAIStreamState()
                     async for chunk in _astream_with_chunk_timeout(
                         response,
                         self.stream_chunk_timeout,
                         model_name=self.model_name,
                     ):
-                        self._log_raw_provider_chunk("openai_chat_completions_stream", chunk)
-                        if not isinstance(chunk, dict):
-                            chunk = _safe_openai_model_dump(chunk)
-                        generation_chunk = self._convert_chunk_to_generation_chunk(
-                            chunk,
-                            default_chunk_class,
-                            base_generation_info if is_first_chunk else {},
-                        )
+                        generation_chunk = self._process_chat_chunk(chunk, stream_state, base_generation_info)
                         if generation_chunk is None:
                             continue
-                        default_chunk_class = generation_chunk.message.__class__
                         logprobs = (generation_chunk.generation_info or {}).get("logprobs")
                         if run_manager:
                             await run_manager.on_llm_new_token(
@@ -781,7 +745,6 @@ def _build_reasoning_debug_chat_openai(base_cls: type) -> type:
                                 chunk=generation_chunk,
                                 logprobs=logprobs,
                             )
-                        is_first_chunk = False
                         yield generation_chunk
             except openai.BadRequestError as exc:
                 _handle_openai_bad_request(exc)
@@ -789,13 +752,7 @@ def _build_reasoning_debug_chat_openai(base_cls: type) -> type:
                 _handle_openai_api_error(exc)
             if response is not None and hasattr(response, "get_final_completion") and "response_format" in payload:
                 final_completion = await response.get_final_completion()
-                debug_event(
-                    "final_response_object",
-                    provider="openai",
-                    source="openai_chat_completions_stream_final_completion",
-                    response_preview=preview_value(final_completion),
-                )
-                generation_chunk = self._get_generation_chunk_from_completion(final_completion)
+                generation_chunk = self._final_completion_chunk(final_completion)
                 if run_manager:
                     await run_manager.on_llm_new_token(generation_chunk.text, chunk=generation_chunk)
                 yield generation_chunk

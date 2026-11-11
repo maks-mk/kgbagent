@@ -8,7 +8,7 @@ from PySide6.QtGui import QBrush, QColor, QFontMetrics, QIcon, QLinearGradient, 
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
 from core.text_utils import build_tool_ui_labels, has_visible_text, split_markdown_segments
-from ui.theme import ACCENT_BLUE, AMBER_WARNING, CONTEXT_INDICATOR_GRAY, ERROR_RED, SUCCESS_GREEN, TEXT_MUTED, TEXT_PRIMARY, blend_hex
+from ui.theme import ACCENT, TEXT_WARNING, CONTEXT_INDICATOR_GRAY, TEXT_ERROR, TEXT_SUCCESS, TEXT_MUTED, TEXT_PRIMARY, STATUS_WAITING_TEXT
 from .attachments import ImageAttachmentStripWidget
 from .foundation import (
     AutoTextBrowser,
@@ -55,12 +55,12 @@ class NoticeWidget(QFrame):
 
     def _icon_for_level(self, level: str) -> tuple[str, str]:
         if level == "warning":
-            return "fa5s.exclamation-triangle", AMBER_WARNING
+            return "fa5s.exclamation-triangle", TEXT_WARNING
         if level == "error":
-            return "fa5s.times-circle", ERROR_RED
+            return "fa5s.times-circle", TEXT_ERROR
         if level == "success":
-            return "fa5s.check-circle", SUCCESS_GREEN
-        return "fa5s.info-circle", ACCENT_BLUE
+            return "fa5s.check-circle", TEXT_SUCCESS
+        return "fa5s.info-circle", ACCENT
 
     def set_level(self, level: str) -> None:
         normalized = str(level or "info").strip().lower() or "info"
@@ -86,7 +86,7 @@ class RunStatsWidget(QWidget):
         chip_layout.setSpacing(5)
 
         icon = QLabel()
-        icon.setPixmap(_fa_icon("fa5s.check-circle", color=SUCCESS_GREEN, size=11).pixmap(11, 11))
+        icon.setPixmap(_fa_icon("fa5s.check-circle", color=TEXT_SUCCESS, size=11).pixmap(11, 11))
         chip_layout.addWidget(icon, 0, Qt.AlignVCenter)
 
         label = QLabel(stats)
@@ -146,9 +146,9 @@ class ShimmerLabel(QLabel):
     def _base_text_color(self) -> QColor:
         phase = str(self.property("textPhase") or "working")
         if phase == "success":
-            return QColor(SUCCESS_GREEN)
+            return QColor(TEXT_SUCCESS)
         if phase == "waiting":
-            return QColor(blend_hex(AMBER_WARNING, TEXT_PRIMARY, 0.24))
+            return QColor(STATUS_WAITING_TEXT)
         # Все рабочие фазы (working/active/reviewing/system) — серый базовый
         # цвет, чтобы белый блик был отчётливо виден.
         return QColor(self._BASE_COLOR)
@@ -328,14 +328,14 @@ class StatusIndicatorWidget(QFrame):
         busy_phase = phase != "success"
         self.label.set_shimmer_active(busy_phase)
         if phase == "success":
-            self.spinner.set_static_icon(_fa_icon("fa5s.check-circle", color=SUCCESS_GREEN, size=12))
+            self.spinner.set_static_icon(_fa_icon("fa5s.check-circle", color=TEXT_SUCCESS, size=12))
         elif phase == "waiting":
             self.spinner.set_static_icon(_fa_icon("fa5s.pause-circle", color=TEXT_MUTED, size=12))
         else:
             if phase == "system":
                 icon_color = CONTEXT_INDICATOR_GRAY
             else:
-                icon_color = TEXT_MUTED if phase not in {"active", "reviewing"} else ACCENT_BLUE
+                icon_color = TEXT_MUTED if phase not in {"active", "reviewing"} else ACCENT
             self.spinner.set_color(icon_color)
             self.spinner.set_spinning(True)
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.text_replay import common_prefix_length
+
 import logging
 import os
 import sys
@@ -19,9 +21,10 @@ from core.std_streams import ensure_standard_streams
 from core.text_utils import format_compact_tokens, prepare_markdown_for_render
 from ui.main_window_state import ComposerStateController, RunStatusController, StreamEventRouter
 from ui.runtime import AgentRuntimeController
-from ui.theme import ACCENT_BLUE, SURFACE_BG, TEXT_MUTED, build_stylesheet
+from ui.theme import ACCENT, SURFACE_BG, TEXT_MUTED, build_stylesheet
 from ui.widgets.window_chrome import build_main_window_header, install_dialog_chrome
 from ui.widgets import ModelSettingsDialog, _fa_icon
+from ui.window_components.composer_focus_controller import ComposerFocusController
 from ui.window_components.inspector_controller import InspectorController
 from ui.window_components.menu_builder import MenuBuilder
 from ui.window_components.sidebar_controller import SidebarController
@@ -83,25 +86,27 @@ def _build_app_icon() -> QIcon:
                 return icon
     icon = QIcon()
     for size in (16, 24, 32, 48, 64, 128, 256):
-        pixmap = _fa_icon("fa5s.robot", color=ACCENT_BLUE, size=size).pixmap(size, size)
+        pixmap = _fa_icon("fa5s.robot", color=ACCENT, size=size).pixmap(size, size)
         if not pixmap.isNull():
             icon.addPixmap(pixmap)
-    return icon if not icon.isNull() else _fa_icon("fa5s.robot", color=ACCENT_BLUE, size=32)
+    return icon if not icon.isNull() else _fa_icon("fa5s.robot", color=ACCENT, size=32)
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, controller: AgentRuntimeController | None = None, *, auto_initialize: bool = True) -> None:
+    def __init__(self, controller: AgentRuntimeController | None = None, *, auto_initialize: bool = True, settings_dialog_factory=None) -> None:
         super().__init__()
         self.controller = controller or AgentRuntimeController(self)
         self.current_turn = None
         self.current_snapshot: dict | None = None
         self.active_session_id = ""
         self._model_settings_window = None
+        self._settings_dialog_factory = settings_dialog_factory
         self._settings_open = False
         self._input_enabled = False
         self.awaiting_approval = False
         self.awaiting_user_choice = False
         self.is_busy = False
+        self._database_compacting = False
         self.sidebar_collapsed = False
         self._sidebar_width = 300
         self.inspector_collapsed = False
@@ -142,6 +147,7 @@ class MainWindow(QMainWindow):
         self._status_controller = RunStatusController(self)
 
         self._build_ui()
+        self._composer_focus = ComposerFocusController(self)
         self._connect_signals()
         self._build_event_dispatch()
         # Track the center panel's final geometry to keep the chat centered.
@@ -584,11 +590,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _common_prefix_len(first: str, second: str) -> int:
-        limit = min(len(first), len(second))
-        index = 0
-        while index < limit and first[index] == second[index]:
-            index += 1
-        return index
+        return common_prefix_length(first, second)
 
     def _show_transient_status_message(self, label: str, timeout_ms: int = 1800) -> None:
         self._status_bar_manager.show_transient_status_message(label, timeout_ms=timeout_ms)
@@ -623,6 +625,7 @@ class MainWindow(QMainWindow):
             and not self._request_blocked_by_image_capability()
         )
         attach_enabled = enabled and not settings_open and not has_pending_interrupt and not self.is_busy
+        was_editable = self.composer.isEnabled()
         self.composer.setEnabled(can_edit)
         self.send_button.setEnabled(can_send)
         self._update_send_button_visual(can_send)
@@ -643,6 +646,8 @@ class MainWindow(QMainWindow):
         self.user_choice_card.set_actions_enabled(
             enabled and self.awaiting_user_choice and not self.awaiting_approval and not self.is_busy
         )
+        if can_edit and not was_editable:
+            self._composer_focus.schedule()
 
     def _model_settings_window_is_visible(self) -> bool:
         window = self._model_settings_window
@@ -868,20 +873,6 @@ class MainWindow(QMainWindow):
             return
         self.controller.set_active_profile(profile_id)
 
-    @staticmethod
-    def _resolve_model_settings_dialog_class():
-        main_module = sys.modules.get("main")
-        if main_module is not None:
-            patched_dialog = getattr(main_module, "ModelSettingsDialog", None)
-            if patched_dialog is not None:
-                return patched_dialog
-        public_module = sys.modules.get("ui.main_window")
-        if public_module is not None:
-            patched_dialog = getattr(public_module, "ModelSettingsDialog", None)
-            if patched_dialog is not None:
-                return patched_dialog
-        return ModelSettingsDialog
-
     def _open_settings_dialog(self) -> None:
         if self._model_settings_window is not None:
             if self.is_busy or self.awaiting_approval or self.awaiting_user_choice:
@@ -900,7 +891,7 @@ class MainWindow(QMainWindow):
         if self.is_busy or self.awaiting_approval or self.awaiting_user_choice:
             QMessageBox.information(self, "Busy", "Wait for the current run to finish before changing settings.")
             return
-        dialog_class = self._resolve_model_settings_dialog_class()
+        dialog_class = self._settings_dialog_factory or ModelSettingsDialog
         dialog = dialog_class(self.model_profiles_payload, self)
         dialog.profiles_saved.connect(self._save_model_profiles_from_dialog)
         visibility_changed = getattr(dialog, "visibility_changed", None)
@@ -942,6 +933,7 @@ class MainWindow(QMainWindow):
     def _handle_session_changed(self, snapshot: dict) -> None:
         self._apply_runtime_payload(snapshot, restore_transcript="transcript" in snapshot)
         self._handle_checkpoint_notice(snapshot)
+        self._composer_focus.schedule()
 
     def _handle_checkpoint_notice(self, payload: dict) -> None:
         notice = payload.get("checkpoint_notice") if isinstance(payload, dict) else None
@@ -1004,12 +996,18 @@ class MainWindow(QMainWindow):
 
     def _handle_busy_changed(self, busy: bool) -> None:
         self.tools_panel.setEnabled(not busy)
+        if not busy:
+            self._database_compacting = False
+            self.sidebar.compact_button.setText("Compact database")
         self.sidebar.compact_button.setEnabled(not busy)
         self._status_controller.handle_busy_changed(busy)
 
     def _request_compact_database(self) -> None:
-        if self.is_busy or self.awaiting_approval or self.awaiting_user_choice:
+        if self.is_busy or self._database_compacting or self.awaiting_approval or self.awaiting_user_choice:
             return
+        self._database_compacting = True
+        self.sidebar.compact_button.setText("Compacting…")
+        self.sidebar.compact_button.setEnabled(False)
         self._show_transient_status_message("Compacting checkpoint database…")
         self.controller.compact_checkpoints()
 
@@ -1214,12 +1212,15 @@ class MainWindow(QMainWindow):
 
     def _new_session(self) -> None:
         self._sidebar_controller.new_session()
+        self._composer_focus.schedule()
 
     def _open_new_project(self) -> None:
         self._sidebar_controller.open_new_project()
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
+        self._composer_focus.attach()
+        self._composer_focus.schedule()
         self._update_centering()
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
@@ -1233,6 +1234,7 @@ class MainWindow(QMainWindow):
         try:
             self.controller.shutdown()
         finally:
+            self._composer_focus.detach()
             super().closeEvent(event)
 
 

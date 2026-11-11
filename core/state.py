@@ -1,7 +1,8 @@
 from typing import TypedDict, Annotated, List, NotRequired, Dict, Any
 from langchain_core.messages import BaseMessage, RemoveMessage
 from langgraph.graph.message import add_messages
-from core.turn_outcomes import TurnOutcome
+from core.turn_outcomes import TurnOutcome, TURN_OUTCOME_RECOVER_AGENT
+from dataclasses import dataclass
 
 
 def append_transcript_messages(
@@ -26,6 +27,31 @@ def append_transcript_messages(
 def transcript_message_delta(messages: List[BaseMessage] | None) -> List[BaseMessage]:
     """Return only real messages suitable for the durable transcript channel."""
     return [message for message in (messages or []) if not isinstance(message, RemoveMessage)]
+
+
+def message_state_update(messages: List[BaseMessage]) -> Dict[str, Any]:
+    return {"messages": messages, "transcript_messages": transcript_message_delta(messages)}
+
+
+@dataclass
+class AgentTurnResult:
+    """Graph updates separated from orchestration-only decisions."""
+    state_update: Dict[str, Any]
+    retry_user_input_turn: bool
+    rejected_tool_calls: List[Dict[str, Any]]
+
+
+def recover_agent_update(current_task: str, turn_id: int, recovery_state: Any, issue: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "current_task": current_task,
+        "turn_id": turn_id,
+        "turn_outcome": TURN_OUTCOME_RECOVER_AGENT,
+        "recovery_state": recovery_state,
+        "pending_approval": None,
+        "open_tool_issue": issue,
+        "last_tool_error": str(issue.get("summary") or ""),
+        "last_tool_result": "",
+    }
 
 
 class OpenToolIssue(TypedDict, total=False):

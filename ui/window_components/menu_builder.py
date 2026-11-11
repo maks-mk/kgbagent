@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui.theme import ERROR_RED, TEXT_PRIMARY
+from ui.theme import TEXT_ERROR, TEXT_PRIMARY
 from ui.widgets import _fa_icon
 
 
@@ -44,7 +44,7 @@ class MenuBuilder:
         new_session_action = QAction(_fa_icon("fa5s.plus", color=TEXT_PRIMARY, size=14), "New Session", self.window)
         settings_action = QAction(_fa_icon("fa5s.cog", color=TEXT_PRIMARY, size=14), "Settings", self.window)
         info_action = QAction(_fa_icon("fa5s.sliders-h", color=TEXT_PRIMARY, size=14), "Toggle Inspector", self.window)
-        quit_action = QAction(_fa_icon("fa5s.sign-out-alt", color=ERROR_RED, size=14), "Quit", self.window)
+        quit_action = QAction(_fa_icon("fa5s.sign-out-alt", color=TEXT_ERROR, size=14), "Quit", self.window)
 
         toggle_sidebar_action.setShortcut("Ctrl+B")
         new_session_action.setShortcut("Ctrl+N")

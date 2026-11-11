@@ -146,6 +146,6 @@ class AgentNodes(
             log_run_event=self._log_run_event,
             workspace_boundary_violated=self._workspace_boundary_violated,
         )
-        self.agent_turn = AgentTurnOrchestrator(self)
-        self.recovery_turn = RecoveryTurnOrchestrator(self)
-        self.tool_batch = ToolBatchCoordinator(self)
+        self.agent_turn = AgentTurnOrchestrator(self, context_builder=self.context_builder)
+        self.recovery_turn = RecoveryTurnOrchestrator(self, config=self.config, recovery_manager=self.recovery_manager)
+        self.tool_batch = ToolBatchCoordinator(self, tool_executor=self.tool_executor, recovery_manager=self.recovery_manager)

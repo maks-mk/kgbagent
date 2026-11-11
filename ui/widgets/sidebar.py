@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui.theme import SUCCESS_GREEN, SURFACE_ALT, TEXT_MUTED, TEXT_PRIMARY
+from ui.theme import ACTIVE_CHAT_INDICATOR, SURFACE_ALT, TEXT_MUTED, TEXT_PRIMARY
 from .foundation import _fa_icon
 
 
@@ -406,7 +406,7 @@ class SessionItemDelegate(QStyledItemDelegate):
             )
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(SUCCESS_GREEN))
+            painter.setBrush(QColor(ACTIVE_CHAT_INDICATOR))
             painter.drawRoundedRect(bar_rect, 1.5, 1.5)
         painter.restore()
 

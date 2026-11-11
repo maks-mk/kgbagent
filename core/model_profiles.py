@@ -257,6 +257,14 @@ def generate_profile_id(model_name: Any, used_ids: set[str], api_url: Any = "") 
     return _ensure_unique_id(base or "profile", used_ids)
 
 
+def select_active_profile_id(profiles: list[dict[str, Any]], active_id: Any = None) -> str:
+    """Preserve an enabled selection, otherwise select the first enabled profile."""
+    enabled_ids = [str(item.get("id") or "").strip() for item in profiles
+                   if bool(item.get("enabled", True)) and str(item.get("id") or "").strip()]
+    active = str(active_id or "").strip()
+    return active if active in enabled_ids else (enabled_ids[0] if enabled_ids else "")
+
+
 def normalize_profiles_payload(payload: Any) -> dict[str, Any]:
     raw_payload = payload if isinstance(payload, dict) else {}
     raw_profiles = raw_payload.get("profiles")
@@ -313,11 +321,7 @@ def normalize_profiles_payload(payload: Any) -> dict[str, Any]:
             profile["reasoning"] = reasoning
         profiles.append(profile)
 
-    active_raw = raw_payload.get("active_profile")
-    active_profile = _clean_text(active_raw) if active_raw is not None else ""
-    enabled_ids = [item["id"] for item in profiles if bool(item.get("enabled", True))]
-    if active_profile not in enabled_ids:
-        active_profile = enabled_ids[0] if enabled_ids else ""
+    active_profile = select_active_profile_id(profiles, raw_payload.get("active_profile"))
 
     normalized: dict[str, Any] = {
         "active_profile": active_profile or None,

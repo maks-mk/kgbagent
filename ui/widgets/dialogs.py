@@ -57,9 +57,10 @@ from core.model_profiles import (
     normalize_api_key_list,
     normalize_profiles_payload,
     sanitize_profile_id,
+    select_active_profile_id,
 )
 from core.text_utils import build_tool_ui_labels
-from ui.theme import TEXT_MUTED, TEXT_PRIMARY
+from ui.theme import SAVED_BUTTON_TEXT, SAVE_BUTTON_TEXT, TEXT_ERROR, TEXT_MUTED, TEXT_PRIMARY
 from .foundation import (
     CollapsibleSection,
     CopySafePlainTextEdit,
@@ -491,7 +492,7 @@ class ModelSettingsDialog(QDialog):
         self.add_button.setIcon(_fa_icon("fa5s.plus", color=TEXT_PRIMARY, size=10))
         self.delete_button = QPushButton("Remove")
         self.delete_button.setObjectName("SettingsDeleteButton")
-        self.delete_button.setIcon(_fa_icon("fa5s.trash", color="#F08F8F", size=10))
+        self.delete_button.setIcon(_fa_icon("fa5s.trash", color=TEXT_ERROR, size=10))
         left_buttons.addWidget(self.add_button)
         left_buttons.addWidget(self.delete_button)
         left.addLayout(left_buttons)
@@ -746,7 +747,7 @@ class ModelSettingsDialog(QDialog):
         self.save_button = actions.button(QDialogButtonBox.StandardButton.Save)
         if self.save_button is not None:
             self.save_button.setObjectName("PrimaryButton")
-            self.save_button.setIcon(_fa_icon("fa5s.save", color="#000000", size=11))
+            self.save_button.setIcon(_fa_icon("fa5s.save", color=SAVE_BUTTON_TEXT, size=11))
             self.save_button.setMinimumHeight(24)
         root.addWidget(actions)
 
@@ -1953,15 +1954,7 @@ class ModelSettingsDialog(QDialog):
         self._refresh_profile_counts()
 
     def _reconcile_active_profile(self) -> None:
-        enabled_ids = [
-            str(profile.get("id") or "").strip()
-            for profile in self._profiles
-            if bool(profile.get("enabled", True)) and str(profile.get("id") or "").strip()
-        ]
-        active_id = str(self._active_profile or "").strip()
-        if active_id in enabled_ids:
-            return
-        self._active_profile = enabled_ids[0] if enabled_ids else ""
+        self._active_profile = select_active_profile_id(self._profiles, self._active_profile)
 
     def _toggle_profile_enabled(self, row: int, state: bool | int) -> None:
         if row < 0 or row >= len(self._profiles):
@@ -2198,7 +2191,7 @@ class ModelSettingsDialog(QDialog):
     def _restore_save_button_text(self) -> None:
         if self.save_button is not None:
             self.save_button.setText("Save")
-            self.save_button.setIcon(_fa_icon("fa5s.save", color="#000000", size=11))
+            self.save_button.setIcon(_fa_icon("fa5s.save", color=SAVE_BUTTON_TEXT, size=11))
             self.save_button.setProperty("savedState", False)
             self.save_button.style().unpolish(self.save_button)
             self.save_button.style().polish(self.save_button)
@@ -2207,7 +2200,7 @@ class ModelSettingsDialog(QDialog):
         if self.save_button is None:
             return
         self.save_button.setText("Saved")
-        self.save_button.setIcon(_fa_icon("fa5s.save", color="#FFFFFF", size=11))
+        self.save_button.setIcon(_fa_icon("fa5s.save", color=SAVED_BUTTON_TEXT, size=11))
         self.save_button.setProperty("savedState", True)
         self.save_button.style().unpolish(self.save_button)
         self.save_button.style().polish(self.save_button)

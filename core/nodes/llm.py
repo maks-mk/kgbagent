@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-import re
 from typing import Any, List
 
 from langgraph.config import get_stream_writer
@@ -13,7 +12,7 @@ from langchain_core.messages import SystemMessage
 
 from core.api_key_rotation import (
     ApiKeyRotationExhaustedError,
-    classify_api_key_error,
+    classify_provider_error,
     describe_provider_error,
 )
 from core.state import AgentState
@@ -26,53 +25,6 @@ from core.providers.factory import prepare_llm_with_tools
 logger = logging.getLogger("agent")
 
 _TRANSIENT_RETRY_DELAYS = (2, 4, 8)
-_TRANSIENT_HTTP_STATUS_CODES = {408, 429, 500, 502, 503, 504}
-_CLOSED_CLIENT_ERROR_MARKERS = (
-    "client has been closed",
-    "client is closed",
-    "cannot send a request, as the client has been closed",
-)
-
-def _exception_chain_text(error: Exception) -> str:
-    parts: list[str] = []
-    pending: list[BaseException | None] = [error]
-    seen: set[int] = set()
-    while pending:
-        current = pending.pop()
-        if current is None or id(current) in seen:
-            continue
-        seen.add(id(current))
-        parts.append(str(current))
-        pending.extend((getattr(current, "__cause__", None), getattr(current, "__context__", None)))
-    return " ".join(" ".join(parts).lower().split())
-
-
-_TRANSIENT_ERROR_MARKERS = (
-    "rate limit",
-    "rate_limit",
-    "too many requests",
-    "resource exhausted",
-    "resource_exhausted",
-    "timeout",
-    "timed out",
-    "deadline exceeded",
-    "connection",
-    "network",
-    "reset by peer",
-    "connection reset",
-    "connection refused",
-    "connection aborted",
-    "broken pipe",
-    "temporary failure",
-    "temporarily unavailable",
-    "service unavailable",
-    "bad gateway",
-    "gateway timeout",
-    "internal server error",
-    "server disconnected",
-)
-
-
 class LLMMixin:
     """LLM selection, invocation with retry, and fatal-error classification."""
 
@@ -319,61 +271,17 @@ class LLMMixin:
 
     @staticmethod
     def _is_closed_client_error(error: Exception) -> bool:
-        error_text = _exception_chain_text(error)
-        return any(marker in error_text for marker in _CLOSED_CLIENT_ERROR_MARKERS)
+        return classify_provider_error(error)["kind"] == "closed_client"
 
     @staticmethod
     def _is_transient_llm_error(error: Exception) -> bool:
-        if isinstance(error, ApiKeyRotationExhaustedError):
-            return error.error_kind == "rate_limit"
-        if classify_api_key_error(error) == "rate_limit":
-            return True
-
-        for candidate in (
-            getattr(error, "status_code", None),
-            getattr(getattr(error, "response", None), "status_code", None),
-        ):
-            try:
-                if int(candidate) in _TRANSIENT_HTTP_STATUS_CODES:
-                    return True
-            except (TypeError, ValueError):
-                continue
-
-        error_text = _exception_chain_text(error)
-        if any(marker in error_text for marker in _CLOSED_CLIENT_ERROR_MARKERS):
-            return False
-        status_pattern = "|".join(str(code) for code in sorted(_TRANSIENT_HTTP_STATUS_CODES))
-        if re.search(rf"(?<!\d)(?:{status_pattern})(?!\d)", error_text):
-            return True
-        return any(marker in error_text for marker in _TRANSIENT_ERROR_MARKERS)
+        return classify_provider_error(error)["retryable"]
 
     @staticmethod
     def _is_permanent_client_error(error: Exception) -> bool:
-        status = describe_provider_error(error)["http_status"]
-        return status is not None and 400 <= status < 500 and status not in {408, 429}
+        return classify_provider_error(error)["kind"] in {"auth", "billing", "client_error"}
 
     def _is_fatal_llm_error(self, error: Exception) -> bool:
         if isinstance(error, ApiKeyRotationExhaustedError):
             return error.error_kind != "rate_limit"
-        error_kind = classify_api_key_error(error)
-        if error_kind in {"auth", "billing"}:
-            return True
-        if error_kind == "rate_limit":
-            return False
-        err_str = " ".join(str(error).lower().split())
-        fatal_markers = (
-            "insufficient_balance",
-            "insufficient account balance",
-            "invalid_api_key",
-            "incorrect api key",
-            "authentication failed",
-            "unauthorized",
-            "forbidden",
-            "permission denied",
-            "billing",
-            "payment required",
-            "error code: 401",
-            "error code: 402",
-            "error code: 403",
-        )
-        return any(marker in err_str for marker in fatal_markers)
+        return classify_provider_error(error)["kind"] in {"auth", "billing"}

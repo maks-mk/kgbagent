@@ -54,10 +54,7 @@
     "args": [],
     "transport": "stdio",
     "enabled": false,
-    "cwd": "D:/py_projects/simple_ai_agent/agent+stategraph/lending",
-    "env": {
-      "SSH_MCP_LOCAL_ROOT": "D:/py_projects/simple_ai_agent/agent+stategraph/lending"
-    }
+    "cwd": "D:/py_projects/simple_ai_agent/agent+stategraph/lending"
   },
   "parallel-search": {
     "type": "remote",

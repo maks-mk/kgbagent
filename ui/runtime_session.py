@@ -4,6 +4,9 @@ import os
 from pathlib import Path
 from typing import Any
 
+import agent as agent_runtime
+from core import session_utils
+from ui import runtime_setup
 from pydantic import SecretStr
 
 from core.constants import BASE_DIR
@@ -23,18 +26,12 @@ from ui.runtime_payloads import (
 from ui.streaming import StreamEvent
 
 
-def _runtime_module():
-    from ui import runtime as runtime_module
-
-    return runtime_module
-
-
 class RuntimeSessionCoordinator:
     def __init__(self, worker: Any) -> None:
         self.worker = worker
 
     def current_project_path(self) -> str:
-        return normalize_project_path(_runtime_module().Path.cwd())
+        return normalize_project_path(Path.cwd())
 
     @staticmethod
     def project_path_is_valid(project_path: str | Path | None) -> bool:
@@ -79,10 +76,10 @@ class RuntimeSessionCoordinator:
 
     def try_change_workdir(self, target_project_path: str) -> tuple[bool, str]:
         normalized_target = normalize_project_path(target_project_path)
-        if normalize_project_path(_runtime_module().Path.cwd()) == normalized_target:
+        if normalize_project_path(Path.cwd()) == normalized_target:
             return True, ""
         try:
-            _runtime_module().os.chdir(normalized_target)
+            os.chdir(normalized_target)
         except Exception as exc:
             return False, f"{type(exc).__name__}: {exc}"
         return True, ""
@@ -214,7 +211,7 @@ class RuntimeSessionCoordinator:
         return payload
 
     async def repair_current_session_if_needed(self) -> list[str]:
-        return await _runtime_module().repair_session_if_needed(
+        return await session_utils.repair_session_if_needed(
             self.worker.agent_app,
             self.worker.current_session.thread_id,
             notifier=lambda message: self.worker.event_emitted.emit(
@@ -288,7 +285,7 @@ class RuntimeSessionCoordinator:
     def resolve_base_config(self):
         base = getattr(self.worker, "base_config", None) or getattr(self.worker, "config", None)
         if base is None:
-            base = _runtime_module().setup_runtime()
+            base = runtime_setup.setup_runtime()
             self.worker.base_config = base
             if getattr(self.worker, "config", None) is None:
                 self.worker.config = base
@@ -349,14 +346,14 @@ class RuntimeSessionCoordinator:
             reconfigure = getattr(old_tool_registry, "reconfigure", None)
             if callable(reconfigure):
                 reconfigure(new_config)
-            new_agent_app, new_tool_registry = _runtime_module().build_compiled_agent(
+            new_agent_app, new_tool_registry = agent_runtime.build_compiled_agent(
                 new_config,
                 old_tool_registry,
                 checkpoint_runtime,
                 run_logger=JsonlRunLogger(new_config.run_log_dir),
             )
         else:
-            new_agent_app, new_tool_registry = await _runtime_module().build_agent_app(new_config)
+            new_agent_app, new_tool_registry = await agent_runtime.build_agent_app(new_config)
             checkpoint_runtime = getattr(new_tool_registry, "checkpoint_runtime", None)
 
         self.worker._clear_cli_output_bridge()
@@ -364,7 +361,7 @@ class RuntimeSessionCoordinator:
         self.worker.agent_app = new_agent_app
         self.worker.tool_registry = new_tool_registry
         self.worker.checkpoint_runtime = checkpoint_runtime
-        self.worker._set_effective_model_capabilities(getattr(new_tool_registry, "model_capabilities", None))
+        self.set_effective_model_capabilities(getattr(new_tool_registry, "model_capabilities", None))
         self.worker._configure_cli_output_bridge()
 
         if self.worker.current_session is not None:
@@ -381,7 +378,7 @@ class RuntimeSessionCoordinator:
             self.sync_tool_registry_workdir(self.worker.current_session.project_path)
 
         if old_tool_registry is not None and old_tool_registry is not new_tool_registry:
-            await _runtime_module().close_runtime_resources(old_tool_registry)
+            await close_runtime_resources(old_tool_registry)
 
     async def apply_model_profiles(
         self,
@@ -398,13 +395,13 @@ class RuntimeSessionCoordinator:
 
         normalized_target = self.worker.profile_store.save(candidate_payload)
         self.worker.model_profiles = normalized_target
-        self.worker._set_effective_model_capabilities(
+        self.set_effective_model_capabilities(
             self.worker.runtime_model_capabilities,
             model_profiles=normalized_target,
         )
         if sync_runtime and self.selected_profile_id(normalized_target):
             try:
-                await self.worker._rebuild_runtime_for_active_profile(normalized_target)
+                await self.rebuild_runtime_for_active_profile(normalized_target)
             except Exception as exc:
                 self.worker.event_emitted.emit(
                     StreamEvent(
@@ -415,7 +412,7 @@ class RuntimeSessionCoordinator:
                         },
                     )
                 )
-                await self.worker._emit_session_payload(include_transcript=False)
+                await self.emit_session_payload(include_transcript=False)
                 return False
             self.worker._runtime_profile_id = self.selected_profile_id(normalized_target)
         self.worker.event_emitted.emit(
@@ -427,7 +424,7 @@ class RuntimeSessionCoordinator:
                 },
             )
         )
-        await self.worker._emit_session_payload(include_transcript=False)
+        await self.emit_session_payload(include_transcript=False)
         return True
 
     async def ensure_runtime_matches_selected_profile(self) -> bool:
@@ -438,7 +435,7 @@ class RuntimeSessionCoordinator:
             return True
 
         try:
-            await self.worker._rebuild_runtime_for_active_profile(self.worker.model_profiles)
+            await self.rebuild_runtime_for_active_profile(self.worker.model_profiles)
         except Exception as exc:
             self.worker.event_emitted.emit(
                 StreamEvent(
@@ -453,5 +450,5 @@ class RuntimeSessionCoordinator:
             return False
 
         self.worker._runtime_profile_id = target_profile_id
-        await self.worker._emit_session_payload(include_transcript=False)
+        await self.emit_session_payload(include_transcript=False)
         return True

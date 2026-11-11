@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import ValidationError
@@ -17,8 +18,8 @@ from core.tool_issues import build_tool_issue
 from core.policy_engine import (
     classify_shell_command,
     is_background_cli_exec,
-    shell_command_requires_approval,
-    tool_requires_approval,
+    shell_profile_requires_approval,
+    tool_metadata_requires_approval,
 )
 from core.self_correction_engine import normalize_tool_args, repair_fingerprint
 
@@ -235,11 +236,11 @@ class ToolPreflightMixin:
 
         command = str(((tool_args or {}).get("command")) or "").strip()
         if not command:
-            return metadata
+            return replace(metadata, requires_approval=True)
 
         profile = classify_shell_command(command)
         background = is_background_cli_exec(tool_args)
-        approval_required = shell_command_requires_approval(command) or background
+        approval_required = shell_profile_requires_approval(profile) or background
         inspect_only = bool(
             profile.get("inspect_only") and not profile.get("long_running_service") and not background
         )
@@ -253,12 +254,10 @@ class ToolPreflightMixin:
             source=metadata.source,
         )
 
-    def _tool_requires_approval(self, tool_name: str, tool_args: Dict[str, Any] | None = None) -> bool:
-        metadata = self._effective_tool_metadata(tool_name, tool_args)
-        return tool_requires_approval(
-            tool_name,
-            tool_args,
-            metadata=metadata,
+    def _tool_requires_approval(self, tool_name: str, tool_args: Dict[str, Any] | None = None, *, metadata: ToolMetadata | None = None) -> bool:
+        metadata = metadata or self._effective_tool_metadata(tool_name, tool_args)
+        return tool_metadata_requires_approval(
+            metadata,
             approvals_enabled=self.config.enable_approvals,
         )
 

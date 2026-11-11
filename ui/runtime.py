@@ -1,5 +1,3 @@
-import os
-from pathlib import Path
 
 from agent import build_agent_app, build_compiled_agent
 from core.session_utils import repair_session_if_needed
@@ -24,7 +22,8 @@ from ui.runtime_payloads import (
     short_project_label,
     summarize_approval_request,
 )
-from ui.runtime_worker import AgentRunWorker, AgentRuntimeController, build_graph_config, build_initial_state, setup_runtime
+from ui.runtime_worker import AgentRunWorker, AgentRuntimeController, build_graph_config, build_initial_state
+from ui.runtime_setup import setup_runtime
 
 __all__ = [
     "APPROVAL_MODE_ALWAYS",
@@ -49,8 +48,6 @@ __all__ = [
     "generate_chat_title",
     "load_transcript_payload",
     "normalize_approval_mode",
-    "os",
-    "Path",
     "repair_session_if_needed",
     "serialize_session_entries",
     "setup_runtime",

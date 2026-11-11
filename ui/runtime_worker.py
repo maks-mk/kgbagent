@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import random
-import sys
 import threading
 import uuid
 from typing import Any
@@ -13,9 +11,11 @@ from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
+from core.api_key_rotation import classify_provider_error
+import agent as agent_runtime
+from ui import runtime_setup
 from core.config import AgentConfig
 from core.checkpointing import compact_checkpoint_database, format_bytes
-from core.logging_config import setup_logging
 from core.model_profiles import ModelProfileStore, find_active_profile, normalize_profiles_payload
 from core.multimodal import (
     DEFAULT_MODEL_CAPABILITIES,
@@ -28,7 +28,6 @@ from core.multimodal import (
 )
 from core.run_logger import JsonlRunLogger
 from core.session_store import SessionSnapshot, SessionStore
-from core.std_streams import ensure_standard_streams
 from core.text_utils import TokenTracker
 from ui.runtime_payloads import (
     APPROVAL_MODE_ALWAYS,
@@ -48,26 +47,6 @@ from ui.runtime_session import RuntimeSessionCoordinator
 from ui.streaming import StreamEvent, StreamProcessor
 
 logger = logging.getLogger("agent")
-
-
-def _runtime_module():
-    from ui import runtime as runtime_module
-
-    return runtime_module
-
-
-def setup_runtime() -> AgentConfig:
-    # Windowed builds have no console; stdio MCP servers need a real stderr.
-    ensure_standard_streams()
-    if getattr(sys, "frozen", False):
-        os.chdir(os.getcwd())
-    config = AgentConfig()
-    setup_logging(
-        level=config.log_level,
-        log_file=config.log_file,
-        reasoning_debug_enabled=config.debug_reasoning_stream,
-    )
-    return config
 
 
 def build_initial_state(user_input: Any, session_id: str, safety_mode: str = "default") -> dict:
@@ -376,7 +355,7 @@ class AgentRunWorker(QObject):
         force_new_session: bool = False,
         preserve_session: SessionSnapshot | None = None,
     ) -> None:
-        self.base_config = _runtime_module().setup_runtime()
+        self.base_config = runtime_setup.setup_runtime()
         self.config = self.base_config
         self.profile_store = ModelProfileStore(self._profile_config_path())
         self.model_profiles = self.profile_store.load_or_initialize(
@@ -392,7 +371,7 @@ class AgentRunWorker(QObject):
         self._runtime_profile_id = self._selected_profile_id(self.model_profiles)
         self.ui_run_logger = JsonlRunLogger(self.config.run_log_dir)
         self.store = SessionStore(self.config.session_state_path)
-        self.agent_app, self.tool_registry = await _runtime_module().build_agent_app(
+        self.agent_app, self.tool_registry = await agent_runtime.build_agent_app(
             self.config
         )
         self.checkpoint_runtime = getattr(self.tool_registry, "checkpoint_runtime", None)
@@ -636,31 +615,7 @@ class AgentRunWorker(QObject):
 
     @staticmethod
     def _classify_stream_error(error_message: str, error_details: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Classify a provider stream error to drive retry strategy.
-
-        Returns a dict with:
-          * ``kind``: "rate_limit" | "timeout" | "server_error" | "network" | "unknown"
-          * ``retryable``: bool — whether a retry makes sense
-          * ``label``: human-readable label for UI notices
-        """
-        details = error_details or {}
-        status = details.get("http_status")
-        if details.get("retry_exhausted"):
-            return {"kind": "retry_exhausted", "retryable": False, "label": "Retry budget exhausted"}
-        if status is not None and 400 <= int(status) < 500 and int(status) not in {408, 429}:
-            return {"kind": "client_error", "retryable": False, "label": f"HTTP {status}"}
-
-        text = " ".join(str(error_message or "").lower().split())
-
-        if any(m in text for m in ("429", "rate limit", "rate_limit", "too many requests")):
-            return {"kind": "rate_limit", "retryable": True, "label": "Rate limit"}
-        if any(m in text for m in ("timeout", "timed out", "deadline exceeded")):
-            return {"kind": "timeout", "retryable": True, "label": "Timeout"}
-        if any(m in text for m in ("502", "503", "504", "bad gateway", "service unavailable", "gateway timeout")):
-            return {"kind": "server_error", "retryable": True, "label": "Server error"}
-        if any(m in text for m in ("connection", "network", "reset by peer", "broken pipe", "eof", "stream ended", "disconnected")):
-            return {"kind": "network", "retryable": True, "label": "Network error"}
-        return {"kind": "unknown", "retryable": False, "label": "Stream error"}
+        return classify_provider_error(error_message, error_details)
 
     @staticmethod
     def _stream_retry_backoff(attempt: int, base_delay: float, error_kind: str) -> float:
@@ -1411,6 +1366,7 @@ class AgentRuntimeController(QObject):
         super().__init__(parent)
         self._thread: QThread | None = None
         self._worker: AgentRunWorker | None = None
+        self._worker_connections = []
         self._worker_busy = False
         self._force_stop_timeout_ms = 5000
         self._force_stop_timer = QTimer(self)
@@ -1427,82 +1383,42 @@ class AgentRuntimeController(QObject):
         self._worker = AgentRunWorker()
         self._worker.moveToThread(self._thread)
 
-        self._initialize_requested.connect(self._worker.initialize)
-        self._reinitialize_requested.connect(self._worker.reinitialize)
-        self._start_run_requested.connect(self._worker.start_run)
-        self._stop_run_requested.connect(self._worker.stop_run, Qt.QueuedConnection)
-        self._resume_requested.connect(self._worker.resume_approval)
-        self._resume_user_choice_requested.connect(self._worker.resume_user_choice)
-        self._new_session_requested.connect(self._worker.new_session)
-        self._switch_session_requested.connect(self._worker.switch_session)
-        self._delete_session_requested.connect(self._worker.delete_session)
-        self._delete_project_requested.connect(self._worker.delete_project)
-        self._compact_checkpoints_requested.connect(self._worker.compact_checkpoints)
-        self._set_active_profile_requested.connect(self._worker.set_active_profile)
-        self._save_profiles_requested.connect(self._worker.save_profiles)
-        self._apply_tool_availability_changes_requested.connect(self._worker.apply_tool_availability_changes)
-        self._shutdown_requested.connect(self._worker.shutdown)
+        self._worker_connections.append(self._initialize_requested.connect(self._worker.initialize))
+        self._worker_connections.append(self._reinitialize_requested.connect(self._worker.reinitialize))
+        self._worker_connections.append(self._start_run_requested.connect(self._worker.start_run))
+        self._worker_connections.append(self._stop_run_requested.connect(self._worker.stop_run, Qt.QueuedConnection))
+        self._worker_connections.append(self._resume_requested.connect(self._worker.resume_approval))
+        self._worker_connections.append(self._resume_user_choice_requested.connect(self._worker.resume_user_choice))
+        self._worker_connections.append(self._new_session_requested.connect(self._worker.new_session))
+        self._worker_connections.append(self._switch_session_requested.connect(self._worker.switch_session))
+        self._worker_connections.append(self._delete_session_requested.connect(self._worker.delete_session))
+        self._worker_connections.append(self._delete_project_requested.connect(self._worker.delete_project))
+        self._worker_connections.append(self._compact_checkpoints_requested.connect(self._worker.compact_checkpoints))
+        self._worker_connections.append(self._set_active_profile_requested.connect(self._worker.set_active_profile))
+        self._worker_connections.append(self._save_profiles_requested.connect(self._worker.save_profiles))
+        self._worker_connections.append(self._apply_tool_availability_changes_requested.connect(self._worker.apply_tool_availability_changes))
+        self._worker_connections.append(self._shutdown_requested.connect(self._worker.shutdown))
 
-        self._worker.initialized.connect(self.initialized)
-        self._worker.initialization_failed.connect(self.initialization_failed)
-        self._worker.event_emitted.connect(self.event_emitted)
-        self._worker.approval_requested.connect(self.approval_requested)
-        self._worker.user_choice_requested.connect(self.user_choice_requested)
-        self._worker.session_changed.connect(self.session_changed)
-        self._worker.busy_changed.connect(self._on_worker_busy_changed)
-        self._worker.tool_change_rejected.connect(self.tool_change_rejected)
-        self._worker.shutdown_complete.connect(self._thread.quit)
-        self._thread.finished.connect(self._worker.deleteLater)
+        self._worker_connections.append(self._worker.initialized.connect(self.initialized))
+        self._worker_connections.append(self._worker.initialization_failed.connect(self.initialization_failed))
+        self._worker_connections.append(self._worker.event_emitted.connect(self.event_emitted))
+        self._worker_connections.append(self._worker.approval_requested.connect(self.approval_requested))
+        self._worker_connections.append(self._worker.user_choice_requested.connect(self.user_choice_requested))
+        self._worker_connections.append(self._worker.session_changed.connect(self.session_changed))
+        self._worker_connections.append(self._worker.busy_changed.connect(self._on_worker_busy_changed))
+        self._worker_connections.append(self._worker.tool_change_rejected.connect(self.tool_change_rejected))
+        self._worker_connections.append(self._worker.shutdown_complete.connect(self._thread.quit))
+        self._worker_connections.append(self._thread.finished.connect(self._worker.deleteLater))
 
         self._thread.start()
 
     def _disconnect_worker_thread(self) -> None:
-        worker = self._worker
-        thread = self._thread
-        if worker is None:
-            return
-        for signal, slot in (
-            (self._initialize_requested, worker.initialize),
-            (self._reinitialize_requested, worker.reinitialize),
-            (self._start_run_requested, worker.start_run),
-            (self._stop_run_requested, worker.stop_run),
-            (self._resume_requested, worker.resume_approval),
-            (self._resume_user_choice_requested, worker.resume_user_choice),
-            (self._new_session_requested, worker.new_session),
-            (self._switch_session_requested, worker.switch_session),
-            (self._delete_session_requested, worker.delete_session),
-            (self._delete_project_requested, worker.delete_project),
-            (self._compact_checkpoints_requested, worker.compact_checkpoints),
-            (self._set_active_profile_requested, worker.set_active_profile),
-            (self._save_profiles_requested, worker.save_profiles),
-            (self._apply_tool_availability_changes_requested, worker.apply_tool_availability_changes),
-
-
-
-            (self._shutdown_requested, worker.shutdown),
-
-            (worker.initialized, self.initialized),
-            (worker.initialization_failed, self.initialization_failed),
-            (worker.event_emitted, self.event_emitted),
-            (worker.approval_requested, self.approval_requested),
-            (worker.user_choice_requested, self.user_choice_requested),
-            (worker.session_changed, self.session_changed),
-            (worker.busy_changed, self._on_worker_busy_changed),
-            (worker.tool_change_rejected, self.tool_change_rejected),
-        ):
+        for connection in self._worker_connections:
             try:
-                signal.disconnect(slot)
+                QObject.disconnect(connection)
             except (RuntimeError, TypeError):
                 pass
-        if thread is not None:
-            try:
-                worker.shutdown_complete.disconnect(thread.quit)
-            except (RuntimeError, TypeError):
-                pass
-            try:
-                thread.finished.disconnect(worker.deleteLater)
-            except (RuntimeError, TypeError):
-                pass
+        self._worker_connections.clear()
 
     def _stop_worker_thread(self, *, force: bool) -> None:
         thread = self._thread

@@ -31,7 +31,7 @@ from .foundation import (
     COMPOSER_MENTION_POPUP_MIN_WIDTH,
     _fa_icon,
 )
-from ui.theme import ACCENT_BLUE, AMBER_WARNING, SUCCESS_GREEN, TEXT_MUTED
+from ui.theme import ACCENT, TEXT_WARNING, TEXT_SUCCESS, TEXT_MUTED, FILE_PDF_ICON_TEXT
 
 
 class ComposerTextEdit(QPlainTextEdit):
@@ -694,24 +694,24 @@ class _ComposerMentionItemWidget(QWidget):
     @staticmethod
     def _icon_for_entry(owner: QWidget, *, relative: str, is_dir: bool):
         if is_dir:
-            return _fa_icon("fa5s.folder", color=ACCENT_BLUE, size=13)
+            return _fa_icon("fa5s.folder", color=ACCENT, size=13)
 
         name = Path(relative).name.lower()
         suffix = Path(relative).suffix.lower()
         if name in {".env", ".env.example"} or suffix in {".env", ".ini", ".cfg", ".conf", ".toml", ".yaml", ".yml"}:
-            return _fa_icon("fa5s.sliders-h", color=AMBER_WARNING, size=13)
+            return _fa_icon("fa5s.sliders-h", color=TEXT_WARNING, size=13)
         if suffix in {".py", ".js", ".ts", ".tsx", ".jsx", ".sh", ".ps1", ".bat", ".cmd", ".json", ".xml"}:
-            return _fa_icon("fa5s.file-code", color=SUCCESS_GREEN, size=13)
+            return _fa_icon("fa5s.file-code", color=TEXT_SUCCESS, size=13)
         if suffix in {".md", ".txt", ".rst", ".log"}:
             return _fa_icon("fa5s.file-alt", color=TEXT_MUTED, size=13)
         if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"}:
-            return _fa_icon("fa5s.file-image", color=ACCENT_BLUE, size=13)
+            return _fa_icon("fa5s.file-image", color=ACCENT, size=13)
         if suffix in {".zip", ".7z", ".tar", ".gz", ".rar"}:
-            return _fa_icon("fa5s.file-archive", color=AMBER_WARNING, size=13)
+            return _fa_icon("fa5s.file-archive", color=TEXT_WARNING, size=13)
         if suffix in {".pdf"}:
-            return _fa_icon("fa5s.file-pdf", color="#E56B6F", size=13)
+            return _fa_icon("fa5s.file-pdf", color=FILE_PDF_ICON_TEXT, size=13)
         if suffix in {".csv", ".tsv", ".xlsx"}:
-            return _fa_icon("fa5s.file-excel", color=SUCCESS_GREEN, size=13)
+            return _fa_icon("fa5s.file-excel", color=TEXT_SUCCESS, size=13)
         return _fa_icon("fa5s.file", color=TEXT_MUTED, size=13)
 
 

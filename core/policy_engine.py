@@ -633,11 +633,17 @@ def classify_shell_command(command: str) -> Dict[str, Any]:
     }
 
 
+def shell_profile_requires_approval(profile: Dict[str, Any]) -> bool:
+    return not bool(profile.get("inspect_only") and not profile.get("long_running_service"))
+
+
 def shell_command_requires_approval(command: str) -> bool:
-    profile = classify_shell_command(command)
-    if profile.get("inspect_only") and not profile.get("long_running_service"):
-        return False
-    return True
+    return shell_profile_requires_approval(classify_shell_command(command))
+
+
+def tool_metadata_requires_approval(metadata: ToolMetadata, *, approvals_enabled: bool = True) -> bool:
+    """Evaluate already resolved metadata without parsing shell arguments again."""
+    return approvals_enabled and bool(metadata.requires_approval or metadata.destructive or metadata.mutating)
 
 
 def is_background_cli_exec(tool_args: Dict[str, Any] | None) -> bool:
@@ -670,8 +676,4 @@ def tool_requires_approval(
             return True
         return shell_command_requires_approval(command)
 
-    return bool(
-        effective_metadata.requires_approval
-        or effective_metadata.destructive
-        or effective_metadata.mutating
-    )
+    return tool_metadata_requires_approval(effective_metadata)

@@ -105,33 +105,72 @@ _NON_VISIBLE_CONTENT_TYPES = frozenset(
 )
 _NON_VISIBLE_CONTENT_TYPE_PREFIXES = ("analysis.", "reasoning.", "thinking.", "thought.")
 
+_THINK_TAG_PATTERN = r"(think|thought|thinking)"
+INLINE_THOUGHT_BLOCK_RE = re.compile(rf"<{_THINK_TAG_PATTERN}\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
+INLINE_THOUGHT_OPEN_RE = re.compile(rf"<{_THINK_TAG_PATTERN}\b[^>]*>", re.IGNORECASE)
+INLINE_THOUGHT_CLOSE_RE = re.compile(rf"</{_THINK_TAG_PATTERN}\s*>", re.IGNORECASE)
+_INLINE_THOUGHT_CLOSE_PREFIX_RE = re.compile(rf"^.*?</{_THINK_TAG_PATTERN}\s*>\s*", re.IGNORECASE | re.DOTALL)
+_INLINE_THOUGHT_UNCLOSED_RE = re.compile(rf"<{_THINK_TAG_PATTERN}\b[^>]*>.*$", re.IGNORECASE | re.DOTALL)
 
-def _visible_text_content_item(item: Any) -> str:
+
+def strip_inline_thought_blocks(text: str) -> str:
+    """Strip complete inline thoughts after joining text; streams need a buffer."""
+    cleaned = INLINE_THOUGHT_BLOCK_RE.sub("", text)
+    cleaned = _INLINE_THOUGHT_CLOSE_PREFIX_RE.sub("", cleaned)
+    return _INLINE_THOUGHT_UNCLOSED_RE.sub("", cleaned)
+
+
+def _visible_text_content_item(item: Any, *, include_refusal: bool) -> str:
     if item is None:
         return ""
     if isinstance(item, str):
         return item
-    if isinstance(item, list):
-        return "".join(_visible_text_content_item(part) for part in item)
+    if isinstance(item, (list, tuple)):
+        return "".join(_visible_text_content_item(part, include_refusal=include_refusal) for part in item)
+    if isinstance(item, BaseMessage):
+        # LangChain wraps unrecognised provider blocks as non_standard/value.
+        # The same traversal handles those blocks and legacy raw payloads.
+        text = _visible_text_content_item(item.content_blocks, include_refusal=include_refusal)
+        if text:
+            return text
+        return _visible_text_content_item(item.additional_kwargs.get("content_blocks"), include_refusal=include_refusal)
     if isinstance(item, dict):
         item_type = str(item.get("type") or "").strip().lower()
         if bool(item.get("thought")) or item_type in _NON_VISIBLE_CONTENT_TYPES:
             return ""
         if item_type.startswith(_NON_VISIBLE_CONTENT_TYPE_PREFIXES):
             return ""
-        if "text" in item:
-            return str(item.get("text") or "")
-        if "refusal" in item:
-            return str(item.get("refusal") or "")
-        if "content" in item:
-            return _visible_text_content_item(item.get("content"))
-        return ""
-    return str(item)
+        if item_type == "refusal" and not include_refusal:
+            return ""
+        for key in ("text", "output_text", "refusal", "content", "answer", "response", "final", "final_text"):
+            if key in item and (key != "refusal" or include_refusal):
+                text = _visible_text_content_item(item[key], include_refusal=include_refusal)
+                if text:
+                    return text
+        return "".join(
+            _visible_text_content_item(item[key], include_refusal=include_refusal)
+            for key in ("parts", "items", "content_blocks", "message", "messages", "data", "value")
+            if key in item
+        )
+    for key in ("content_blocks", "content", "text"):
+        try:
+            value = getattr(item, key)
+        except Exception:
+            continue
+        if value is not None and not callable(value):
+            text = _visible_text_content_item(value, include_refusal=include_refusal)
+            if text:
+                return text
+    metadata = getattr(item, "additional_kwargs", None)
+    if isinstance(metadata, dict):
+        return _visible_text_content_item(metadata.get("content_blocks"), include_refusal=include_refusal)
+    return ""
 
 
-def visible_text_content(content: Any) -> str:
-    """Return only content a user can see; reasoning/thinking blocks are skipped."""
-    return _visible_text_content_item(content)
+def visible_text_content(content: Any, *, strip_inline: bool = False, include_refusal: bool = True) -> str:
+    """Return user-visible content; title generation can exclude refusal blocks."""
+    text = _visible_text_content_item(content, include_refusal=include_refusal)
+    return strip_inline_thought_blocks(text) if strip_inline else text
 
 
 def compact_text(text: str, limit: int) -> str:
@@ -185,3 +224,15 @@ def is_user_turn_message(message: BaseMessage) -> bool:
         return False
     content = stringify_content(message.content).strip()
     return bool(content) and content != REFLECTION_PROMPT
+
+
+def current_turn_id(state: dict[str, Any], messages: list[BaseMessage]) -> int:
+    derived_turn_id = 0
+    for message in messages:
+        if is_user_turn_message(message):
+            derived_turn_id += 1
+    return max(int(state.get("turn_id", 0) or 0), derived_turn_id)
+
+
+def last_ai_message(messages: list[BaseMessage]) -> AIMessage | None:
+    return next((message for message in reversed(messages) if isinstance(message, AIMessage)), None)

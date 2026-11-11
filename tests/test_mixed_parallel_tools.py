@@ -140,7 +140,7 @@ class _FakeOwner:
     def _tool_is_allowed_for_turn(self, tool_name, allowed_tool_names=None):
         return True
 
-    def _tool_requires_approval(self, tool_name, tool_args):
+    def _tool_requires_approval(self, tool_name, tool_args, *, metadata=None):
         return False
 
     def _tool_call_is_approved(self, tool_call_id, approval_state):
@@ -263,7 +263,7 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
                     # Classification is per position, not by a provider-supplied ID.
                     state = self._make_state([_tc(name, "duplicate-id", {"index": i}) for i, name in enumerate(names)])
                     with mock.patch.object(owner, "_log_run_event") as log_event:
-                        result = await ToolBatchCoordinator(owner).run(state)
+                        result = await ToolBatchCoordinator(owner, tool_executor=owner.tool_executor, recovery_manager=owner.recovery_manager).run(state)
                     self.assertEqual(len(classified), len(names))
                     self.assertEqual([message.content for message in result["messages"]], [str(i) for i in range(len(names))])
                     start_log = next(call.kwargs for call in log_event.call_args_list if call.args[1] == "tools_node_start")
@@ -287,7 +287,7 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
     async def test_all_parallel_safe_uses_gather(self):
         """When every call is parallel-safe, all run concurrently."""
         owner = self._make_owner({"read_file": True, "list_directory": True})
-        coordinator = ToolBatchCoordinator(owner)
+        coordinator = ToolBatchCoordinator(owner, tool_executor=owner.tool_executor, recovery_manager=owner.recovery_manager)
 
         tool_calls = [
             _tc("read_file", "tc1"),
@@ -310,7 +310,7 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_parallel_results_stream_as_each_call_finishes(self):
         owner = self._make_owner({"read_file": True, "list_directory": True})
-        coordinator = ToolBatchCoordinator(owner)
+        coordinator = ToolBatchCoordinator(owner, tool_executor=owner.tool_executor, recovery_manager=owner.recovery_manager)
         original_process = owner._process_tool_call
 
         async def process_with_different_delays(tool_call, *args, **kwargs):
@@ -346,7 +346,7 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
     async def test_cli_exec_calls_run_concurrently_despite_mutating_metadata(self):
         owner = self._make_owner({"cli_exec": False})
         owner._process_delay = 0.15
-        coordinator = ToolBatchCoordinator(owner)
+        coordinator = ToolBatchCoordinator(owner, tool_executor=owner.tool_executor, recovery_manager=owner.recovery_manager)
         state = self._make_state([
             _tc("cli_exec", "tc1", {"command": "echo one"}),
             _tc("cli_exec", "tc2", {"command": "echo two"}),
@@ -366,7 +366,7 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cli_exec_does_not_make_other_mutating_tools_parallel(self):
         owner = self._make_owner({"cli_exec": False, "write_file": False})
-        coordinator = ToolBatchCoordinator(owner)
+        coordinator = ToolBatchCoordinator(owner, tool_executor=owner.tool_executor, recovery_manager=owner.recovery_manager)
         state = self._make_state([
             _tc("cli_exec", "tc1", {"command": "echo one"}),
             _tc("write_file", "tc2"),
@@ -384,7 +384,7 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
     async def test_all_sequential(self):
         """When no call is parallel-safe, all run sequentially."""
         owner = self._make_owner({"write_file": False, "safe_delete_file": False})
-        coordinator = ToolBatchCoordinator(owner)
+        coordinator = ToolBatchCoordinator(owner, tool_executor=owner.tool_executor, recovery_manager=owner.recovery_manager)
 
         tool_calls = [
             _tc("write_file", "tc1"),
@@ -407,7 +407,7 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
             "write_file": False,
             "list_directory": True,
         })
-        coordinator = ToolBatchCoordinator(owner)
+        coordinator = ToolBatchCoordinator(owner, tool_executor=owner.tool_executor, recovery_manager=owner.recovery_manager)
 
         tool_calls = [
             _tc("read_file", "tc1"),
@@ -431,7 +431,7 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_mutating_call_is_a_barrier_for_following_read(self):
         owner = self._make_owner({"write_file": False, "read_file": True})
-        coordinator = ToolBatchCoordinator(owner)
+        coordinator = ToolBatchCoordinator(owner, tool_executor=owner.tool_executor, recovery_manager=owner.recovery_manager)
         state = self._make_state([
             _tc("write_file", "tc1"),
             _tc("read_file", "tc2"),
@@ -454,7 +454,7 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
             "write_file": False,
         })
         owner._process_delay = 0.15
-        coordinator = ToolBatchCoordinator(owner)
+        coordinator = ToolBatchCoordinator(owner, tool_executor=owner.tool_executor, recovery_manager=owner.recovery_manager)
 
         tool_calls = [
             _tc("read_file", "tc1"),
@@ -477,7 +477,7 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
     async def test_single_tool_call(self):
         """A single tool call should work regardless of its parallel-safety."""
         owner = self._make_owner({"write_file": False})
-        coordinator = ToolBatchCoordinator(owner)
+        coordinator = ToolBatchCoordinator(owner, tool_executor=owner.tool_executor, recovery_manager=owner.recovery_manager)
 
         tool_calls = [_tc("write_file", "tc1")]
         state = self._make_state(tool_calls)
@@ -490,7 +490,7 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
     async def test_parallel_exception_does_not_crash_batch(self):
         """If one parallel call raises, the others should still complete."""
         owner = self._make_owner({"read_file": True, "list_directory": True})
-        coordinator = ToolBatchCoordinator(owner)
+        coordinator = ToolBatchCoordinator(owner, tool_executor=owner.tool_executor, recovery_manager=owner.recovery_manager)
 
         original_process = owner._process_tool_call
 
@@ -535,7 +535,7 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
 
         owner._process_tool_call = process
         state = self._make_state([_tc("read_file", str(i)) for i in range(len(gates))])
-        task = asyncio.create_task(ToolBatchCoordinator(owner).run(state))
+        task = asyncio.create_task(ToolBatchCoordinator(owner, tool_executor=owner.tool_executor, recovery_manager=owner.recovery_manager).run(state))
         try:
             await asyncio.wait_for(started[1].wait(), 2)
             self.assertEqual([event.is_set() for event in started], [True, True, False, False, False, False])
@@ -566,7 +566,7 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
             return ToolMessage(content="ok", tool_call_id=tool_call["id"]), False, None
 
         owner._process_tool_call = process
-        await ToolBatchCoordinator(owner).run(self._make_state([_tc("read_file", "a"), _tc("read_file", "b")]))
+        await ToolBatchCoordinator(owner, tool_executor=owner.tool_executor, recovery_manager=owner.recovery_manager).run(self._make_state([_tc("read_file", "a"), _tc("read_file", "b")]))
         self.assertEqual(events, [("start", "a"), ("end", "a"), ("start", "b"), ("end", "b")])
 
     async def test_write_barrier_waits_for_reads_and_blocks_following_reads(self):
@@ -580,7 +580,7 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
             return ToolMessage(content="ok", tool_call_id=tool_call["id"]), False, None
 
         owner._process_tool_call = process
-        await ToolBatchCoordinator(owner).run(self._make_state([
+        await ToolBatchCoordinator(owner, tool_executor=owner.tool_executor, recovery_manager=owner.recovery_manager).run(self._make_state([
             _tc("read_file", "a"), _tc("read_file", "b"),
             _tc("write_file", "w"), _tc("read_file", "c"),
         ]))
@@ -614,7 +614,7 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
                     return ToolMessage(content="ok", tool_call_id=tool_call["id"]), False, None
 
                 owner._process_tool_call = process
-                coordinator = ToolBatchCoordinator(owner)
+                coordinator = ToolBatchCoordinator(owner, tool_executor=owner.tool_executor, recovery_manager=owner.recovery_manager)
                 state = self._make_state([
                     _tc("read_file", "fail"), _tc("read_file", "slow"),
                     _tc("read_file", "queued"), _tc("write_file", "write"),
@@ -647,7 +647,7 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
                 cleaned.append(tool_call["id"])
 
         owner._process_tool_call = process
-        task = asyncio.create_task(ToolBatchCoordinator(owner).run(self._make_state([
+        task = asyncio.create_task(ToolBatchCoordinator(owner, tool_executor=owner.tool_executor, recovery_manager=owner.recovery_manager).run(self._make_state([
             _tc("read_file", str(i)) for i in range(5)
         ])))
         try:
@@ -679,7 +679,7 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
             return ToolMessage(content="ok", tool_call_id=tool_call["id"]), False, None
 
         owner._process_tool_call = process
-        result = await asyncio.wait_for(ToolBatchCoordinator(owner).run(self._make_state([
+        result = await asyncio.wait_for(ToolBatchCoordinator(owner, tool_executor=owner.tool_executor, recovery_manager=owner.recovery_manager).run(self._make_state([
             _tc("mcp_lookup", "a"), _tc("mcp_search", "b"),
         ])), 2)
         self.assertEqual([message.tool_call_id for message in result["messages"]], ["a", "b"])
@@ -725,7 +725,7 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
         owner._process_tool_call = process
         state = self._make_state([_tc("read_file", tc_id) for tc_id in ("a", "bad", "b", "c")])
         with mock.patch("core.node_orchestrators.get_stream_writer", return_value=streamed.append):
-            result = await ToolBatchCoordinator(owner).run(state)
+            result = await ToolBatchCoordinator(owner, tool_executor=owner.tool_executor, recovery_manager=owner.recovery_manager).run(state)
         self.assertEqual([message.tool_call_id for message in result["messages"]], ["a", "bad", "b", "c"])
         self.assertIn("boom", result["messages"][1].content)
         self.assertEqual(len([event for event in streamed if event["type"] == "tool_result"]), 4)
@@ -735,7 +735,7 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
         shared_call = _tc("read_file", "shared")
         # Bypass AIMessage's copying of tool-call dictionaries to exercise aliasing.
         state = {"messages": [SimpleNamespace(tool_calls=[shared_call, shared_call])], "run_id": "test"}
-        result = await ToolBatchCoordinator(owner).run(state)
+        result = await ToolBatchCoordinator(owner, tool_executor=owner.tool_executor, recovery_manager=owner.recovery_manager).run(state)
         self.assertEqual([message.tool_call_id for message in result["messages"]], ["shared", "shared"])
 
     async def test_tool_tasks_inherit_context_without_leaking_changes_to_next_calls(self):
@@ -756,7 +756,7 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
         owner._process_tool_call = process
         token = context.set("batch")
         try:
-            await ToolBatchCoordinator(owner).run(self._make_state([_tc("read_file", "a"), _tc("read_file", "b")]))
+            await ToolBatchCoordinator(owner, tool_executor=owner.tool_executor, recovery_manager=owner.recovery_manager).run(self._make_state([_tc("read_file", "a"), _tc("read_file", "b")]))
             self.assertEqual(seen, ["batch", "batch"])
             self.assertEqual(context.get(), "batch")
         finally:

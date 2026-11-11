@@ -19,6 +19,8 @@ from ui.theme import (
     ACCENT_BLUE,
     CONTEXT_INDICATOR_GRAY,
     CONTEXT_INDICATOR_TRACK,
+    DIFF_ADDED_BG,
+    DIFF_REMOVED_BG,
     ERROR_RED,
     FILENAME_BLUE,
     MONO_FONT_FAMILY,
@@ -28,6 +30,7 @@ from ui.theme import (
     SURFACE_CARD,
     TEXT_MUTED,
     TEXT_PRIMARY,
+    TEXT_SUCCESS,
 )
 from core.text_utils import find_filename_spans, normalize_simple_latex_inline
 
@@ -41,8 +44,8 @@ COMPOSER_MENTION_MAX_ITEMS = 50
 COMPOSER_MENTION_EXCLUDED_DIRS = {".git", "venv", "__pycache__", ".agent_state", "dist"}
 COMPOSER_MENTION_POPUP_MIN_WIDTH = 560
 COMPOSER_MENTION_POPUP_MAX_WIDTH = 700
-DIFF_ADD_LINE_BG = QColor("#1E3425")
-DIFF_REMOVE_LINE_BG = QColor("#472B2B")
+DIFF_ADD_LINE_BG = QColor(DIFF_ADDED_BG)
+DIFF_REMOVE_LINE_BG = QColor(DIFF_REMOVED_BG)
 
 
 def _make_mono_font(point_size: int = 10) -> QFont:
@@ -137,7 +140,7 @@ def format_approval_detail_text(tool_args: Any) -> str:
     return "\n".join(lines).strip() or "No additional parameters."
 
 
-class CopySafePlainTextEdit(QPlainTextEdit):
+class CopySafeTextMixin:
     def createMimeDataFromSelection(self) -> QMimeData:  # type: ignore[override]
         mime = QMimeData()
         cursor = self.textCursor()
@@ -157,6 +160,10 @@ class CopySafePlainTextEdit(QPlainTextEdit):
             event.accept()
             return
         super().keyPressEvent(event)
+
+
+class CopySafePlainTextEdit(CopySafeTextMixin, QPlainTextEdit):
+    pass
 
 
 def _build_fa_icon(name: str, *, color: str = TEXT_MUTED, size: int = 14, **kwargs: Any) -> QIcon:
@@ -445,7 +452,7 @@ def _is_monospace_format(char_format: QTextCharFormat) -> bool:
     )
 
 
-class AutoTextBrowser(QTextBrowser):
+class AutoTextBrowser(CopySafeTextMixin, QTextBrowser):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._height_sync_pending = False
@@ -549,26 +556,6 @@ class AutoTextBrowser(QTextBrowser):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._queue_height_sync()
-
-    def createMimeDataFromSelection(self) -> QMimeData:  # type: ignore[override]
-        mime = QMimeData()
-        cursor = self.textCursor()
-        if cursor.hasSelection():
-            mime.setText(_normalize_copied_text(cursor.selectedText()))
-        return mime
-
-    def copy(self) -> None:  # type: ignore[override]
-        cursor = self.textCursor()
-        if not cursor.hasSelection():
-            return
-        QApplication.clipboard().setText(_normalize_copied_text(cursor.selectedText()))
-
-    def keyPressEvent(self, event) -> None:
-        if event.matches(QKeySequence.Copy):
-            self.copy()
-            event.accept()
-            return
-        super().keyPressEvent(event)
 
     def _queue_height_sync(self, *_args) -> None:
         if self._height_sync_pending:
@@ -841,7 +828,7 @@ class CodeBlockWidget(QWidget):
     def _copy_code(self) -> None:
         QApplication.clipboard().setText(self.editor.toPlainText())
         self.copy_button.setText("Copied")
-        self.copy_button.setIcon(_fa_icon("fa5s.check", color=SUCCESS_GREEN, size=13))
+        self.copy_button.setIcon(_fa_icon("fa5s.check", color=TEXT_SUCCESS, size=13))
         QTimer.singleShot(1200, self._reset_copy_button)
 
     def _reset_copy_button(self) -> None:
@@ -917,7 +904,7 @@ class DiffBlockWidget(QFrame):
     def _copy_diff(self) -> None:
         QApplication.clipboard().setText(self._raw_diff)
         self.copy_button.setText("Copied")
-        self.copy_button.setIcon(_fa_icon("fa5s.check", color=SUCCESS_GREEN, size=13))
+        self.copy_button.setIcon(_fa_icon("fa5s.check", color=TEXT_SUCCESS, size=13))
         QTimer.singleShot(1200, self._reset_copy_button)
 
     def _reset_copy_button(self) -> None:

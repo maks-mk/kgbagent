@@ -10,7 +10,14 @@ from langchain_core.messages import AIMessage, AIMessageChunk, RemoveMessage, To
 from pydantic_core import from_json
 
 from core.api_key_rotation import describe_provider_error
-from core.message_utils import is_tool_message_error, stringify_content
+from core.message_utils import (
+    is_tool_message_error, stringify_content, visible_text_content,
+    strip_inline_thought_blocks as _strip_inline_thought_content,
+    INLINE_THOUGHT_BLOCK_RE as _INLINE_THOUGHT_BLOCK_RE,
+    INLINE_THOUGHT_OPEN_RE as _INLINE_THOUGHT_OPEN_RE,
+    INLINE_THOUGHT_CLOSE_RE as _INLINE_THOUGHT_CLOSE_RE,
+)
+from core.text_replay import normalized_replay_text, similar_prefix_boundary
 from core.text_utils import (
     TokenTracker,
     build_tool_ui_labels,
@@ -27,12 +34,6 @@ from ui.tool_message_utils import extract_tool_args, extract_tool_duration
 from ui.visibility import get_internal_ui_notice, is_hidden_internal_message
 
 DIFF_REGEX = re.compile(r"```diff\r?\n(.*?)```", re.DOTALL)
-_THINK_TAG_PATTERN = r"(think|thought|thinking)"
-_INLINE_THOUGHT_BLOCK_RE = re.compile(rf"<{_THINK_TAG_PATTERN}\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
-_INLINE_THOUGHT_OPEN_RE = re.compile(rf"<{_THINK_TAG_PATTERN}\b[^>]*>", re.IGNORECASE)
-_INLINE_THOUGHT_CLOSE_RE = re.compile(rf"</{_THINK_TAG_PATTERN}\s*>", re.IGNORECASE)
-_INLINE_THOUGHT_CLOSE_PREFIX_RE = re.compile(rf"^.*?</{_THINK_TAG_PATTERN}\s*>\s*", re.IGNORECASE | re.DOTALL)
-_INLINE_THOUGHT_UNCLOSED_RE = re.compile(rf"<{_THINK_TAG_PATTERN}\b[^>]*>.*$", re.IGNORECASE | re.DOTALL)
 # Longest first: a delta may end in the middle of a tag (``<thi`` / ``</think``)
 # and that trailing fragment must be buffered instead of rendered.
 _INLINE_THOUGHT_PARTIAL_PREFIXES = (
@@ -99,10 +100,6 @@ def build_rejected_tool_message(
     return REJECTED_TOOL_MESSAGE_TEMPLATE.format(names=names, allowed=allowed_text)
 
 
-def _strip_inline_thought_content(text: str) -> str:
-    cleaned = _INLINE_THOUGHT_BLOCK_RE.sub("", text)
-    cleaned = _INLINE_THOUGHT_CLOSE_PREFIX_RE.sub("", cleaned)
-    return _INLINE_THOUGHT_UNCLOSED_RE.sub("", cleaned)
 
 
 class _InlineThoughtStreamFilter:
@@ -846,6 +843,11 @@ class StreamProcessor:
                 "kind": "auto_summary",
             },
         )
+        # The notice replaces the visible status row with its own text, so the
+        # cached node/label pair no longer describes what is on screen. Invalidate
+        # it to let the next status update (the agent resuming after compaction)
+        # overwrite the sticky notice instead of being deduplicated as unchanged.
+        self._last_status = None
 
     def _handle_messages(self, payload: tuple[Any, Dict[str, Any]]) -> None:
         message, metadata = payload
@@ -1283,27 +1285,7 @@ class StreamProcessor:
 
     @classmethod
     def _similar_prefix_boundary(cls, current_tail: str, incoming: str) -> int | None:
-        tail_normalized = cls._normalized_text(current_tail)
-        if len(tail_normalized) < 24:
-            return None
-
-        best_index: int | None = None
-        for match in re.finditer(r"\S+", incoming):
-            prefix = incoming[: match.end()]
-            prefix_normalized = cls._normalized_text(prefix)
-            if not prefix_normalized:
-                continue
-            if tail_normalized.startswith(prefix_normalized):
-                best_index = match.end()
-                continue
-            if prefix_normalized.startswith(tail_normalized):
-                return best_index if best_index is not None else match.end()
-            if len(prefix_normalized) >= min(len(tail_normalized), 80):
-                similarity = difflib.SequenceMatcher(None, tail_normalized, prefix_normalized).quick_ratio()
-                if similarity >= 0.94:
-                    best_index = match.end()
-
-        return best_index
+        return similar_prefix_boundary(current_tail, incoming, min_length=24)
 
     @staticmethod
     def _last_nonempty_paragraph(text: str) -> str:
@@ -1316,7 +1298,7 @@ class StreamProcessor:
 
     @staticmethod
     def _normalized_text(text: str) -> str:
-        return " ".join(str(text or "").split())
+        return normalized_replay_text(text)
 
     @staticmethod
     def _texts_are_same_replay(current: str, incoming: str) -> bool:
@@ -1374,68 +1356,11 @@ class StreamProcessor:
 
     @staticmethod
     def _extract_text_content(content: Any, *, strip_inline: bool = True) -> str:
-        """Return the visible text carried by *content*.
-
-        ``strip_inline`` removes inline ``<think>`` blocks. Callers that consume
-        incremental deltas disable it and run :class:`_InlineThoughtStreamFilter`
-        instead, because a block can span several chunks.
-        """
-        text = StreamProcessor._extract_text_content_raw(content)
-        if text and strip_inline:
-            return _strip_inline_thought_content(text)
-        return text
+        return visible_text_content(content, strip_inline=strip_inline)
 
     @staticmethod
     def _extract_text_content_raw(content: Any) -> str:
-        if isinstance(content, str):
-            return content
-        if content is None:
-            return ""
-        if isinstance(content, list):
-            return "".join(StreamProcessor._extract_text_content_raw(item) for item in content)
-        if isinstance(content, dict):
-            item_type = str(content.get("type") or "").strip().lower()
-            if bool(content.get("thought")) or item_type in {
-                "thinking",
-                "thought",
-                "reasoning",
-                "reasoning_text",
-                "reasoning_content",
-                "reasoning_delta",
-                "reasoning_summary",
-                "analysis",
-                "analysis_content",
-                "summary_text",
-                "redacted_thinking",
-            } or item_type.startswith(("reasoning.", "thinking.", "thought.", "analysis.")):
-                return ""
-            for key in ("text", "output_text", "content", "answer", "response", "final", "final_text"):
-                if key in content:
-                    text = StreamProcessor._extract_text_content_raw(content.get(key))
-                    if text:
-                        return text
-            return "".join(
-                StreamProcessor._extract_text_content_raw(content.get(key))
-                for key in ("parts", "items", "content_blocks", "message", "messages", "data")
-                if key in content
-            )
-        for key in ("content", "content_blocks", "text"):
-            try:
-                value = getattr(content, key)
-            except Exception:
-                continue
-            if callable(value) or value is None:
-                continue
-            text = StreamProcessor._extract_text_content_raw(value)
-            if text:
-                return text
-        try:
-            additional_kwargs = getattr(content, "additional_kwargs")
-        except Exception:
-            additional_kwargs = None
-        if isinstance(additional_kwargs, dict):
-            return StreamProcessor._extract_text_content_raw(additional_kwargs.get("content_blocks"))
-        return ""
+        return visible_text_content(content)
 
     @staticmethod
     def _is_reasoning_only_visible_text(message: AIMessage | AIMessageChunk, chunk: str) -> bool:

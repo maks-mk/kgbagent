@@ -128,3 +128,28 @@ def merge_tool_issues(
         progress_fingerprint=progress_fingerprint,
         details=merged_details,
     )
+
+
+def active_open_tool_issue(state: dict[str, Any], current_turn_id: int) -> ToolIssue | None:
+    issue = state.get("open_tool_issue")
+    if not isinstance(issue, dict):
+        return None
+
+    issue_turn_id = int(issue.get("turn_id", 0) or 0)
+    summary = str(issue.get("summary", "")).strip()
+    if issue_turn_id != current_turn_id or not summary:
+        return None
+
+    tool_names = [str(name) for name in (issue.get("tool_names") or []) if str(name).strip()]
+    return {
+        "turn_id": issue_turn_id,
+        "kind": str(issue.get("kind") or "tool_error"),
+        "summary": summary,
+        "tool_names": tool_names,
+        "tool_args": dict(issue.get("tool_args") or {}),
+        "source": str(issue.get("source") or "tools"),
+        "error_type": str(issue.get("error_type") or ""),
+        "fingerprint": str(issue.get("fingerprint") or ""),
+        "progress_fingerprint": str(issue.get("progress_fingerprint") or issue.get("fingerprint") or ""),
+        "details": dict(issue.get("details") or {}),
+    }

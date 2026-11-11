@@ -1,10 +1,45 @@
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
+from core.nodes.tool_preflight import ToolPreflightMixin
 from core.policy_engine import classify_shell_command, shell_command_requires_approval, tool_requires_approval
 from core.tool_policy import ToolMetadata
 
 
 class ToolApprovalPolicyTests(unittest.TestCase):
+    def test_preflight_classifies_each_shell_command_once(self):
+        preflight = ToolPreflightMixin()
+        preflight.config = SimpleNamespace(enable_approvals=True)
+        preflight.tool_metadata = {"cli_exec": ToolMetadata(name="cli_exec", requires_approval=True)}
+        for command, background, expected in (
+            ("Get-Process", False, False),
+            ("Get-Process", True, True),
+            ("Get-Process | Remove-Item", False, True),
+            ("curl -X POST https://example.test", False, True),
+            ("python -m http.server", False, True),
+            ("", False, True),
+        ):
+            with self.subTest(command=command, background=background):
+                args = {"command": command, "background": background}
+                with mock.patch("core.nodes.tool_preflight.classify_shell_command", wraps=classify_shell_command) as classify:
+                    self.assertEqual(preflight._tool_requires_approval("cli_exec", args), expected)
+                    self.assertEqual(classify.call_count, 1 if command else 0)
+                self.assertEqual(tool_requires_approval("cli_exec", args), expected)
+
+    def test_resolved_shell_metadata_is_reused_for_approval(self):
+        preflight = ToolPreflightMixin()
+        preflight.config = SimpleNamespace(enable_approvals=True)
+        preflight.tool_metadata = {}
+        args = {"command": "Get-Process"}
+        with mock.patch("core.nodes.tool_preflight.classify_shell_command", wraps=classify_shell_command) as classify:
+            metadata = preflight._effective_tool_metadata("cli_exec", args)
+            self.assertFalse(preflight._tool_requires_approval("cli_exec", args, metadata=metadata))
+            classify.assert_called_once_with(args["command"])
+        self.assertTrue(metadata.read_only)
+        preflight.config.enable_approvals = False
+        self.assertFalse(preflight._tool_requires_approval("cli_exec", {"command": "Remove-Item demo.txt"}))
+
     def test_classify_shell_command_detects_inspect_only(self):
         profile = classify_shell_command("Get-Process | Select-Object Id,ProcessName")
         self.assertTrue(profile["inspect_only"])

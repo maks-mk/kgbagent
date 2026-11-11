@@ -24,7 +24,7 @@ from core.tool_policy import ToolMetadata
 from ui.runtime import build_runtime_snapshot, summarize_approval_request
 from ui.runtime_worker import AgentRunWorker, AgentRuntimeController
 from ui.streaming import StreamEvent, StreamProcessor
-from ui.theme import AMBER_WARNING, BORDER, ERROR_RED, FILENAME_BLUE, SUCCESS_GREEN, SURFACE_BG, SURFACE_CARD, TEXT_MUTED, build_stylesheet
+from ui.theme import BORDER, ERROR_RED, FILENAME_BLUE, SUCCESS_GREEN, SURFACE_BG, SURFACE_CARD, TEXT_ERROR, TEXT_MUTED, TEXT_WARNING, build_stylesheet
 from ui.widgets.composer import _ComposerMentionItemWidget
 from ui.widgets.foundation import AutoTextBrowser, CodeBlockWidget, CopySafePlainTextEdit, DiffBlockWidget, TRANSCRIPT_MAX_WIDTH
 from ui.widgets.messages import AssistantMessageWidget, NoticeWidget, SpinnerGlyph
@@ -263,6 +263,113 @@ class GuiUxTests(unittest.TestCase):
     def _wait_for_gui(self, ms: int):
         QTest.qWait(ms)
         self._process_events()
+
+    def _show_ready_window(self):
+        self.window.show()
+        self.window.activateWindow()
+        self.controller.initialized.emit(self._snapshot_payload())
+        self._wait_for_gui(20)
+
+    def test_composer_receives_focus_when_runtime_becomes_ready(self):
+        self._show_ready_window()
+
+        self.assertTrue(self.window.composer.hasFocus())
+        QTest.keyClicks(QApplication.focusWidget(), "first request")
+        self.assertEqual(self.window.composer.toPlainText(), "first request")
+
+    def test_composer_focus_is_restored_after_window_reactivation(self):
+        self._show_ready_window()
+        self.window.close()
+        self.assertFalse(self.window._composer_focus._timer.isActive())
+        self.window.show()
+        self.window.activateWindow()
+        self.window.chat_only_switch.setFocus()
+        self._wait_for_gui(20)
+
+        self.assertTrue(self.window.composer.hasFocus())
+
+    def test_composer_regains_focus_after_send_and_run_completion(self):
+        self._show_ready_window()
+        QTest.keyClicks(QApplication.focusWidget(), "first request")
+        QTest.mouseClick(self.window.send_button, Qt.LeftButton)
+        self.controller.busy_changed.emit(True)
+        self._wait_for_gui(20)
+        self.assertFalse(self.window.composer.isEnabled())
+
+        self.controller.event_emitted.emit(StreamEvent("run_finished", {}))
+        self.controller.busy_changed.emit(False)
+        self._wait_for_gui(20)
+
+        self.assertTrue(self.window.composer.hasFocus())
+        QTest.keyClicks(QApplication.focusWidget(), "next request")
+        self.assertEqual(self.window.composer.toPlainText(), "next request")
+        self.assertEqual(len(self.controller.start_calls), 1)
+
+    def test_composer_regains_focus_after_chat_controls_and_session_change(self):
+        self._show_ready_window()
+        QTest.mouseClick(self.window.chat_only_switch, Qt.LeftButton)
+        self._wait_for_gui(20)
+        self.assertTrue(self.window.composer.hasFocus())
+
+        self.window.sidebar.list_view.setFocus()
+        self.controller.session_changed.emit(self._snapshot_payload())
+        self._wait_for_gui(20)
+        self.assertTrue(self.window.composer.hasFocus())
+
+    def test_composer_focus_waits_until_popup_and_modal_dialog_close(self):
+        from PySide6.QtWidgets import QDialog, QLineEdit
+
+        self._show_ready_window()
+        self.window.attach_menu.popup(self.window.attach_button.mapToGlobal(QPoint(0, 0)))
+        self.addCleanup(self.window.attach_menu.close)
+        self._wait_for_gui(20)
+        self.assertIs(QApplication.activePopupWidget(), self.window.attach_menu)
+        QTest.keyClick(self.window.attach_menu, Qt.Key_Down)
+        self.assertIsNotNone(self.window.attach_menu.activeAction())
+        self.window.attach_menu.close()
+        self._wait_for_gui(20)
+        self.assertTrue(self.window.composer.hasFocus())
+
+        dialog = QDialog(self.window)
+        self.addCleanup(dialog.deleteLater)
+        editor = QLineEdit(dialog)
+        dialog.setModal(True)
+        dialog.show()
+        dialog.activateWindow()
+        editor.setFocus()
+        self._wait_for_gui(20)
+        self.assertIs(QApplication.focusWidget(), editor)
+        QTest.keyClicks(QApplication.focusWidget(), "dialog input")
+        self.assertEqual(editor.text(), "dialog input")
+
+        dialog.close()
+        self.window.activateWindow()
+        self._wait_for_gui(20)
+        self.assertTrue(self.window.composer.hasFocus())
+
+    def test_composer_does_not_take_focus_from_other_editor_or_selected_text(self):
+        from PySide6.QtWidgets import QLineEdit, QPlainTextEdit
+
+        self._show_ready_window()
+        editor = QLineEdit(self.window.workspace)
+        self.addCleanup(editor.deleteLater)
+        editor.show()
+        editor.setFocus()
+        self._wait_for_gui(20)
+        QTest.keyClicks(QApplication.focusWidget(), "search")
+        self.assertEqual(editor.text(), "search")
+
+        text_view = QPlainTextEdit(self.window.workspace)
+        self.addCleanup(text_view.deleteLater)
+        text_view.setReadOnly(True)
+        text_view.setPlainText("copy this answer")
+        text_view.show()
+        text_view.setFocus()
+        text_view.selectAll()
+        self._wait_for_gui(20)
+        self.assertIs(QApplication.focusWidget(), text_view)
+        QTest.keyClick(text_view, Qt.Key_C, Qt.ControlModifier)
+        self.assertEqual(QApplication.clipboard().text(), "copy this answer")
 
     def test_cli_exec_batches_output_until_timer_flush(self):
         from ui.widgets.tools import CliExecWidget
@@ -1458,6 +1565,54 @@ class GuiUxTests(unittest.TestCase):
         self.controller.busy_changed.emit(False)
         self.assertTrue(self.window.chat_only_switch.isEnabled())
         self.assertTrue(self.window.chat_only_switch.isChecked())
+
+    def test_compact_button_changes_immediately_and_resets_when_finished(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        button = self.window.sidebar.compact_button
+        with mock.patch.object(self.controller, "compact_checkpoints", create=True) as compact:
+            button.click()
+            self.assertEqual(button.text(), "Compacting…")
+            self.assertFalse(button.isEnabled())
+            self.window._request_compact_database()
+            compact.assert_called_once_with()
+
+            self.controller.busy_changed.emit(True)
+            self.assertEqual(button.text(), "Compacting…")
+            self.controller.event_emitted.emit(StreamEvent("summary_notice", {
+                "message": "Checkpoint database compacted: freed 1.0 MB.",
+                "kind": "checkpoint_compact",
+            }))
+            self.controller.busy_changed.emit(False)
+            self.assertEqual(button.text(), "Compact database")
+            self.assertTrue(button.isEnabled())
+            button.click()
+            self.assertEqual(compact.call_count, 2)
+
+    def test_compact_button_resets_after_compaction_error(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        button = self.window.sidebar.compact_button
+        with mock.patch.object(self.controller, "compact_checkpoints", create=True):
+            button.click()
+        self.controller.busy_changed.emit(True)
+        self.controller.event_emitted.emit(StreamEvent("summary_notice", {
+            "message": "Failed to compact the checkpoint database: database is locked",
+            "kind": "checkpoint_compact",
+        }))
+        self.controller.busy_changed.emit(False)
+        self.assertEqual(button.text(), "Compact database")
+        self.assertTrue(button.isEnabled())
+
+    def test_regular_run_does_not_show_database_compaction_text(self):
+        self.controller.busy_changed.emit(True)
+        button = self.window.sidebar.compact_button
+        self.assertEqual(button.text(), "Compact database")
+        self.assertFalse(button.isEnabled())
+        with mock.patch.object(self.controller, "compact_checkpoints", create=True) as compact:
+            self.window._request_compact_database()
+            compact.assert_not_called()
+        self.controller.busy_changed.emit(False)
+        self.assertEqual(button.text(), "Compact database")
+        self.assertTrue(button.isEnabled())
 
     def test_chat_only_label_dims_while_run_is_in_progress(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -3924,10 +4079,10 @@ class GuiUxTests(unittest.TestCase):
         self.assertTrue(regular.default_approve)
         self.assertEqual(regular.risk_level, "medium")
 
-    def test_stylesheet_keeps_expected_accent_colors(self):
+    def test_stylesheet_uses_interface_palette(self):
         stylesheet = self.window.styleSheet()
-        self.assertIn(AMBER_WARNING, stylesheet)
-        self.assertIn(ERROR_RED, stylesheet)
+        self.assertIn(TEXT_WARNING, stylesheet)
+        self.assertIn(TEXT_ERROR, stylesheet)
         self.assertIn(BORDER, stylesheet)
         self.assertIn(SURFACE_BG, stylesheet)
         self.assertIn(SURFACE_CARD, stylesheet)
@@ -4636,7 +4791,7 @@ class GuiUxTests(unittest.TestCase):
 
         dialog_instance = _FakeDialog(payload)
 
-        with mock.patch.object(agent_cli, "ModelSettingsDialog", return_value=dialog_instance):
+        with mock.patch("ui.window_components.main_window.ModelSettingsDialog", return_value=dialog_instance):
             self.window._open_settings_dialog()
 
         self.assertEqual(

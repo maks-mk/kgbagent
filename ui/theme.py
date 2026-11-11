@@ -2,42 +2,65 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-# --- FBReader-style graphite dark theme ---
-ACCENT_BLUE = "#8AB4F8"
-ACCENT_BLUE_SOFT = "#303030"
+# Monochrome interface palette. Change UI colors here, independently of content.
+COLOR_BLACK = "#000000"
+COLOR_WHITE = "#FFFFFF"
 
 TEXT_PRIMARY = "#D0D0D0"
 TEXT_CHAT = "#F5F5F5"
 TEXT_SECONDARY = "#929292"
 TEXT_MUTED = TEXT_SECONDARY
 TEXT_DIM = "#6E6E6E"
-CONTEXT_INDICATOR_GRAY = "#BFBFBF"
+TEXT_WARNING = TEXT_PRIMARY
+TEXT_ERROR = TEXT_CHAT
+TEXT_SUCCESS = TEXT_PRIMARY
+ACCENT = "#BFBFBF"
+CONTEXT_INDICATOR_GRAY = ACCENT
 CONTEXT_INDICATOR_TRACK = "#5C5C5C"
 
-# Keep the conversation canvas uniform; only user bubbles and controls are raised.
 SURFACE_BG = "#212121"
 SURFACE_PROJECTS = "#1C1C1C"
 SURFACE_DIALOG = "#242424"
 SURFACE_SETTINGS = "#2A2A2A"
 SURFACE_CARD = "#262626"
 SURFACE_ALT = "#303030"
+SURFACE_CONFIRMED = "#545454"
 USER_MESSAGE_BG = "#2D2D2D"
 AI_MESSAGE_BG = SURFACE_DIALOG
 INPUT_BG = "#363636"
 BORDER = "#3A3A3A"
+ACCENT_SOFT = SURFACE_ALT
 
+# Content highlighting remains colored: code, diff, links and filenames.
+ACCENT_BLUE = "#8AB4F8"
 AMBER_WARNING = "#D6AE72"
-ERROR_RED = "#D98B8B"
-SUCCESS_GREEN = "#91B99A"
-FILENAME_BLUE = ACCENT_BLUE
+ERROR_RED = "#FF7B72"
+SUCCESS_GREEN = "#63D882"
+FILENAME_BLUE = "#6FC8FF"
 CODE_BG = SURFACE_BG
 CODE_TEXT = TEXT_PRIMARY
+DIFF_ADDED_BG = "#1E3425"
+DIFF_REMOVED_BG = "#472B2B"
+DIFF_ADDED_TEXT = SUCCESS_GREEN
+DIFF_REMOVED_TEXT = ERROR_RED
 
-_COMPOSER_BG = INPUT_BG
-_COMPOSER_BORDER = BORDER
-_SEND_BTN_BG = TEXT_PRIMARY
-_SEND_BTN_HOVER = "#DCDCDC"
-_SEND_BTN_DISABLED = BORDER
+# Control colors shared by stylesheets and painted icons.
+COMPOSER_BG = INPUT_BG
+COMPOSER_BORDER = BORDER
+SEND_BUTTON_BG = TEXT_PRIMARY
+SEND_BUTTON_HOVER = "#DCDCDC"
+SEND_BUTTON_DISABLED = BORDER
+SAVE_BUTTON_BG = COLOR_WHITE
+SAVE_BUTTON_TEXT = COLOR_BLACK
+SAVE_BUTTON_HOVER = "#F0F0F0"
+SAVED_BUTTON_BG = SURFACE_CONFIRMED
+SAVED_BUTTON_TEXT = COLOR_WHITE
+PROVIDER_ICON_TEXT = TEXT_MUTED
+SWITCH_BORDER_TINT = TEXT_MUTED
+SWITCH_THUMB_TINT = TEXT_PRIMARY
+FILE_PDF_ICON_TEXT = TEXT_PRIMARY
+# The active chat keeps a colored marker within the monochrome interface.
+ACTIVE_CHAT_INDICATOR = "#91B99A"
 
 APP_FONT_FAMILY = "Segoe UI"
 MONO_FONT_FAMILY = "Cascadia Mono"
@@ -45,6 +68,7 @@ MONO_FONT_FAMILY = "Cascadia Mono"
 SOFT_RADIUS_XS = 2
 SOFT_RADIUS_SM = 4
 SOFT_RADIUS_MD = 6
+
 
 def _hex_to_rgb(value: str) -> tuple[int, int, int]:
     value = value.lstrip("#")
@@ -62,60 +86,183 @@ def blend_hex(start_hex: str, end_hex: str, factor: float) -> str:
     return "#{:02X}{:02X}{:02X}".format(*blended)
 
 
-_POPUP_BG = blend_hex(SURFACE_BG, SURFACE_CARD, 0.66)
-_POPUP_BORDER = blend_hex(BORDER, TEXT_PRIMARY, 0.12)
-_POPUP_ITEM_SELECTED = blend_hex(SURFACE_ALT, ACCENT_BLUE_SOFT, 0.28)
+# Shared interface surfaces and text.
+SURFACE_HOVER = blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.05)
+SURFACE_SUBTLE = blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.03)
+SURFACE_RAISED = blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.04)
+SURFACE_SOFT = blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.04)
+SURFACE_BADGE = blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.05)
+BORDER_SOFT = blend_hex(BORDER, TEXT_PRIMARY, 0.10)
+TEXT_SOFT = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.18)
+TEXT_META = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.26)
+TEXT_SUMMARY = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)
+STATUS_SUCCESS_BG = blend_hex(TEXT_SUCCESS, SURFACE_ALT, 0.82)
+STATUS_SUCCESS_TEXT = blend_hex(TEXT_SUCCESS, TEXT_PRIMARY, 0.18)
 
+# General controls, statuses, tools and content containers.
+TOOL_PANEL_BG = SURFACE_RAISED
+TOOL_TOGGLE_TEXT = TEXT_META
+TOOL_PANEL_HOVER = blend_hex(TOOL_PANEL_BG, TEXT_PRIMARY, 0.05)
+TOOL_CODE_BG = blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.07)
+TOOL_TOGGLE_HOVER_TEXT = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.52)
+TOOL_CALL_HOVER = TEXT_SUMMARY
+DANGER_BUTTON_BG = blend_hex(TEXT_ERROR, SURFACE_ALT, 0.78)
+SIDEBAR_DISABLED_TEXT = blend_hex(TEXT_MUTED, SURFACE_CARD, 0.45)
+SIDEBAR_DISABLED_BG = blend_hex(SURFACE_CARD, SURFACE_BG, 0.4)
+STATUS_BG = blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.06)
+STATUS_BUSY_BG = blend_hex(ACCENT_SOFT, ACCENT, 0.24)
+STATUS_ERROR_BG = blend_hex(TEXT_ERROR, SURFACE_ALT, 0.82)
+STATUS_ERROR_TEXT = blend_hex(TEXT_ERROR, TEXT_PRIMARY, 0.18)
+TEXT_LABEL = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.22)
+ATTACHMENT_REMOVE_BG = blend_hex(SURFACE_BG, TEXT_PRIMARY, 0.08)
+ATTACHMENT_REMOVE_HOVER = blend_hex(SURFACE_BG, TEXT_PRIMARY, 0.16)
+SCROLLBAR_HANDLE = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.14)
+SCROLLBAR_HANDLE_HOVER = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.24)
+SAVED_BUTTON_HOVER = blend_hex(SAVED_BUTTON_BG, COLOR_BLACK, 0.10)
+TEXT_DETAIL = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.28)
+TEXT_SUBTITLE = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.30)
+TEXT_QUESTION = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.44)
+TEXT_HINT = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.34)
+STATUS_WARNING_BG = blend_hex(TEXT_WARNING, SURFACE_ALT, 0.82)
+STATUS_WARNING_TEXT = blend_hex(TEXT_WARNING, TEXT_PRIMARY, 0.14)
+ACCENT_BUTTON_BG = blend_hex(ACCENT, SURFACE_ALT, 0.82)
+ACCENT_BUTTON_BORDER = blend_hex(ACCENT, TEXT_PRIMARY, 0.10)
+ACCENT_BUTTON_HOVER = blend_hex(ACCENT, SURFACE_ALT, 0.72)
+DANGER_BUTTON_BORDER = blend_hex(TEXT_ERROR, TEXT_PRIMARY, 0.08)
+TEXT_SELECTION_BG = blend_hex(ACCENT, SURFACE_ALT, 0.20)
+STATUS_REVIEW_TEXT = blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.08)
+STATUS_WAITING_TEXT = blend_hex(TEXT_WARNING, TEXT_PRIMARY, 0.24)
+BUTTON_HOVER = blend_hex(SURFACE_ALT, ACCENT_SOFT, 0.55)
+BUTTON_PRESSED = blend_hex(SURFACE_ALT, ACCENT_SOFT, 0.8)
+HEADER_BUTTON_PRESSED = blend_hex(SURFACE_ALT, ACCENT_SOFT, 0.35)
+BUTTON_BG = blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.08)
+DISCLOSURE_HOVER_TEXT = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.45)
+CODE_PANEL_BORDER = blend_hex(BORDER, TEXT_PRIMARY, 0.04)
+CODE_HEADER_TEXT = blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.1)
+BADGE_ACTIVE_BG = blend_hex(ACCENT_SOFT, ACCENT, 0.18)
+BADGE_ACTIVE_TEXT = blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.04)
+BADGE_ERROR_BG = blend_hex(TEXT_ERROR, SURFACE_ALT, 0.18)
+DIFF_PANEL_BORDER = blend_hex(BORDER, TEXT_PRIMARY, 0.05)
+DIFF_HEADER_TEXT = FILENAME_BLUE
+DIFF_TOGGLE_TEXT = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.32)
+DIFF_TOGGLE_CHECKED_TEXT = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.48)
+TREE_BG = blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.01)
+TREE_SELECTION_BG = blend_hex(ACCENT_SOFT, ACCENT, 0.25)
+CHOICE_BUTTON_HOVER = blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.15)
+CHOICE_BUTTON_HOVER_BORDER = blend_hex(BORDER, TEXT_PRIMARY, 0.20)
+CHOICE_BUTTON_PRESSED = blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.19)
+CHOICE_BUTTON_DISABLED_BG = blend_hex(SURFACE_ALT, SURFACE_CARD, 0.35)
+TRANSCRIPT_JUMP_BG = blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.08)
+TRANSCRIPT_ROLE_TEXT = blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.06)
+TOOL_CALL_TEXT = blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.20)
+TOOL_GROUP_ERROR_TEXT = blend_hex(TEXT_ERROR, TEXT_PRIMARY, 0.22)
+TOOL_GROUP_HOVER_TEXT = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.58)
+INSPECTOR_HELP_BG = blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.02)
+TOOL_SWITCH_BORDER = blend_hex(BORDER, TEXT_PRIMARY, 0.16)
+TOOL_SWITCH_HOVER = blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.16)
+SWITCH_DISABLED_BG = blend_hex(TEXT_MUTED, SURFACE_BG, 0.35)
+SWITCH_DISABLED_THUMB = blend_hex(TEXT_PRIMARY, SURFACE_BG, 0.5)
+WARNING_CHIP_BORDER = blend_hex(TEXT_WARNING, SURFACE_CARD, 0.48)
+ACCENT_CHIP_BORDER = blend_hex(ACCENT, SURFACE_CARD, 0.56)
+STATUS_BAR_BG = blend_hex(SURFACE_BG, SURFACE_CARD, 0.28)
+STATUS_BAR_META_TEXT = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.16)
+STATUS_BAR_STATE_TEXT = blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.12)
 
-def _build_theme_palette() -> dict[str, str]:
-    tool_panel_bg = blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.04)
-    tool_toggle_text = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.26)
-    return {
-        "tool_panel_bg": tool_panel_bg,
-        "tool_panel_hover": blend_hex(tool_panel_bg, TEXT_PRIMARY, 0.05),
-        "tool_code_bg": blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.07),
-        "tool_toggle_text": tool_toggle_text,
-        "tool_toggle_hover_text": blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.52),
-        "tool_call_hover": blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42),
-    }
+# Settings controls.
+MODEL_DIALOG_BG = SURFACE_SETTINGS
+MODEL_DIALOG_CARD = SURFACE_SUBTLE
+MODEL_DIALOG_CARD_ALT = blend_hex(SURFACE_CARD, SURFACE_ALT, 0.28)
+MODEL_DIALOG_EDITOR = blend_hex(MODEL_DIALOG_CARD, TEXT_PRIMARY, 0.035)
+MODEL_DIALOG_SOFT = SURFACE_SOFT
+MODEL_DIALOG_BORDER = BORDER_SOFT
+MODEL_DIALOG_TEXT = TEXT_PRIMARY
+MODEL_DIALOG_MUTED = TEXT_SOFT
+MODEL_DIALOG_SELECTED = blend_hex(SURFACE_ALT, ACCENT, 0.18)
+MODEL_DIALOG_SELECTED_BORDER = blend_hex(ACCENT, TEXT_PRIMARY, 0.14)
+MODEL_DIALOG_DISABLED = blend_hex(SURFACE_BG, SURFACE_ALT, 0.46)
+MODEL_DIALOG_ACTIVE_BG = STATUS_SUCCESS_BG
+MODEL_DIALOG_ACTIVE_TEXT = STATUS_SUCCESS_TEXT
+MODEL_DIALOG_PROVIDER_BG = blend_hex(SURFACE_ALT, PROVIDER_ICON_TEXT, 0.20)
+MODEL_DIALOG_PROVIDER_TEXT = blend_hex(PROVIDER_ICON_TEXT, TEXT_PRIMARY, 0.22)
+MODEL_DIALOG_CHIP_BG = SURFACE_BADGE
+MODEL_DIALOG_FIELD_BG = SURFACE_HOVER
+MODEL_DIALOG_FIELD_BORDER = blend_hex(BORDER, TEXT_PRIMARY, 0.09)
+MODEL_DIALOG_SWITCH_OFF = blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.10)
+MODEL_DIALOG_SWITCH_THUMB = TEXT_PRIMARY
+MODEL_DIALOG_SAVED_BG = SAVED_BUTTON_BG
+MODEL_EDITOR_BORDER = blend_hex(MODEL_DIALOG_BORDER, TEXT_PRIMARY, 0.08)
+SETTINGS_CLOSE_HOVER = blend_hex(TEXT_ERROR, SURFACE_ALT, 0.72)
+SETTINGS_CLOSE_PRESSED = blend_hex(TEXT_ERROR, SURFACE_ALT, 0.55)
+MODEL_HEADER_BG = blend_hex(MODEL_DIALOG_EDITOR, TEXT_PRIMARY, 0.035)
+MODEL_HEADER_BORDER = blend_hex(MODEL_DIALOG_BORDER, TEXT_PRIMARY, 0.07)
+MODEL_SELECTED_DISABLED_BG = blend_hex(MODEL_DIALOG_EDITOR, MODEL_DIALOG_DISABLED, 0.45)
+MODEL_SELECTED_DISABLED_BORDER = blend_hex(MODEL_DIALOG_SELECTED_BORDER, MODEL_DIALOG_BORDER, 0.40)
+MODEL_SELECTED_DISABLED_MARKER = blend_hex(MODEL_DIALOG_SELECTED_BORDER, MODEL_DIALOG_BORDER, 0.28)
+MODEL_ACTIVE_BADGE_BORDER = blend_hex(MODEL_DIALOG_ACTIVE_BG, MODEL_DIALOG_ACTIVE_TEXT, 0.18)
+MODEL_PROVIDER_BADGE_BORDER = blend_hex(MODEL_DIALOG_PROVIDER_BG, MODEL_DIALOG_PROVIDER_TEXT, 0.16)
+MODEL_SWITCH_BORDER = blend_hex(MODEL_DIALOG_SWITCH_OFF, SWITCH_BORDER_TINT, 0.32)
+MODEL_SWITCH_HOVER = blend_hex(MODEL_DIALOG_SWITCH_OFF, TEXT_PRIMARY, 0.14)
+MODEL_SWITCH_THUMB_BORDER = blend_hex(MODEL_DIALOG_SWITCH_THUMB, SWITCH_THUMB_TINT, 0.24)
+MODEL_CHECKBOX_BORDER = blend_hex(MODEL_DIALOG_FIELD_BORDER, TEXT_PRIMARY, 0.22)
+MODEL_CHECKBOX_HOVER_BORDER = blend_hex(MODEL_DIALOG_SELECTED_BORDER, TEXT_PRIMARY, 0.18)
+MODEL_FIELD_HOVER = blend_hex(MODEL_DIALOG_FIELD_BG, TEXT_PRIMARY, 0.08)
+MODEL_CHECKBOX_DISABLED_BORDER = blend_hex(MODEL_DIALOG_FIELD_BORDER, MODEL_DIALOG_BG, 0.45)
+MODEL_DISABLED_TEXT = blend_hex(MODEL_DIALOG_MUTED, MODEL_DIALOG_TEXT, 0.18)
+MODEL_POPUP_BG = blend_hex(MODEL_DIALOG_CARD, MODEL_DIALOG_FIELD_BG, 0.20)
+MODEL_POPUP_BORDER = blend_hex(MODEL_DIALOG_SELECTED_BORDER, MODEL_DIALOG_BORDER, 0.35)
+MODEL_POPUP_SELECTION = blend_hex(MODEL_DIALOG_SELECTED, MODEL_DIALOG_FIELD_BG, 0.14)
+MODEL_POPUP_SELECTED_BG = blend_hex(MODEL_DIALOG_SELECTED, MODEL_DIALOG_FIELD_BG, 0.18)
+MODEL_POPUP_ITEM_HOVER = blend_hex(MODEL_DIALOG_SELECTED, MODEL_DIALOG_FIELD_BG, 0.10)
+SETTINGS_ADD_HOVER = blend_hex(MODEL_DIALOG_SELECTED, TEXT_PRIMARY, 0.18)
+SETTINGS_DELETE_TEXT = blend_hex(TEXT_ERROR, MODEL_DIALOG_TEXT, 0.2)
+SETTINGS_DELETE_BORDER = blend_hex(TEXT_ERROR, MODEL_DIALOG_BORDER, 0.75)
+MODEL_INLINE_HOVER = blend_hex(MODEL_DIALOG_SELECTED, MODEL_DIALOG_CARD, 0.14)
+MODEL_INLINE_HOVER_BORDER = blend_hex(MODEL_DIALOG_SELECTED_BORDER, MODEL_DIALOG_FIELD_BORDER, 0.42)
+MODEL_INLINE_PRESSED = blend_hex(MODEL_DIALOG_SELECTED, MODEL_DIALOG_CARD, 0.22)
+MODEL_INLINE_DISABLED = blend_hex(MODEL_DIALOG_SOFT, MODEL_DIALOG_CARD, 0.35)
+MODEL_INLINE_DISABLED_BORDER = blend_hex(MODEL_DIALOG_FIELD_BORDER, MODEL_DIALOG_CARD, 0.35)
+SLIDER_TRACK = blend_hex(ACCENT, TEXT_PRIMARY, 0.06)
+SLIDER_HANDLE = blend_hex(ACCENT, TEXT_PRIMARY, 0.55)
+SLIDER_HANDLE_BORDER = blend_hex(ACCENT, TEXT_PRIMARY, 0.75)
+SLIDER_HANDLE_HOVER = blend_hex(ACCENT, TEXT_PRIMARY, 0.7)
+
+# Approval dialogs.
+APPROVAL_DIALOG_BG = blend_hex(SURFACE_BG, TEXT_PRIMARY, 0.02)
+APPROVAL_DIALOG_CARD = SURFACE_SUBTLE
+APPROVAL_DIALOG_BORDER = BORDER_SOFT
+APPROVAL_DIALOG_SOFT = SURFACE_BADGE
+APPROVAL_DIALOG_CODE = blend_hex(CODE_BG, TEXT_PRIMARY, 0.02)
+
+# Composer and popup controls.
+POPUP_BG = blend_hex(SURFACE_BG, SURFACE_CARD, 0.66)
+POPUP_BORDER = blend_hex(BORDER, TEXT_PRIMARY, 0.12)
+POPUP_ITEM_SELECTED = blend_hex(SURFACE_ALT, ACCENT_SOFT, 0.28)
+COMPOSER_HOVER_BORDER = blend_hex(COMPOSER_BORDER, TEXT_PRIMARY, 0.18)
+COMPOSER_SCROLLBAR = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.06)
+SEND_BUTTON_BORDER = blend_hex(SEND_BUTTON_BG, SURFACE_BG, 0.18)
+SEND_BUTTON_HOVER_BORDER = blend_hex(SEND_BUTTON_HOVER, SURFACE_BG, 0.20)
+SEND_BUTTON_PRESSED = blend_hex(TEXT_PRIMARY, TEXT_SECONDARY, 0.2)
+SEND_BUTTON_PRESSED_BORDER = blend_hex(SEND_BUTTON_BG, SURFACE_BG, 0.22)
+SEND_BUTTON_DISABLED_TEXT = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.2)
+SEND_BUTTON_DISABLED_BORDER = blend_hex(SEND_BUTTON_DISABLED, TEXT_PRIMARY, 0.08)
+COMPOSER_ATTACH_HOVER = blend_hex(COMPOSER_BG, SURFACE_ALT, 0.32)
+COMPOSER_CHIP_BG = blend_hex(COMPOSER_BG, TEXT_PRIMARY, 0.04)
+COMPOSER_CHIP_BORDER = blend_hex(BORDER, TEXT_PRIMARY, 0.08)
+COMPOSER_CHIP_HOVER = blend_hex(COMPOSER_BG, SURFACE_ALT, 0.36)
+COMPOSER_CHIP_HOVER_BORDER = blend_hex(BORDER, TEXT_PRIMARY, 0.14)
+COMPOSER_SETTINGS_TEXT = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.15)
+COMPOSER_SETTINGS_HOVER = blend_hex(COMPOSER_BG, SURFACE_ALT, 0.24)
+MENTION_POPUP_BORDER = blend_hex(POPUP_BORDER, SURFACE_BG, 0.55)
+MENTION_SELECTED_BG = blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.2)
+MENTION_SELECTED_BORDER = blend_hex(TEXT_PRIMARY, SURFACE_ALT, 0.78)
+MENTION_SELECTED_TEXT = TEXT_PRIMARY
+MENTION_META_TEXT = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.12)
+MENTION_SCROLLBAR = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.1)
 
 
 @lru_cache(maxsize=1)
 def build_stylesheet() -> str:
-    palette = _build_theme_palette()
-    tool_panel_bg = palette["tool_panel_bg"]
-    tool_panel_hover = palette["tool_panel_hover"]
-    tool_code_bg = palette["tool_code_bg"]
-    tool_toggle_text = palette["tool_toggle_text"]
-    tool_toggle_hover_text = palette["tool_toggle_hover_text"]
-    tool_call_hover = palette["tool_call_hover"]
-    model_dialog_bg = SURFACE_SETTINGS
-    model_dialog_card = blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.03)
-    model_dialog_card_alt = blend_hex(SURFACE_CARD, SURFACE_ALT, 0.28)
-    model_dialog_editor = blend_hex(model_dialog_card, TEXT_PRIMARY, 0.035)
-    model_dialog_soft = blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.04)
-    model_dialog_border = blend_hex(BORDER, TEXT_PRIMARY, 0.10)
-    model_dialog_text = TEXT_PRIMARY
-    model_dialog_muted = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.18)
-    model_dialog_selected = blend_hex(SURFACE_ALT, ACCENT_BLUE, 0.18)
-    model_dialog_selected_border = blend_hex(ACCENT_BLUE, TEXT_PRIMARY, 0.14)
-    model_dialog_disabled = blend_hex(SURFACE_BG, SURFACE_ALT, 0.46)
-    model_dialog_active_bg = blend_hex(SUCCESS_GREEN, SURFACE_ALT, 0.82)
-    model_dialog_active_text = blend_hex(SUCCESS_GREEN, TEXT_PRIMARY, 0.18)
-    model_dialog_provider_bg = blend_hex(SURFACE_ALT, "#92A4BC", 0.20)
-    model_dialog_provider_text = blend_hex("#92A4BC", TEXT_PRIMARY, 0.22)
-    model_dialog_chip_bg = blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.05)
-    model_dialog_field_bg = blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.05)
-    model_dialog_field_border = blend_hex(BORDER, TEXT_PRIMARY, 0.09)
-    model_dialog_switch_off = blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.10)
-    model_dialog_switch_thumb = TEXT_PRIMARY
-    model_dialog_saved_bg = "#238636"
-    approval_dialog_bg = blend_hex(SURFACE_BG, TEXT_PRIMARY, 0.02)
-    approval_dialog_card = blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.03)
-    approval_dialog_border = blend_hex(BORDER, TEXT_PRIMARY, 0.10)
-    approval_dialog_soft = blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.05)
-
-    approval_dialog_code = blend_hex(CODE_BG, TEXT_PRIMARY, 0.02)
+    """Build QSS from the named interface and content palettes."""
     return f"""
     QWidget {{
         background: {SURFACE_BG};
@@ -158,7 +305,7 @@ def build_stylesheet() -> str:
     }}
 
     QWidget#MainWindowTitleBar QToolButton#WindowCloseButton:hover {{
-        background: {blend_hex(ERROR_RED, SURFACE_ALT, 0.78)};
+        background: {DANGER_BUTTON_BG};
     }}
 
     QLabel#DialogWindowTitle {{
@@ -197,12 +344,12 @@ def build_stylesheet() -> str:
 
     QPushButton#SidebarCompactButton:hover:enabled {{
         color: {TEXT_PRIMARY};
-        background: {blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.05)};
+        background: {SURFACE_HOVER};
     }}
 
     QPushButton#SidebarCompactButton:disabled {{
-        color: {blend_hex(TEXT_MUTED, SURFACE_CARD, 0.45)};
-        background: {blend_hex(SURFACE_CARD, SURFACE_BG, 0.4)};
+        color: {SIDEBAR_DISABLED_TEXT};
+        background: {SIDEBAR_DISABLED_BG};
     }}
 
     QFrame#TranscriptMetaChip {{
@@ -212,20 +359,20 @@ def build_stylesheet() -> str:
     
     QFrame#ApprovalCard,
     QFrame#ApprovalRequestCard {{
-        background: {approval_dialog_card};
-        border: 1px solid {approval_dialog_border};
+        background: {APPROVAL_DIALOG_CARD};
+        border: 1px solid {APPROVAL_DIALOG_BORDER};
         border-radius: {SOFT_RADIUS_MD + 2}px;
     }}
 
     QFrame#ApprovalToolCard {{
-        background: {approval_dialog_soft};
-        border: 1px solid {approval_dialog_border};
+        background: {APPROVAL_DIALOG_SOFT};
+        border: 1px solid {APPROVAL_DIALOG_BORDER};
         border-radius: {SOFT_RADIUS_MD + 2}px;
     }}
 
     QLabel#TopStatusChip {{
         color: {TEXT_PRIMARY};
-        background: {blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.06)};
+        background: {STATUS_BG};
         border: none;
         border-radius: {SOFT_RADIUS_MD + 6}px;
         padding: 4px 10px;
@@ -234,21 +381,21 @@ def build_stylesheet() -> str:
     }}
 
     QLabel#TopStatusChip[statusState="busy"] {{
-        background: {blend_hex(ACCENT_BLUE_SOFT, ACCENT_BLUE, 0.24)};
+        background: {STATUS_BUSY_BG};
     }}
 
     QLabel#TopStatusChip[statusState="success"] {{
-        background: {blend_hex(SUCCESS_GREEN, SURFACE_ALT, 0.82)};
+        background: {STATUS_SUCCESS_BG};
         color: {TEXT_CHAT};
     }}
 
     QLabel#TopStatusChip[statusState="error"] {{
-        background: {blend_hex(ERROR_RED, SURFACE_ALT, 0.82)};
-        color: {blend_hex(ERROR_RED, TEXT_PRIMARY, 0.18)};
+        background: {STATUS_ERROR_BG};
+        color: {STATUS_ERROR_TEXT};
     }}
 
     QLabel#TopStatusChip[statusState="idle"] {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.22)};
+        color: {TEXT_LABEL};
     }}
 
     QFrame#UserBubble {{
@@ -258,26 +405,26 @@ def build_stylesheet() -> str:
     }}
 
     QFrame#ImageAttachmentCard {{
-        background: {blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.05)};
+        background: {SURFACE_HOVER};
         border: none;
         border-radius: {SOFT_RADIUS_SM}px;
     }}
 
     QLabel#ImageAttachmentThumb {{
-        background: {blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.03)};
+        background: {APPROVAL_DIALOG_CARD};
         border: none;
         border-radius: {SOFT_RADIUS_SM}px;
     }}
 
     QToolButton#ImageAttachmentRemoveButton {{
-        background: {blend_hex(SURFACE_BG, TEXT_PRIMARY, 0.08)};
+        background: {ATTACHMENT_REMOVE_BG};
         border: none;
         border-radius: {SOFT_RADIUS_XS + 6}px;
         padding: 2px;
     }}
 
     QToolButton#ImageAttachmentRemoveButton:hover {{
-        background: {blend_hex(SURFACE_BG, TEXT_PRIMARY, 0.16)};
+        background: {ATTACHMENT_REMOVE_HOVER};
     }}
 
     QDialog#InfoPopup {{
@@ -287,13 +434,13 @@ def build_stylesheet() -> str:
     }}
 
     QDockWidget#ModelSettingsDock {{
-        background: {model_dialog_bg};
+        background: {MODEL_DIALOG_BG};
         border: none;
     }}
 
     QDockWidget#ModelSettingsDock QWidget {{
         background: transparent;
-        color: {model_dialog_text};
+        color: {MODEL_DIALOG_TEXT};
     }}
 
     QDockWidget#ModelSettingsDock::title {{
@@ -305,13 +452,13 @@ def build_stylesheet() -> str:
     }}
 
     QDialog#ModelSettingsDialog {{
-        background: {model_dialog_bg};
+        background: {MODEL_DIALOG_BG};
         border: 1px solid {BORDER};
     }}
 
     QDialog#ModelSettingsDialog QWidget {{
         background: transparent;
-        color: {model_dialog_text};
+        color: {MODEL_DIALOG_TEXT};
     }}
 
     QDialog#ModelSettingsDialog QLabel {{
@@ -319,24 +466,24 @@ def build_stylesheet() -> str:
     }}
 
     QFrame#ModelSettingsPane {{
-        background: {model_dialog_card_alt};
-        border: 1px solid {model_dialog_border};
+        background: {MODEL_DIALOG_CARD_ALT};
+        border: 1px solid {MODEL_DIALOG_BORDER};
         border-radius: {SOFT_RADIUS_MD + 4}px;
     }}
 
     QFrame#ModelSettingsPane[paneRole="editor"] {{
-        background: {model_dialog_editor};
-        border: 1px solid {blend_hex(model_dialog_border, TEXT_PRIMARY, 0.08)};
+        background: {MODEL_DIALOG_EDITOR};
+        border: 1px solid {MODEL_EDITOR_BORDER};
     }}
 
     QFrame#ModelSettingsHeroCard {{
-        background: {model_dialog_card};
-        border: 1px solid {model_dialog_border};
+        background: {MODEL_DIALOG_CARD};
+        border: 1px solid {MODEL_DIALOG_BORDER};
         border-radius: {SOFT_RADIUS_MD + 8}px;
     }}
 
     QLabel#ModelSettingsTitle {{
-        color: {model_dialog_text};
+        color: {MODEL_DIALOG_TEXT};
         font-weight: 760;
         font-size: 13pt;
         padding-left: 1px;
@@ -350,32 +497,32 @@ def build_stylesheet() -> str:
     }}
 
     QPushButton#SettingsCloseButton:hover {{
-        background: {blend_hex(ERROR_RED, SURFACE_ALT, 0.72)};
-        border: 1px solid {blend_hex(ERROR_RED, TEXT_PRIMARY, 0.18)};
+        background: {SETTINGS_CLOSE_HOVER};
+        border: 1px solid {STATUS_ERROR_TEXT};
     }}
 
     QPushButton#SettingsCloseButton:pressed {{
-        background: {blend_hex(ERROR_RED, SURFACE_ALT, 0.55)};
+        background: {SETTINGS_CLOSE_PRESSED};
     }}
 
     QLabel#ModelSettingsSubtitle {{
-        color: {model_dialog_muted};
+        color: {MODEL_DIALOG_MUTED};
         font-size: 9pt;
         padding-left: 1px;
         padding-bottom: 1px;
     }}
 
     QLabel#ModelSettingsMeta {{
-        color: {model_dialog_muted};
+        color: {MODEL_DIALOG_MUTED};
         font-size: 8.5pt;
         padding-left: 1px;
         background: transparent;
     }}
 
     QLabel#ModelSettingsChip {{
-        color: {model_dialog_text};
-        background: {model_dialog_chip_bg};
-        border: 1px solid {model_dialog_border};
+        color: {MODEL_DIALOG_TEXT};
+        background: {MODEL_DIALOG_CHIP_BG};
+        border: 1px solid {MODEL_DIALOG_BORDER};
         border-radius: {SOFT_RADIUS_MD + 4}px;
         padding: 3px 8px;
         font-size: 8pt;
@@ -384,19 +531,19 @@ def build_stylesheet() -> str:
 
     QFrame#ModelSettingsFormCard,
     QFrame#ModelSettingsHelperCard {{
-        background: {model_dialog_card};
-        border: 1px solid {model_dialog_border};
+        background: {MODEL_DIALOG_CARD};
+        border: 1px solid {MODEL_DIALOG_BORDER};
         border-radius: {SOFT_RADIUS_MD + 2}px;
     }}
 
     QFrame#ModelSettingsSelectedProfileHeader {{
-        background: {blend_hex(model_dialog_editor, TEXT_PRIMARY, 0.035)};
-        border: 1px solid {blend_hex(model_dialog_border, TEXT_PRIMARY, 0.07)};
+        background: {MODEL_HEADER_BG};
+        border: 1px solid {MODEL_HEADER_BORDER};
         border-radius: {SOFT_RADIUS_MD + 2}px;
     }}
 
     QLabel#ModelSettingsSelectedProfileTitle {{
-        color: {model_dialog_text};
+        color: {MODEL_DIALOG_TEXT};
         background: transparent;
         font-size: 11pt;
         font-weight: 760;
@@ -404,14 +551,14 @@ def build_stylesheet() -> str:
     }}
 
     QLabel#ModelSettingsSummaryLabel {{
-        color: {model_dialog_muted};
+        color: {MODEL_DIALOG_MUTED};
         background: transparent;
         font-size: 8.5pt;
         font-weight: 600;
     }}
 
     QLabel#ModelSettingsHelperTitle {{
-        color: {model_dialog_text};
+        color: {MODEL_DIALOG_TEXT};
         background: transparent;
         font-size: 9pt;
         font-weight: 700;
@@ -432,18 +579,18 @@ def build_stylesheet() -> str:
     }}
 
     QLineEdit#ModelSettingsSearchField {{
-        background: {model_dialog_field_bg};
-        border: 1px solid {model_dialog_field_border};
+        background: {MODEL_DIALOG_FIELD_BG};
+        border: 1px solid {MODEL_DIALOG_FIELD_BORDER};
         border-radius: {SOFT_RADIUS_MD + 2}px;
         min-height: 28px;
         padding: 3px 8px;
-        color: {model_dialog_text};
-        selection-background-color: {model_dialog_selected};
+        color: {MODEL_DIALOG_TEXT};
+        selection-background-color: {MODEL_DIALOG_SELECTED};
     }}
 
     QLineEdit#ModelSettingsSearchField:focus {{
-        border: 1px solid {model_dialog_selected_border};
-        background: {model_dialog_field_bg};
+        border: 1px solid {MODEL_DIALOG_SELECTED_BORDER};
+        background: {MODEL_DIALOG_FIELD_BG};
     }}
 
     QListWidget#ModelProfileList::item {{
@@ -452,35 +599,35 @@ def build_stylesheet() -> str:
         border-radius: {SOFT_RADIUS_MD}px;
         padding: 5px 3px;
         margin: 2px 0px;
-        color: {model_dialog_text};
+        color: {MODEL_DIALOG_TEXT};
     }}
 
     QListWidget#ModelProfileList::item:selected {{
         background: transparent;
-        color: {model_dialog_text};
+        color: {MODEL_DIALOG_TEXT};
     }}
 
     QWidget#ModelProfileRowCard {{
-        background: {model_dialog_card};
-        border: 1px solid {model_dialog_border};
+        background: {MODEL_DIALOG_CARD};
+        border: 1px solid {MODEL_DIALOG_BORDER};
         border-radius: {SOFT_RADIUS_MD + 4}px;
     }}
 
     QWidget#ModelProfileRowCard[disabledProfile="true"] {{
-        background: {model_dialog_disabled};
-        border: 1px solid {model_dialog_border};
+        background: {MODEL_DIALOG_DISABLED};
+        border: 1px solid {MODEL_DIALOG_BORDER};
     }}
 
     QWidget#ModelProfileRowCard[selectedProfile="true"] {{
-        background: {model_dialog_editor};
-        border: 1px solid {model_dialog_selected_border};
-        border-right: 3px solid {model_dialog_selected_border};
+        background: {MODEL_DIALOG_EDITOR};
+        border: 1px solid {MODEL_DIALOG_SELECTED_BORDER};
+        border-right: 3px solid {MODEL_DIALOG_SELECTED_BORDER};
     }}
 
     QWidget#ModelProfileRowCard[selectedProfile="true"][disabledProfile="true"] {{
-        background: {blend_hex(model_dialog_editor, model_dialog_disabled, 0.45)};
-        border: 1px solid {blend_hex(model_dialog_selected_border, model_dialog_border, 0.40)};
-        border-right: 3px solid {blend_hex(model_dialog_selected_border, model_dialog_border, 0.28)};
+        background: {MODEL_SELECTED_DISABLED_BG};
+        border: 1px solid {MODEL_SELECTED_DISABLED_BORDER};
+        border-right: 3px solid {MODEL_SELECTED_DISABLED_MARKER};
     }}
 
     QFrame#ModelProfileTabRail {{
@@ -492,11 +639,11 @@ def build_stylesheet() -> str:
     }}
 
     QFrame#ModelProfileTabRail[selectedProfile="true"] {{
-        background: {model_dialog_selected_border};
+        background: {MODEL_DIALOG_SELECTED_BORDER};
     }}
 
     QLabel#ModelProfileItemTitle {{
-        color: {model_dialog_text};
+        color: {MODEL_DIALOG_TEXT};
         font-size: 9.5pt;
         font-weight: 700;
         background: transparent;
@@ -504,16 +651,16 @@ def build_stylesheet() -> str:
     }}
 
     QLabel#ModelProfileItemMeta {{
-        color: {model_dialog_muted};
+        color: {MODEL_DIALOG_MUTED};
         font-size: 8.5pt;
         background: transparent;
         padding: 0px;
     }}
 
     QLabel#ModelProfileItemBadge {{
-        background: {model_dialog_soft};
-        color: {model_dialog_muted};
-        border: 1px solid {model_dialog_border};
+        background: {MODEL_DIALOG_SOFT};
+        color: {MODEL_DIALOG_MUTED};
+        border: 1px solid {MODEL_DIALOG_BORDER};
         border-radius: {SOFT_RADIUS_MD + 4}px;
         padding: 1px 6px;
         font-size: 7.8pt;
@@ -521,40 +668,40 @@ def build_stylesheet() -> str:
     }}
 
     QLabel#ModelProfileItemBadge[badgeVariant="active"] {{
-        background: {model_dialog_active_bg};
-        color: {model_dialog_active_text};
-        border: 1px solid {blend_hex(model_dialog_active_bg, model_dialog_active_text, 0.18)};
+        background: {MODEL_DIALOG_ACTIVE_BG};
+        color: {MODEL_DIALOG_ACTIVE_TEXT};
+        border: 1px solid {MODEL_ACTIVE_BADGE_BORDER};
     }}
 
     QLabel#ModelProfileItemBadge[badgeVariant="provider"] {{
-        background: {model_dialog_provider_bg};
-        color: {model_dialog_provider_text};
-        border: 1px solid {blend_hex(model_dialog_provider_bg, model_dialog_provider_text, 0.16)};
+        background: {MODEL_DIALOG_PROVIDER_BG};
+        color: {MODEL_DIALOG_PROVIDER_TEXT};
+        border: 1px solid {MODEL_PROVIDER_BADGE_BORDER};
     }}
 
     QCheckBox#ModelProfileEnabledSwitch {{
-        background: {model_dialog_switch_off};
+        background: {MODEL_DIALOG_SWITCH_OFF};
         border-radius: 10px;
-        border: 1px solid {blend_hex(model_dialog_switch_off, "#8A94A3", 0.32)};
+        border: 1px solid {MODEL_SWITCH_BORDER};
         padding: 0px;
         spacing: 0px;
     }}
 
     QCheckBox#ModelProfileEnabledSwitch:hover {{
-        background: {blend_hex(model_dialog_switch_off, TEXT_PRIMARY, 0.14)};
+        background: {MODEL_SWITCH_HOVER};
     }}
 
     QCheckBox#ModelProfileEnabledSwitch:checked {{
-        background: {ACCENT_BLUE};
-        border: 1px solid {ACCENT_BLUE};
+        background: {ACCENT};
+        border: 1px solid {ACCENT};
     }}
 
     QCheckBox#ModelProfileEnabledSwitch::indicator {{
         width: 14px;
         height: 14px;
         border-radius: 7px;
-        background: {model_dialog_switch_thumb};
-        border: 1px solid {blend_hex(model_dialog_switch_thumb, "#94A3B8", 0.24)};
+        background: {MODEL_DIALOG_SWITCH_THUMB};
+        border: 1px solid {MODEL_SWITCH_THUMB_BORDER};
     }}
 
     QCheckBox#ModelProfileEnabledSwitch::indicator:unchecked {{
@@ -576,7 +723,7 @@ def build_stylesheet() -> str:
         border: none;
         padding: 0px;
         spacing: 6px;
-        color: {model_dialog_text};
+        color: {MODEL_DIALOG_TEXT};
     }}
 
     QCheckBox#ModelSupportsImagesCheckbox::indicator,
@@ -584,54 +731,54 @@ def build_stylesheet() -> str:
         width: 15px;
         height: 15px;
         border-radius: 4px;
-        border: 1px solid {blend_hex(model_dialog_field_border, TEXT_PRIMARY, 0.22)};
-        background: {model_dialog_field_bg};
+        border: 1px solid {MODEL_CHECKBOX_BORDER};
+        background: {SURFACE_HOVER};
     }}
 
     QCheckBox#ModelSupportsImagesCheckbox::indicator:hover,
     QCheckBox#LlmApiModeCheckbox::indicator:hover {{
-        border: 1px solid {blend_hex(model_dialog_selected_border, TEXT_PRIMARY, 0.18)};
-        background: {blend_hex(model_dialog_field_bg, TEXT_PRIMARY, 0.08)};
+        border: 1px solid {MODEL_CHECKBOX_HOVER_BORDER};
+        background: {MODEL_FIELD_HOVER};
     }}
 
     QCheckBox#ModelSupportsImagesCheckbox::indicator:checked,
     QCheckBox#LlmApiModeCheckbox::indicator:checked {{
-        border: 1px solid {model_dialog_selected_border};
-        background: {model_dialog_field_bg};
+        border: 1px solid {MODEL_DIALOG_SELECTED_BORDER};
+        background: {SURFACE_HOVER};
     }}
 
     QCheckBox#ModelSupportsImagesCheckbox::indicator:checked:hover,
     QCheckBox#LlmApiModeCheckbox::indicator:checked:hover {{
-        border: 1px solid {model_dialog_selected_border};
-        background: {blend_hex(model_dialog_field_bg, TEXT_PRIMARY, 0.08)};
+        border: 1px solid {MODEL_DIALOG_SELECTED_BORDER};
+        background: {MODEL_FIELD_HOVER};
     }}
 
     QCheckBox#ModelSupportsImagesCheckbox::indicator:disabled,
     QCheckBox#LlmApiModeCheckbox::indicator:disabled {{
-        border: 1px solid {blend_hex(model_dialog_field_border, model_dialog_bg, 0.45)};
-        background: {model_dialog_soft};
+        border: 1px solid {MODEL_CHECKBOX_DISABLED_BORDER};
+        background: {SURFACE_SOFT};
     }}
 
     QDialog#ModelSettingsDialog QLineEdit,
     QDialog#ModelSettingsDialog QComboBox {{
-        background: {model_dialog_field_bg};
-        border: 1px solid {model_dialog_field_border};
+        background: {MODEL_DIALOG_FIELD_BG};
+        border: 1px solid {MODEL_DIALOG_FIELD_BORDER};
         border-radius: {SOFT_RADIUS_MD + 2}px;
         min-height: 28px;
         padding: 3px 8px;
-        color: {model_dialog_text};
-        selection-background-color: {model_dialog_selected};
+        color: {MODEL_DIALOG_TEXT};
+        selection-background-color: {MODEL_DIALOG_SELECTED};
     }}
 
     QDialog#ModelSettingsDialog QLineEdit:focus,
     QDialog#ModelSettingsDialog QComboBox:focus {{
-        border: 1px solid {model_dialog_selected_border};
+        border: 1px solid {MODEL_DIALOG_SELECTED_BORDER};
     }}
 
     QDialog#ModelSettingsDialog QLineEdit:disabled,
     QDialog#ModelSettingsDialog QComboBox:disabled {{
-        background: {model_dialog_soft};
-        color: {blend_hex(model_dialog_muted, model_dialog_text, 0.18)};
+        background: {MODEL_DIALOG_SOFT};
+        color: {MODEL_DISABLED_TEXT};
     }}
 
     QDialog#ModelSettingsDialog QComboBox::drop-down {{
@@ -656,8 +803,8 @@ def build_stylesheet() -> str:
     }}
 
     QFrame#ModelSettingsModelPopup {{
-        background: {blend_hex(model_dialog_card, model_dialog_field_bg, 0.20)};
-        border: 1px solid {blend_hex(model_dialog_selected_border, model_dialog_border, 0.35)};
+        background: {MODEL_POPUP_BG};
+        border: 1px solid {MODEL_POPUP_BORDER};
         border-radius: {SOFT_RADIUS_MD + 4}px;
     }}
 
@@ -665,9 +812,9 @@ def build_stylesheet() -> str:
         background: transparent;
         border: none;
         outline: 0px;
-        color: {model_dialog_text};
-        selection-background-color: {blend_hex(model_dialog_selected, model_dialog_field_bg, 0.14)};
-        selection-color: {model_dialog_text};
+        color: {MODEL_DIALOG_TEXT};
+        selection-background-color: {MODEL_POPUP_SELECTION};
+        selection-color: {MODEL_DIALOG_TEXT};
     }}
 
     QListWidget#ModelSettingsModelPopupList::item {{
@@ -679,29 +826,29 @@ def build_stylesheet() -> str:
     }}
 
     QListWidget#ModelSettingsModelPopupList::item:selected {{
-        background: {blend_hex(model_dialog_selected, model_dialog_field_bg, 0.18)};
+        background: {MODEL_POPUP_SELECTED_BG};
         color: {TEXT_PRIMARY};
     }}
 
     QListWidget#ModelSettingsModelPopupList::item:hover {{
-        background: {blend_hex(model_dialog_selected, model_dialog_field_bg, 0.10)};
+        background: {MODEL_POPUP_ITEM_HOVER};
     }}
 
     QDialog#ModelSettingsDialog QComboBox QAbstractItemView {{
-        background: {model_dialog_card};
-        border: 1px solid {model_dialog_border};
-        selection-background-color: {model_dialog_selected};
-        color: {model_dialog_text};
+        background: {MODEL_DIALOG_CARD};
+        border: 1px solid {MODEL_DIALOG_BORDER};
+        selection-background-color: {MODEL_DIALOG_SELECTED};
+        color: {MODEL_DIALOG_TEXT};
     }}
 
     QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo QAbstractItemView {{
-        background: {blend_hex(model_dialog_card, model_dialog_field_bg, 0.20)};
-        border: 1px solid {blend_hex(model_dialog_selected_border, model_dialog_border, 0.35)};
+        background: {MODEL_POPUP_BG};
+        border: 1px solid {MODEL_POPUP_BORDER};
         border-radius: {SOFT_RADIUS_MD + 4}px;
         padding: 6px 4px;
         outline: 0px;
-        selection-background-color: {blend_hex(model_dialog_selected, model_dialog_field_bg, 0.14)};
-        selection-color: {model_dialog_text};
+        selection-background-color: {MODEL_POPUP_SELECTION};
+        selection-color: {MODEL_DIALOG_TEXT};
     }}
 
     QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo QAbstractItemView::item {{
@@ -713,12 +860,12 @@ def build_stylesheet() -> str:
     }}
 
     QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo QAbstractItemView::item:selected {{
-        background: {blend_hex(model_dialog_selected, model_dialog_field_bg, 0.18)};
+        background: {MODEL_POPUP_SELECTED_BG};
         color: {TEXT_PRIMARY};
     }}
 
     QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo QAbstractItemView::item:hover {{
-        background: {blend_hex(model_dialog_selected, model_dialog_field_bg, 0.10)};
+        background: {MODEL_POPUP_ITEM_HOVER};
     }}
 
     QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo QAbstractItemView QScrollBar:vertical {{
@@ -728,13 +875,13 @@ def build_stylesheet() -> str:
     }}
 
     QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo QAbstractItemView QScrollBar::handle:vertical {{
-        background: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.14)};
+        background: {SCROLLBAR_HANDLE};
         border-radius: 4px;
         min-height: 28px;
     }}
 
     QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo QAbstractItemView QScrollBar::handle:vertical:hover {{
-        background: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.24)};
+        background: {SCROLLBAR_HANDLE_HOVER};
     }}
 
     QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo QAbstractItemView QScrollBar::add-line:vertical,
@@ -748,7 +895,7 @@ def build_stylesheet() -> str:
 
     QLabel#ModelSettingsFieldLabel {{
         background: transparent;
-        color: {model_dialog_text};
+        color: {MODEL_DIALOG_TEXT};
         border: none;
         min-height: 18px;
         padding: 0px;
@@ -762,30 +909,30 @@ def build_stylesheet() -> str:
         font-size: 9pt;
         font-weight: 700;
         border-radius: {SOFT_RADIUS_MD + 2}px;
-        border: 1px solid {model_dialog_field_border};
+        border: 1px solid {MODEL_DIALOG_FIELD_BORDER};
     }}
 
     QPushButton#SettingsAddButton {{
-        background: {model_dialog_selected};
-        color: {model_dialog_text};
+        background: {MODEL_DIALOG_SELECTED};
+        color: {MODEL_DIALOG_TEXT};
     }}
 
     QPushButton#SettingsAddButton:hover {{
-        background: {blend_hex(model_dialog_selected, TEXT_PRIMARY, 0.18)};
+        background: {SETTINGS_ADD_HOVER};
     }}
 
     QPushButton#SettingsDeleteButton {{
-        background: {model_dialog_card};
-        color: {blend_hex(ERROR_RED, model_dialog_text, 0.2)};
-        border: 1px solid {blend_hex(ERROR_RED, model_dialog_border, 0.75)};
+        background: {MODEL_DIALOG_CARD};
+        color: {SETTINGS_DELETE_TEXT};
+        border: 1px solid {SETTINGS_DELETE_BORDER};
     }}
 
     QPushButton#ModelSettingsInlineButton,
     QToolButton#ModelSettingsInlineToolButton {{
-        background: {model_dialog_card};
-        border: 1px solid {model_dialog_field_border};
+        background: {MODEL_DIALOG_CARD};
+        border: 1px solid {MODEL_DIALOG_FIELD_BORDER};
         border-radius: {SOFT_RADIUS_MD + 2}px;
-        color: {model_dialog_text};
+        color: {MODEL_DIALOG_TEXT};
     }}
 
     QPushButton#ModelSettingsInlineButton {{
@@ -805,22 +952,22 @@ def build_stylesheet() -> str:
 
     QPushButton#ModelSettingsInlineButton:hover,
     QToolButton#ModelSettingsInlineToolButton:hover {{
-        background: {blend_hex(model_dialog_selected, model_dialog_card, 0.14)};
-        border: 1px solid {blend_hex(model_dialog_selected_border, model_dialog_field_border, 0.42)};
+        background: {MODEL_INLINE_HOVER};
+        border: 1px solid {MODEL_INLINE_HOVER_BORDER};
     }}
 
     QPushButton#ModelSettingsInlineButton:pressed,
     QToolButton#ModelSettingsInlineToolButton:pressed {{
-        background: {blend_hex(model_dialog_selected, model_dialog_card, 0.22)};
+        background: {MODEL_INLINE_PRESSED};
     }}
 
     QToolButton#ModelSettingsInlineToolButton:disabled {{
-        background: {blend_hex(model_dialog_soft, model_dialog_card, 0.35)};
-        border: 1px solid {blend_hex(model_dialog_field_border, model_dialog_card, 0.35)};
+        background: {MODEL_INLINE_DISABLED};
+        border: 1px solid {MODEL_INLINE_DISABLED_BORDER};
     }}
 
     QLabel#ModelSettingsHintText {{
-        color: {model_dialog_muted};
+        color: {MODEL_DIALOG_MUTED};
         background: transparent;
         font-size: 8.2pt;
         padding-left: 2px;
@@ -840,63 +987,63 @@ def build_stylesheet() -> str:
     QSlider#SessionSizeSlider::groove:horizontal {{
         height: 4px;
         border-radius: 2px;
-        background: {model_dialog_field_border};
+        background: {MODEL_DIALOG_FIELD_BORDER};
     }}
 
     QSlider#SessionSizeSlider::sub-page:horizontal {{
-        background: {blend_hex(ACCENT_BLUE, TEXT_PRIMARY, 0.06)};
+        background: {SLIDER_TRACK};
         border-radius: 2px;
     }}
 
     QSlider#SessionSizeSlider::handle:horizontal {{
-        background: {blend_hex(ACCENT_BLUE, TEXT_PRIMARY, 0.55)};
+        background: {SLIDER_HANDLE};
         width: 14px;
         height: 14px;
         margin: -5px 0;
         border-radius: 7px;
-        border: 1px solid {blend_hex(ACCENT_BLUE, TEXT_PRIMARY, 0.75)};
+        border: 1px solid {SLIDER_HANDLE_BORDER};
     }}
 
     QSlider#SessionSizeSlider::handle:horizontal:hover {{
-        background: {blend_hex(ACCENT_BLUE, TEXT_PRIMARY, 0.7)};
+        background: {SLIDER_HANDLE_HOVER};
     }}
 
     QDialog#ModelSettingsDialog QDialogButtonBox {{
-        border-top: 1px solid {model_dialog_border};
+        border-top: 1px solid {MODEL_DIALOG_BORDER};
         padding-top: 6px;
     }}
 
     QDialog#ModelSettingsDialog QPushButton#PrimaryButton {{
-        background: #FFFFFF;
-        color: #000000;
-        border: 1px solid #FFFFFF;
+        background: {SAVE_BUTTON_BG};
+        color: {SAVE_BUTTON_TEXT};
+        border: 1px solid {SAVE_BUTTON_BG};
         border-radius: {SOFT_RADIUS_MD + 4}px;
         font-weight: 700;
         padding: 3px 10px;
     }}
 
     QDialog#ModelSettingsDialog QPushButton#PrimaryButton:hover {{
-        background: #F0F0F0;
-        border-color: #F0F0F0;
+        background: {SAVE_BUTTON_HOVER};
+        border-color: {SAVE_BUTTON_HOVER};
     }}
 
     QDialog#ModelSettingsDialog QPushButton#PrimaryButton[savedState="true"] {{
-        background: {model_dialog_saved_bg};
-        color: #FFFFFF;
-        border-color: {model_dialog_saved_bg};
+        background: {MODEL_DIALOG_SAVED_BG};
+        color: {SAVED_BUTTON_TEXT};
+        border-color: {MODEL_DIALOG_SAVED_BG};
     }}
 
     QDialog#ModelSettingsDialog QPushButton#PrimaryButton[savedState="true"]:hover {{
-        background: {blend_hex(model_dialog_saved_bg, "#000000", 0.10)};
-        border-color: {blend_hex(model_dialog_saved_bg, "#000000", 0.10)};
+        background: {SAVED_BUTTON_HOVER};
+        border-color: {SAVED_BUTTON_HOVER};
     }}
 
     QDialog#ModelSettingsDialog QPushButton {{
-        color: {model_dialog_text};
+        color: {MODEL_DIALOG_TEXT};
     }}
 
     QDialog#ApprovalDialog {{
-        background: {approval_dialog_bg};
+        background: {APPROVAL_DIALOG_BG};
         border: none;
     }}
 
@@ -912,7 +1059,7 @@ def build_stylesheet() -> str:
     }}
 
     QDialog#ApprovalDialog QDialogButtonBox {{
-        border-top: 1px solid {approval_dialog_border};
+        border-top: 1px solid {APPROVAL_DIALOG_BORDER};
         padding-top: 10px;
     }}
 
@@ -954,7 +1101,7 @@ def build_stylesheet() -> str:
     }}
 
     QFrame#UserChoiceCard {{
-        background: {blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.04)};
+        background: {SURFACE_RAISED};
         border: none;
         border-radius: {SOFT_RADIUS_MD}px;
     }}
@@ -996,14 +1143,14 @@ def build_stylesheet() -> str:
     QLabel#SidebarSectionTitle {{
         background: transparent;
         border: none;
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.22)};
+        color: {TEXT_LABEL};
         font-weight: 600;
         font-size: 11pt;
         padding-left: 2px;
     }}
 
     QLabel#SidebarEmptyState {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.28)};
+        color: {TEXT_DETAIL};
         font-size: 9.2pt;
         background: transparent;
         border: none;
@@ -1027,8 +1174,8 @@ def build_stylesheet() -> str:
     }}
 
     QLabel#ComposerCapabilityBadge {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.18)};
-        background: {blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.04)};
+        color: {TEXT_SOFT};
+        background: {SURFACE_SOFT};
         border: none;
         border-radius: {SOFT_RADIUS_MD + 8}px;
         padding: 0px;
@@ -1044,32 +1191,32 @@ def build_stylesheet() -> str:
     }}
 
     QLabel#ComposerNoticeLabel[severity="warning"] {{
-        color: {AMBER_WARNING};
+        color: {TEXT_WARNING};
     }}
 
     QLabel#ComposerNoticeLabel[severity="error"] {{
-        color: {ERROR_RED};
+        color: {TEXT_ERROR};
     }}
 
     QLabel#ComposerNoticeLabel[severity="success"] {{
-        color: {SUCCESS_GREEN};
+        color: {TEXT_SUCCESS};
     }}
 
     QLabel#UserChoiceCardTitle {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.30)};
+        color: {TEXT_SUBTITLE};
         font-size: 8.8pt;
         font-weight: 650;
         background: transparent;
     }}
 
     QLabel#UserChoiceCardQuestion {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.44)};
+        color: {TEXT_QUESTION};
         font-size: 9pt;
         background: transparent;
     }}
 
     QLabel#UserChoiceCardHint {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.34)};
+        color: {TEXT_HINT};
         font-size: 8.8pt;
         background: transparent;
     }}
@@ -1082,20 +1229,20 @@ def build_stylesheet() -> str:
     }}
 
     QLabel#ApprovalCardSummary {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
+        color: {TEXT_SUMMARY};
         font-size: 9.7pt;
         background: transparent;
     }}
 
     QLabel#ApprovalCardImpacts {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.28)};
+        color: {TEXT_DETAIL};
         font-size: 8.9pt;
         background: transparent;
     }}
 
     QLabel#ApprovalRiskBadge {{
-        background: {blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.06)};
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.34)};
+        background: {STATUS_BG};
+        color: {TEXT_HINT};
         border: none;
         border-radius: {SOFT_RADIUS_XS + 6}px;
         padding: 2px 8px;
@@ -1104,19 +1251,19 @@ def build_stylesheet() -> str:
     }}
 
     QLabel#ApprovalRiskBadge[riskLevel="low"] {{
-        background: {blend_hex(SUCCESS_GREEN, SURFACE_ALT, 0.82)};
-        color: {blend_hex(SUCCESS_GREEN, TEXT_PRIMARY, 0.18)};
+        background: {STATUS_SUCCESS_BG};
+        color: {STATUS_SUCCESS_TEXT};
     }}
 
     QLabel#ApprovalRiskBadge[riskLevel="medium"] {{
-        background: {blend_hex(AMBER_WARNING, SURFACE_ALT, 0.82)};
-        color: {blend_hex(AMBER_WARNING, TEXT_PRIMARY, 0.14)};
+        background: {STATUS_WARNING_BG};
+        color: {STATUS_WARNING_TEXT};
     }}
 
     QLabel#ApprovalRiskBadge[riskLevel="high"],
     QLabel#ApprovalRiskBadge[riskLevel="critical"] {{
-        background: {blend_hex(ERROR_RED, SURFACE_ALT, 0.82)};
-        color: {blend_hex(ERROR_RED, TEXT_PRIMARY, 0.18)};
+        background: {STATUS_ERROR_BG};
+        color: {STATUS_ERROR_TEXT};
     }}
 
     QLabel#ApprovalToolTitle {{
@@ -1127,7 +1274,7 @@ def build_stylesheet() -> str:
     }}
 
     QLabel#ApprovalToolSubtitle {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.26)};
+        color: {TEXT_META};
         font-size: 8.9pt;
         background: transparent;
     }}
@@ -1137,15 +1284,15 @@ def build_stylesheet() -> str:
         min-height: 28px;
         padding: 3px 11px;
         border-radius: {SOFT_RADIUS_MD + 2}px;
-        background: {blend_hex(ACCENT_BLUE, SURFACE_ALT, 0.82)};
+        background: {ACCENT_BUTTON_BG};
         color: {TEXT_PRIMARY};
-        border: 1px solid {blend_hex(ACCENT_BLUE, TEXT_PRIMARY, 0.10)};
+        border: 1px solid {ACCENT_BUTTON_BORDER};
         font-weight: 700;
     }}
 
     QFrame#ApprovalRequestCard QPushButton#PrimaryButton:hover,
     QDialog#ApprovalDialog QPushButton#PrimaryButton:hover {{
-        background: {blend_hex(ACCENT_BLUE, SURFACE_ALT, 0.72)};
+        background: {ACCENT_BUTTON_HOVER};
     }}
 
     QFrame#ApprovalRequestCard QPushButton#SecondaryButton,
@@ -1153,9 +1300,9 @@ def build_stylesheet() -> str:
         min-height: 28px;
         padding: 3px 11px;
         border-radius: {SOFT_RADIUS_MD + 2}px;
-        background: {approval_dialog_soft};
+        background: {APPROVAL_DIALOG_SOFT};
         color: {TEXT_PRIMARY};
-        border: 1px solid {approval_dialog_border};
+        border: 1px solid {APPROVAL_DIALOG_BORDER};
         font-weight: 600;
     }}
 
@@ -1164,29 +1311,29 @@ def build_stylesheet() -> str:
         min-height: 28px;
         padding: 3px 11px;
         border-radius: {SOFT_RADIUS_MD + 2}px;
-        background: {blend_hex(ERROR_RED, SURFACE_ALT, 0.78)};
+        background: {DANGER_BUTTON_BG};
         color: {TEXT_PRIMARY};
-        border: 1px solid {blend_hex(ERROR_RED, TEXT_PRIMARY, 0.08)};
+        border: 1px solid {DANGER_BUTTON_BORDER};
         font-weight: 700;
     }}
 
     QPlainTextEdit#ApprovalDetailView {{
-        background: {approval_dialog_code};
+        background: {APPROVAL_DIALOG_CODE};
         color: {TEXT_PRIMARY};
-        border: 1px solid {approval_dialog_border};
+        border: 1px solid {APPROVAL_DIALOG_BORDER};
         border-radius: {SOFT_RADIUS_MD + 2}px;
         padding: 10px;
-        selection-background-color: {blend_hex(ACCENT_BLUE, SURFACE_ALT, 0.20)};
+        selection-background-color: {TEXT_SELECTION_BG};
     }}
 
     QPlainTextEdit#ApprovalArgsView,
     QPlainTextEdit#InlineCodeView {{
-        background: {approval_dialog_code};
+        background: {APPROVAL_DIALOG_CODE};
         color: {CODE_TEXT};
-        border: 1px solid {approval_dialog_border};
+        border: 1px solid {APPROVAL_DIALOG_BORDER};
         border-radius: {SOFT_RADIUS_MD + 2}px;
         padding: 8px;
-        selection-background-color: {blend_hex(ACCENT_BLUE, SURFACE_ALT, 0.20)};
+        selection-background-color: {TEXT_SELECTION_BG};
     }}
 
     QLabel#MutedText,
@@ -1208,11 +1355,11 @@ def build_stylesheet() -> str:
     }}
 
     QLabel#MetaText[severity="error"] {{
-        color: {ERROR_RED};
+        color: {TEXT_ERROR};
     }}
 
     QLabel#WarningText {{
-        color: {AMBER_WARNING};
+        color: {TEXT_WARNING};
     }}
 
     QLabel#StatusLabel {{
@@ -1226,15 +1373,15 @@ def build_stylesheet() -> str:
 
     QFrame#InlineStatusRow[phase="active"] QLabel#TranscriptMeta,
     QFrame#InlineStatusRow[phase="reviewing"] QLabel#TranscriptMeta {{
-        color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.08)};
+        color: {STATUS_REVIEW_TEXT};
     }}
 
     QFrame#InlineStatusRow[phase="success"] QLabel#TranscriptMeta {{
-        color: {SUCCESS_GREEN};
+        color: {TEXT_SUCCESS};
     }}
 
     QFrame#InlineStatusRow[phase="waiting"] QLabel#TranscriptMeta {{
-        color: {blend_hex(AMBER_WARNING, TEXT_PRIMARY, 0.24)};
+        color: {STATUS_WAITING_TEXT};
     }}
 
     QFrame#InlineStatusRow QLabel#TranscriptMeta {{
@@ -1248,7 +1395,7 @@ def build_stylesheet() -> str:
     }}
 
     QTabWidget::pane {{
-        border: 1px solid {model_dialog_border};
+        border: 1px solid {BORDER_SOFT};
         border-radius: {SOFT_RADIUS_MD + 4}px;
         background: transparent;
         top: -1px;
@@ -1256,8 +1403,8 @@ def build_stylesheet() -> str:
 
     QTabBar::tab {{
         background: transparent;
-        border: 1px solid {model_dialog_border};
-        border-bottom: 1px solid {model_dialog_border};
+        border: 1px solid {BORDER_SOFT};
+        border-bottom: 1px solid {BORDER_SOFT};
         padding: 3px 10px;
         margin-right: 4px;
         margin-bottom: 2px;
@@ -1269,7 +1416,7 @@ def build_stylesheet() -> str:
     QTabBar::tab:selected {{
         background: {SURFACE_ALT};
         color: {TEXT_PRIMARY};
-        border: 1px solid {model_dialog_selected_border};
+        border: 1px solid {MODEL_DIALOG_SELECTED_BORDER};
         border-bottom-left-radius: {SOFT_RADIUS_SM}px;
         border-bottom-right-radius: {SOFT_RADIUS_SM}px;
     }}
@@ -1293,13 +1440,13 @@ def build_stylesheet() -> str:
 
     QToolButton:hover,
     QPushButton:hover {{
-        background: {blend_hex(SURFACE_ALT, ACCENT_BLUE_SOFT, 0.55)};
+        background: {BUTTON_HOVER};
         border: none;
     }}
 
     QToolButton:pressed,
     QPushButton:pressed {{
-        background: {blend_hex(SURFACE_ALT, ACCENT_BLUE_SOFT, 0.8)};
+        background: {BUTTON_PRESSED};
     }}
 
     QToolButton#MainWindowToolButton {{
@@ -1313,25 +1460,25 @@ def build_stylesheet() -> str:
     }}
 
     QToolButton#MainWindowToolButton:pressed {{
-        background: {blend_hex(SURFACE_ALT, ACCENT_BLUE_SOFT, 0.35)};
+        background: {HEADER_BUTTON_PRESSED};
     }}
 
     QPushButton#PrimaryButton {{
-        background: {blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.08)};
+        background: {BUTTON_BG};
         color: {TEXT_PRIMARY};
         border: none;
         font-weight: 600;
     }}
 
     QPushButton#SecondaryButton {{
-        background: {blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.04)};
+        background: {SURFACE_SOFT};
         color: {TEXT_PRIMARY};
         border: none;
         font-weight: 600;
     }}
 
     QPushButton#DangerButton {{
-        background: {blend_hex(ERROR_RED, SURFACE_ALT, 0.78)};
+        background: {DANGER_BUTTON_BG};
         color: {TEXT_PRIMARY};
         border: none;
         font-weight: 600;
@@ -1345,7 +1492,7 @@ def build_stylesheet() -> str:
     }}
 
     QToolButton#SidebarGhostButton:hover {{
-        background: {blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.06)};
+        background: {STATUS_BG};
     }}
 
     QToolButton#SidebarGhostButton:disabled {{
@@ -1375,11 +1522,11 @@ def build_stylesheet() -> str:
     QToolButton#DisclosureButton:hover,
     QPushButton#DisclosureButton:hover {{
         background: transparent;
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.45)};
+        color: {DISCLOSURE_HOVER_TEXT};
     }}
 
     QFrame#ToolExpandablePanel {{
-        background: {tool_panel_bg};
+        background: {SURFACE_RAISED};
         border: none;
         border-radius: {SOFT_RADIUS_MD}px;
         padding: 5px 8px;
@@ -1400,14 +1547,14 @@ def build_stylesheet() -> str:
     }}
 
     QFrame#CliExecPanel {{
-        background: {tool_panel_bg};
-        border: 1px solid {blend_hex(BORDER, TEXT_PRIMARY, 0.04)};
+        background: {SURFACE_RAISED};
+        border: 1px solid {CODE_PANEL_BORDER};
         border-radius: {SOFT_RADIUS_MD}px;
     }}
 
     QLabel#CliExecHeader {{
         background: transparent;
-        color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.1)};
+        color: {CODE_HEADER_TEXT};
         font-family: "{MONO_FONT_FAMILY}";
         font-size: 9.3pt;
         font-weight: 500;
@@ -1415,7 +1562,7 @@ def build_stylesheet() -> str:
 
     QLabel#ToolSubtitle {{
         background: transparent;
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.30)};
+        color: {TEXT_SUBTITLE};
         font-size: 8.9pt;
         padding-left: 13px;
         padding-bottom: 1px;
@@ -1423,31 +1570,31 @@ def build_stylesheet() -> str:
 
     QLabel#ToolActionLabel {{
         background: transparent;
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
+        color: {TEXT_SUMMARY};
         font-size: 10.15pt;
         font-weight: 500;
         padding: 1px 0px;
     }}
 
     QLabel#ToolActionLabel[toolRole="edit"] {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
+        color: {TEXT_SUMMARY};
     }}
 
     QLabel#ToolActionLabel[phase="active"] {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
+        color: {TEXT_SUMMARY};
     }}
 
     QLabel#ToolActionLabel[phase="success"] {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
+        color: {TEXT_SUMMARY};
     }}
 
     QLabel#ToolActionLabel[phase="error"] {{
-        color: {blend_hex(ERROR_RED, TEXT_PRIMARY, 0.18)};
+        color: {STATUS_ERROR_TEXT};
     }}
 
     QLabel#ToolPhaseBadge {{
-        background: {blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.04)};
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.34)};
+        background: {SURFACE_SOFT};
+        color: {TEXT_HINT};
         border: none;
         border-radius: {SOFT_RADIUS_XS + 5}px;
         padding: 2px 7px;
@@ -1456,18 +1603,18 @@ def build_stylesheet() -> str:
     }}
 
     QLabel#ToolPhaseBadge[variant="pending"] {{
-        background: {blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.05)};
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.26)};
+        background: {APPROVAL_DIALOG_SOFT};
+        color: {TEXT_META};
     }}
 
     QLabel#ToolPhaseBadge[variant="active"] {{
-        background: {blend_hex(ACCENT_BLUE_SOFT, ACCENT_BLUE, 0.18)};
-        color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.04)};
+        background: {BADGE_ACTIVE_BG};
+        color: {BADGE_ACTIVE_TEXT};
     }}
 
     QLabel#ToolPhaseBadge[variant="success"] {{
         background: transparent;
-        color: {SUCCESS_GREEN};
+        color: {TEXT_SUCCESS};
         padding: 0px;
         border-radius: 0px;
         font-size: 9.2pt;
@@ -1475,12 +1622,12 @@ def build_stylesheet() -> str:
     }}
 
     QLabel#ToolPhaseBadge[variant="error"] {{
-        background: {blend_hex(ERROR_RED, SURFACE_ALT, 0.18)};
+        background: {BADGE_ERROR_BG};
         color: {TEXT_PRIMARY};
     }}
 
     QPlainTextEdit#CliExecOutput {{
-        background: {tool_panel_bg};
+        background: {SURFACE_RAISED};
         color: {CODE_TEXT};
         border: none;
         border-radius: {SOFT_RADIUS_SM}px;
@@ -1490,20 +1637,20 @@ def build_stylesheet() -> str:
     }}
 
     QFrame#DiffPanel {{
-        background: {tool_panel_bg};
-        border: 1px solid {blend_hex(BORDER, TEXT_PRIMARY, 0.05)};
+        background: {SURFACE_RAISED};
+        border: 1px solid {DIFF_PANEL_BORDER};
         border-radius: {SOFT_RADIUS_SM}px;
     }}
 
     QWidget#DiffHeaderRow {{
-        background: {tool_panel_bg};
+        background: {SURFACE_RAISED};
         border-top-left-radius: {SOFT_RADIUS_SM}px;
         border-top-right-radius: {SOFT_RADIUS_SM}px;
     }}
 
     QLabel#DiffHeaderPath {{
         background: transparent;
-        color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.14)};
+        color: {DIFF_HEADER_TEXT};
         font-family: "{MONO_FONT_FAMILY}";
         font-size: 9.05pt;
         font-weight: 500;
@@ -1511,7 +1658,7 @@ def build_stylesheet() -> str:
 
     QLabel#DiffStatAdded {{
         background: transparent;
-        color: {SUCCESS_GREEN};
+        color: {DIFF_ADDED_TEXT};
         font-family: "{MONO_FONT_FAMILY}";
         font-size: 9pt;
         font-weight: 600;
@@ -1519,14 +1666,14 @@ def build_stylesheet() -> str:
 
     QLabel#DiffStatRemoved {{
         background: transparent;
-        color: {ERROR_RED};
+        color: {DIFF_REMOVED_TEXT};
         font-family: "{MONO_FONT_FAMILY}";
         font-size: 9pt;
         font-weight: 600;
     }}
 
     QPlainTextEdit#DiffCodeView {{
-        background: {tool_panel_bg};
+        background: {SURFACE_RAISED};
         color: {CODE_TEXT};
         border: none;
         border-radius: {SOFT_RADIUS_SM}px;
@@ -1536,7 +1683,7 @@ def build_stylesheet() -> str:
     }}
 
     QWidget#ToolExpandableContent {{
-        background: {tool_panel_bg};
+        background: {SURFACE_RAISED};
         border: none;
     }}
 
@@ -1558,17 +1705,17 @@ def build_stylesheet() -> str:
         min-height: 20px;
         font-size: 9.2pt;
         font-weight: 400;
-        color: {tool_toggle_text};
+        color: {TEXT_META};
         text-align: left;
     }}
 
     QPushButton#ToolExpandableToggle:hover {{
-        background: {tool_panel_hover};
-        color: {tool_toggle_hover_text};
+        background: {TOOL_PANEL_HOVER};
+        color: {TOOL_TOGGLE_HOVER_TEXT};
     }}
 
     QPushButton#ToolExpandableToggle:checked {{
-        background: {tool_panel_hover};
+        background: {TOOL_PANEL_HOVER};
         color: {TEXT_PRIMARY};
     }}
 
@@ -1580,14 +1727,14 @@ def build_stylesheet() -> str:
         min-height: 16px;
         font-size: 8.8pt;
         font-weight: 400;
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.14)};
+        color: {SCROLLBAR_HANDLE};
         text-align: left;
     }}
 
     QPushButton#ToolExpandableToggle[variant="thoughts"]:hover,
     QPushButton#ToolExpandableToggle[variant="thoughts"]:checked {{
         background: transparent;
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.24)};
+        color: {SCROLLBAR_HANDLE_HOVER};
     }}
 
     QPushButton#ToolExpandableToggle[variant="diff"] {{
@@ -1598,14 +1745,14 @@ def build_stylesheet() -> str:
         min-height: 18px;
         font-size: 9.2pt;
         font-weight: 500;
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.32)};
+        color: {DIFF_TOGGLE_TEXT};
         text-align: left;
     }}
 
     QPushButton#ToolExpandableToggle[variant="diff"]:hover,
     QPushButton#ToolExpandableToggle[variant="diff"]:checked {{
         background: transparent;
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.48)};
+        color: {DIFF_TOGGLE_CHECKED_TEXT};
     }}
 
     QToolButton#CodeCopyButton {{
@@ -1613,12 +1760,12 @@ def build_stylesheet() -> str:
         border: none;
         border-radius: {SOFT_RADIUS_SM}px;
         padding: 2px 6px;
-        color: {tool_toggle_text};
+        color: {TEXT_META};
         font-size: 8.8pt;
     }}
 
     QToolButton#CodeCopyButton:hover {{
-        background: {tool_panel_hover};
+        background: {TOOL_PANEL_HOVER};
         color: {TEXT_PRIMARY};
     }}
 
@@ -1627,10 +1774,10 @@ def build_stylesheet() -> str:
     QListView,
     QListWidget,
     QTreeWidget {{
-        background: {blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.01)};
+        background: {TREE_BG};
         border: none;
         border-radius: {SOFT_RADIUS_SM}px;
-        selection-background-color: {blend_hex(ACCENT_BLUE_SOFT, ACCENT_BLUE, 0.25)};
+        selection-background-color: {TREE_SELECTION_BG};
         selection-color: {TEXT_PRIMARY};
     }}
 
@@ -1643,19 +1790,19 @@ def build_stylesheet() -> str:
 
     /* ---- Composer pill ---- */
     QFrame#ComposerPill {{
-        background: {_COMPOSER_BG};
-        border: 1px solid {_COMPOSER_BORDER};
+        background: {COMPOSER_BG};
+        border: 1px solid {COMPOSER_BORDER};
         border-radius: 18px;
     }}
 
     QFrame#ComposerPill:hover {{
-        border: 1px solid {blend_hex(_COMPOSER_BORDER, TEXT_PRIMARY, 0.18)};
+        border: 1px solid {COMPOSER_HOVER_BORDER};
     }}
 
     QPushButton#UserChoiceOptionButton,
     QPushButton#UserChoiceCustomButton {{
-        background: {blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.08)};
-        border: 1px solid {blend_hex(BORDER, TEXT_PRIMARY, 0.10)};
+        background: {BUTTON_BG};
+        border: 1px solid {APPROVAL_DIALOG_BORDER};
         border-radius: {SOFT_RADIUS_SM}px;
         padding: 7px 10px;
         color: {TEXT_PRIMARY};
@@ -1666,25 +1813,25 @@ def build_stylesheet() -> str:
 
     QPushButton#UserChoiceOptionButton:hover,
     QPushButton#UserChoiceCustomButton:hover {{
-        background: {blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.15)};
-        border: 1px solid {blend_hex(BORDER, TEXT_PRIMARY, 0.20)};
+        background: {CHOICE_BUTTON_HOVER};
+        border: 1px solid {CHOICE_BUTTON_HOVER_BORDER};
     }}
 
     QPushButton#UserChoiceOptionButton:pressed,
     QPushButton#UserChoiceCustomButton:pressed {{
-        background: {blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.19)};
+        background: {CHOICE_BUTTON_PRESSED};
     }}
 
     QPushButton#UserChoiceOptionButton[recommended="true"] {{
-        background: {blend_hex(ACCENT_BLUE, SURFACE_ALT, 0.82)};
+        background: {ACCENT_BUTTON_BG};
         color: {TEXT_PRIMARY};
-        border: 1px solid {blend_hex(ACCENT_BLUE, TEXT_PRIMARY, 0.10)};
+        border: 1px solid {ACCENT_BUTTON_BORDER};
     }}
 
     QPushButton#UserChoiceOptionButton:disabled,
     QPushButton#UserChoiceCustomButton:disabled {{
-        background: {blend_hex(SURFACE_ALT, SURFACE_CARD, 0.35)};
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.18)};
+        background: {CHOICE_BUTTON_DISABLED_BG};
+        color: {TEXT_SOFT};
     }}
 
     QPlainTextEdit#ComposerEdit {{
@@ -1708,7 +1855,7 @@ def build_stylesheet() -> str:
     }}
 
     QPlainTextEdit#ComposerEdit QScrollBar::handle:vertical {{
-        background: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.06)};
+        background: {COMPOSER_SCROLLBAR};
         border-radius: {SOFT_RADIUS_XS}px;
         min-height: 16px;
     }}
@@ -1723,9 +1870,9 @@ def build_stylesheet() -> str:
     }}
 
     QPushButton#ComposerSendButton {{
-        background: {_SEND_BTN_BG};
+        background: {SEND_BUTTON_BG};
         color: {SURFACE_BG};
-        border: 1px solid {blend_hex(_SEND_BTN_BG, SURFACE_BG, 0.18)};
+        border: 1px solid {SEND_BUTTON_BORDER};
         border-radius: 15px;
         min-width: 32px;
         max-width: 32px;
@@ -1736,23 +1883,23 @@ def build_stylesheet() -> str:
     }}
 
     QPushButton#ComposerSendButton:hover {{
-        background: {_SEND_BTN_HOVER};
-        border: 1px solid {blend_hex(_SEND_BTN_HOVER, SURFACE_BG, 0.20)};
+        background: {SEND_BUTTON_HOVER};
+        border: 1px solid {SEND_BUTTON_HOVER_BORDER};
     }}
 
     QPushButton#ComposerSendButton:pressed {{
-        background: {blend_hex(TEXT_PRIMARY, TEXT_SECONDARY, 0.2)};
-        border: 1px solid {blend_hex(_SEND_BTN_BG, SURFACE_BG, 0.22)};
+        background: {SEND_BUTTON_PRESSED};
+        border: 1px solid {SEND_BUTTON_PRESSED_BORDER};
     }}
 
     QPushButton#ComposerSendButton:disabled {{
-        background: {_SEND_BTN_DISABLED};
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.2)};
-        border: 1px solid {blend_hex(_SEND_BTN_DISABLED, TEXT_PRIMARY, 0.08)};
+        background: {SEND_BUTTON_DISABLED};
+        color: {SEND_BUTTON_DISABLED_TEXT};
+        border: 1px solid {SEND_BUTTON_DISABLED_BORDER};
     }}
 
     QPushButton#ComposerStopButton {{
-        background: {_SEND_BTN_BG};
+        background: {SEND_BUTTON_BG};
         color: {SURFACE_BG};
         border: none;
         border-radius: 15px;
@@ -1765,11 +1912,11 @@ def build_stylesheet() -> str:
     }}
 
     QPushButton#ComposerStopButton:hover {{
-        background: {_SEND_BTN_HOVER};
+        background: {SEND_BUTTON_HOVER};
     }}
 
     QPushButton#ComposerStopButton:pressed {{
-        background: {blend_hex(TEXT_PRIMARY, TEXT_SECONDARY, 0.2)};
+        background: {SEND_BUTTON_PRESSED};
     }}
 
     QToolButton#ComposerAttachButton {{
@@ -1780,7 +1927,7 @@ def build_stylesheet() -> str:
     }}
 
     QToolButton#ComposerAttachButton:hover {{
-        background: {blend_hex(_COMPOSER_BG, SURFACE_ALT, 0.32)};
+        background: {COMPOSER_ATTACH_HOVER};
         border: none;
     }}
 
@@ -1789,20 +1936,20 @@ def build_stylesheet() -> str:
         border: 1px solid transparent;
         border-radius: {SOFT_RADIUS_MD}px;
         padding: 2px 8px;
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.22)};
+        color: {TEXT_LABEL};
         font-size: 8.8pt;
         font-weight: 500;
     }}
 
     QPushButton#ComposerMetaChip:disabled {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.22)};
+        color: {TEXT_LABEL};
         background: transparent;
         border: 1px solid transparent;
     }}
 
     QToolButton#ComposerMetaChipButton {{
-        background: {blend_hex(_COMPOSER_BG, TEXT_PRIMARY, 0.04)};
-        border: 1px solid {blend_hex(BORDER, TEXT_PRIMARY, 0.08)};
+        background: {COMPOSER_CHIP_BG};
+        border: 1px solid {COMPOSER_CHIP_BORDER};
         border-radius: {SOFT_RADIUS_MD + 6}px;
         padding: 4px 12px;
         color: {TEXT_PRIMARY};
@@ -1822,8 +1969,8 @@ def build_stylesheet() -> str:
     }}
 
     QToolButton#ComposerMetaChipButton:hover {{
-        background: {blend_hex(_COMPOSER_BG, SURFACE_ALT, 0.36)};
-        border: 1px solid {blend_hex(BORDER, TEXT_PRIMARY, 0.14)};
+        background: {COMPOSER_CHIP_HOVER};
+        border: 1px solid {COMPOSER_CHIP_HOVER_BORDER};
     }}
 
     QToolButton#ComposerMetaChipButton[chipPosition="right"]:hover {{
@@ -1831,18 +1978,18 @@ def build_stylesheet() -> str:
     }}
 
     QToolButton#ComposerMetaChipButton:disabled {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.22)};
+        color: {TEXT_LABEL};
         background: transparent;
         border: 1px solid transparent;
     }}
 
     QLabel#ComposerNoModelText {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.32)};
+        color: {DIFF_TOGGLE_TEXT};
         font-size: 8.8pt;
     }}
 
     QLabel#ComposerCacheHitLabel {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.18)};
+        color: {TEXT_SOFT};
         background: transparent;
         padding: 0px 2px 0px 0px;
         font-size: 8.4pt;
@@ -1853,21 +2000,21 @@ def build_stylesheet() -> str:
     }}
 
     QLabel#ComposerChatOnlyLabel:disabled {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.22)};
+        color: {TEXT_LABEL};
     }}
 
     QPushButton#ComposerOpenSettingsButton {{
         background: transparent;
-        border: 1px solid {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.15)};
+        border: 1px solid {COMPOSER_SETTINGS_TEXT};
         border-radius: {SOFT_RADIUS_SM}px;
         padding: 2px 8px;
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.45)};
+        color: {DISCLOSURE_HOVER_TEXT};
         font-size: 8.8pt;
     }}
 
     QPushButton#ComposerOpenSettingsButton:hover {{
-        background: {blend_hex(_COMPOSER_BG, SURFACE_ALT, 0.24)};
-        border: 1px solid {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.3)};
+        background: {COMPOSER_SETTINGS_HOVER};
+        border: 1px solid {TEXT_SUBTITLE};
     }}
 
     QToolButton#ComposerGhostButton {{
@@ -1883,14 +2030,14 @@ def build_stylesheet() -> str:
     }}
 
     QFrame#ComposerMentionPopup {{
-        background: {_POPUP_BG};
-        border: 1px solid {blend_hex(_POPUP_BORDER, SURFACE_BG, 0.55)};
+        background: {POPUP_BG};
+        border: 1px solid {MENTION_POPUP_BORDER};
         border-radius: {SOFT_RADIUS_MD + 10}px;
     }}
 
     QLabel#ComposerMentionHeader {{
         background: transparent;
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.3)};
+        color: {TEXT_SUBTITLE};
         font-size: 8.8pt;
         font-weight: 600;
         padding: 1px 4px 2px 4px;
@@ -1921,16 +2068,16 @@ def build_stylesheet() -> str:
     }}
 
     QWidget#ComposerMentionItem[selected="true"] {{
-        background: {blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.2)};
-        border: 1px solid {blend_hex(TEXT_PRIMARY, SURFACE_ALT, 0.78)};
+        background: {MENTION_SELECTED_BG};
+        border: 1px solid {MENTION_SELECTED_BORDER};
     }}
 
     QWidget#ComposerMentionItem[selected="true"] QLabel#ComposerMentionItemTitle {{
-        color: {blend_hex(TEXT_PRIMARY, TEXT_PRIMARY, 0.16)};
+        color: {MENTION_SELECTED_TEXT};
     }}
 
     QWidget#ComposerMentionItem[selected="true"] QLabel#ComposerMentionItemMeta {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
+        color: {TEXT_SUMMARY};
     }}
 
     QLabel#ComposerMentionItemTitle {{
@@ -1942,7 +2089,7 @@ def build_stylesheet() -> str:
 
     QLabel#ComposerMentionItemMeta {{
         background: transparent;
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.12)};
+        color: {MENTION_META_TEXT};
         font-size: 8.9pt;
         font-weight: 500;
         padding-left: 4px;
@@ -1960,13 +2107,13 @@ def build_stylesheet() -> str:
     }}
 
     QListWidget#ComposerMentionList QScrollBar::handle:vertical {{
-        background: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.1)};
+        background: {MENTION_SCROLLBAR};
         border-radius: 4px;
         min-height: 28px;
     }}
 
     QListWidget#ComposerMentionList QScrollBar::handle:vertical:hover {{
-        background: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.2)};
+        background: {SEND_BUTTON_DISABLED_TEXT};
     }}
 
     QListWidget#ComposerMentionList QScrollBar::add-line:vertical,
@@ -1979,7 +2126,7 @@ def build_stylesheet() -> str:
     }}
 
     QPushButton#TranscriptJumpButton {{
-        background: {blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.08)};
+        background: {TRANSCRIPT_JUMP_BG};
         color: {TEXT_PRIMARY};
         border: none;
         border-radius: {SOFT_RADIUS_MD + 8}px;
@@ -1989,7 +2136,7 @@ def build_stylesheet() -> str:
     }}
 
     QPushButton#TranscriptJumpButton:hover {{
-        background: {blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.08)};
+        background: {BUTTON_BG};
     }}
 
     QTextBrowser#AssistantBody {{
@@ -2011,7 +2158,7 @@ def build_stylesheet() -> str:
 
     QLabel#TranscriptMeta,
     QLabel#TranscriptRole {{
-        color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.06)};
+        color: {TRANSCRIPT_ROLE_TEXT};
         font-size: 10.7pt;
         font-weight: 500;
     }}
@@ -2021,25 +2168,25 @@ def build_stylesheet() -> str:
         border: none;
         border-radius: {SOFT_RADIUS_XS}px;
         padding: 0px 2px 0px 0px;
-        color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.20)};
+        color: {TOOL_CALL_TEXT};
         font-size: 10.35pt;
         font-weight: 500;
         text-align: left;
     }}
 
     QPushButton#ToolCallButton[toolRole="edit"] {{
-        color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.10)};
+        color: {CODE_HEADER_TEXT};
     }}
 
     QPushButton#ToolCallButton:hover {{
         background: transparent;
-        color: {tool_call_hover};
+        color: {TEXT_SUMMARY};
         border: none;
     }}
 
     QPushButton#ToolCallButton:checked {{
         background: transparent;
-        color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.08)};
+        color: {STATUS_REVIEW_TEXT};
         border: none;
     }}
 
@@ -2048,33 +2195,33 @@ def build_stylesheet() -> str:
         border: none;
         border-radius: {SOFT_RADIUS_SM}px;
         padding: 2px 2px 2px 0px;
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
+        color: {TEXT_SUMMARY};
         font-size: 10pt;
         font-weight: 500;
         text-align: left;
     }}
 
     QPushButton#ToolGroupHeaderButton[state="active"] {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
+        color: {TEXT_SUMMARY};
     }}
 
     QPushButton#ToolGroupHeaderButton[state="complete"] {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
+        color: {TEXT_SUMMARY};
     }}
 
     QPushButton#ToolGroupHeaderButton[state="error"] {{
-        color: {blend_hex(ERROR_RED, TEXT_PRIMARY, 0.22)};
+        color: {TOOL_GROUP_ERROR_TEXT};
     }}
 
     QPushButton#ToolGroupHeaderButton:hover {{
         background: transparent;
-        color: {tool_toggle_hover_text};
+        color: {TOOL_TOGGLE_HOVER_TEXT};
         border: none;
     }}
 
     QPushButton#ToolGroupHeaderButton:checked {{
         background: transparent;
-        color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.08)};
+        color: {STATUS_REVIEW_TEXT};
         border: none;
     }}
 
@@ -2086,22 +2233,22 @@ def build_stylesheet() -> str:
     QFrame#ToolGroupFrame[subgroup="true"] QPushButton#ToolGroupHeaderButton[state="active"],
     QFrame#ToolGroupFrame[subgroup="true"] QPushButton#ToolGroupHeaderButton[state="complete"],
     QFrame#ToolGroupFrame[subgroup="true"] QPushButton#ToolGroupHeaderButton:checked {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
+        color: {TEXT_SUMMARY};
     }}
 
     QFrame#ToolGroupFrame[subgroup="true"] QPushButton#ToolGroupHeaderButton[state="error"] {{
-        color: {blend_hex(ERROR_RED, TEXT_PRIMARY, 0.22)};
+        color: {TOOL_GROUP_ERROR_TEXT};
     }}
 
     QFrame#ToolGroupFrame[subgroup="true"] QPushButton#ToolGroupHeaderButton:hover {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.58)};
+        color: {TOOL_GROUP_HOVER_TEXT};
     }}
 
     QPlainTextEdit#CodeView,
     QPlainTextEdit#InlineCodeView {{
-        background: {tool_code_bg};
+        background: {TOOL_CODE_BG};
         color: {CODE_TEXT};
-        border: 1px solid {blend_hex(BORDER, TEXT_PRIMARY, 0.04)};
+        border: 1px solid {CODE_PANEL_BORDER};
         border-radius: {SOFT_RADIUS_SM}px;
         font-family: "{MONO_FONT_FAMILY}";
         font-size: 9pt;
@@ -2114,34 +2261,34 @@ def build_stylesheet() -> str:
     }}
 
     QTextBrowser#InspectorHelpText {{
-        background: {blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.02)};
+        background: {INSPECTOR_HELP_BG};
         border: none;
         border-radius: {SOFT_RADIUS_MD}px;
         padding: 10px 12px;
     }}
 
     QFrame#ToolCard {{
-        background: {blend_hex(SURFACE_CARD, TEXT_PRIMARY, 0.04)};
+        background: {SURFACE_RAISED};
         border: none;
         border-radius: {SOFT_RADIUS_MD}px;
         min-height: 44px;
     }}
 
     QCheckBox#ToolAvailabilitySwitch {{
-        background: {blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.08)};
+        background: {BUTTON_BG};
         border-radius: 10px;
-        border: 1px solid {blend_hex(BORDER, TEXT_PRIMARY, 0.16)};
+        border: 1px solid {TOOL_SWITCH_BORDER};
         padding: 0px;
         spacing: 0px;
     }}
 
     QCheckBox#ToolAvailabilitySwitch:hover {{
-        background: {blend_hex(SURFACE_ALT, TEXT_PRIMARY, 0.16)};
+        background: {TOOL_SWITCH_HOVER};
     }}
 
     QCheckBox#ToolAvailabilitySwitch:checked {{
-        background: {ACCENT_BLUE};
-        border: 1px solid {ACCENT_BLUE};
+        background: {ACCENT};
+        border: 1px solid {ACCENT};
     }}
 
     QCheckBox#ToolAvailabilitySwitch:disabled {{
@@ -2150,8 +2297,8 @@ def build_stylesheet() -> str:
     }}
 
     QCheckBox#ToolAvailabilitySwitch:checked:disabled {{
-        background: {blend_hex(TEXT_MUTED, SURFACE_BG, 0.35)};
-        border: 1px solid {blend_hex(TEXT_MUTED, SURFACE_BG, 0.35)};
+        background: {SWITCH_DISABLED_BG};
+        border: 1px solid {SWITCH_DISABLED_BG};
     }}
 
     QCheckBox#ToolAvailabilitySwitch::indicator {{
@@ -2176,7 +2323,7 @@ def build_stylesheet() -> str:
     }}
 
     QCheckBox#ToolAvailabilitySwitch::indicator:disabled {{
-        background: {blend_hex(TEXT_PRIMARY, SURFACE_BG, 0.5)};
+        background: {SWITCH_DISABLED_THUMB};
     }}
 
     QCheckBox#ToolAvailabilitySwitch::indicator:checked:disabled {{
@@ -2192,11 +2339,11 @@ def build_stylesheet() -> str:
     }}
 
     QLabel#ToolGroupHeader[toolGroup="protected"] {{
-        color: {AMBER_WARNING};
+        color: {TEXT_WARNING};
     }}
 
     QLabel#ToolGroupHeader[toolGroup="mcp"] {{
-        color: {ACCENT_BLUE};
+        color: {ACCENT};
     }}
 
     QToolButton#ToolCardTitle {{
@@ -2211,7 +2358,7 @@ def build_stylesheet() -> str:
     }}
 
     QToolButton#ToolCardTitle:hover {{
-        color: {ACCENT_BLUE};
+        color: {ACCENT};
     }}
 
     QWidget#ToolCardDetails {{
@@ -2231,7 +2378,7 @@ def build_stylesheet() -> str:
     }}
 
     QLabel#MCPServerLoadingLabel {{
-        color: {ACCENT_BLUE};
+        color: {ACCENT};
         font-size: 7.5pt;
         background: transparent;
     }}
@@ -2239,20 +2386,20 @@ def build_stylesheet() -> str:
     QLabel#ToolFlagChip {{
         color: {TEXT_MUTED};
         font-size: 7pt;
-        border: 1px solid {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.14)};
+        border: 1px solid {SCROLLBAR_HANDLE};
         border-radius: 3px;
         padding: 0px 4px;
         background: transparent;
     }}
 
     QLabel#ToolFlagChip[flagVariant="warning"] {{
-        color: {AMBER_WARNING};
-        border: 1px solid {blend_hex(AMBER_WARNING, SURFACE_CARD, 0.48)};
+        color: {TEXT_WARNING};
+        border: 1px solid {WARNING_CHIP_BORDER};
     }}
 
     QLabel#ToolFlagChip[flagVariant="accent"] {{
-        color: {ACCENT_BLUE};
-        border: 1px solid {blend_hex(ACCENT_BLUE, SURFACE_CARD, 0.56)};
+        color: {ACCENT};
+        border: 1px solid {ACCENT_CHIP_BORDER};
     }}
 
     QFrame#ToolGroupSeparator {{
@@ -2278,13 +2425,13 @@ def build_stylesheet() -> str:
     }}
 
     QScrollBar::handle:vertical {{
-        background: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.06)};
+        background: {COMPOSER_SCROLLBAR};
         border-radius: {SOFT_RADIUS_XS}px;
         min-height: 16px;
     }}
 
     QScrollBar::handle:horizontal {{
-        background: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.06)};
+        background: {COMPOSER_SCROLLBAR};
         border-radius: {SOFT_RADIUS_XS}px;
         min-width: 16px;
     }}
@@ -2326,9 +2473,9 @@ def build_stylesheet() -> str:
     }}
 
     QMenu#ComposerPopupMenu {{
-        background: {_POPUP_BG};
+        background: {POPUP_BG};
         color: {TEXT_PRIMARY};
-        border: 1px solid {_POPUP_BORDER};
+        border: 1px solid {POPUP_BORDER};
         border-radius: {SOFT_RADIUS_MD + 8}px;
         padding: 6px;
     }}
@@ -2342,23 +2489,23 @@ def build_stylesheet() -> str:
     }}
 
     QMenu#ComposerPopupMenu::item:selected {{
-        background: {_POPUP_ITEM_SELECTED};
+        background: {POPUP_ITEM_SELECTED};
     }}
 
     QMenu#ComposerPopupMenu::separator {{
         height: 1px;
-        background: {blend_hex(BORDER, TEXT_PRIMARY, 0.08)};
+        background: {COMPOSER_CHIP_BORDER};
         margin: 6px 8px;
     }}
 
     QMenuBar::item:selected,
     QMenu::item:selected {{
-        background: {ACCENT_BLUE_SOFT};
+        background: {ACCENT_SOFT};
         border-radius: {SOFT_RADIUS_SM}px;
     }}
 
     QStatusBar {{
-        background: {blend_hex(SURFACE_BG, SURFACE_CARD, 0.28)};
+        background: {STATUS_BAR_BG};
         color: {TEXT_MUTED};
         border-top: 1px solid {BORDER};
         min-height: 22px;
@@ -2370,13 +2517,13 @@ def build_stylesheet() -> str:
     }}
 
     QLabel#StatusBarMeta {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.16)};
+        color: {STATUS_BAR_META_TEXT};
         font-size: 9pt;
         padding-right: 4px;
     }}
 
     QLabel#StatusBarState {{
-        color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.12)};
+        color: {STATUS_BAR_STATE_TEXT};
         font-size: 9.6pt;
         font-weight: 600;
         padding-left: 2px;

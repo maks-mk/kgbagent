@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui.theme import ACCENT_BLUE
+from ui.theme import ACCENT
 from .foundation import _fa_icon
 
 # Retries used while the rebuilt tool cards settle their scroll range.
@@ -505,9 +505,9 @@ class InspectorPanelWidget(QWidget):
         self.help_text.setAccessibleName("Help content")
         help_layout.addWidget(self.help_text)
 
-        self.tabs.addTab(self.overview_panel, _fa_icon("fa5s.play-circle", color=ACCENT_BLUE, size=14), "Run")
-        self.tabs.addTab(self.tools_panel, _fa_icon("fa5s.tools", color=ACCENT_BLUE, size=14), "Tools")
-        self.tabs.addTab(help_widget, _fa_icon("fa5s.question-circle", color=ACCENT_BLUE, size=14), "Help")
+        self.tabs.addTab(self.overview_panel, _fa_icon("fa5s.play-circle", color=ACCENT, size=14), "Run")
+        self.tabs.addTab(self.tools_panel, _fa_icon("fa5s.tools", color=ACCENT, size=14), "Tools")
+        self.tabs.addTab(help_widget, _fa_icon("fa5s.question-circle", color=ACCENT, size=14), "Help")
         layout.addWidget(self.tabs, 1)
 
 

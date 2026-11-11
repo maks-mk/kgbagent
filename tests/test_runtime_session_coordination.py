@@ -24,15 +24,15 @@ class RuntimeSessionCoordinationTests(unittest.IsolatedAsyncioTestCase):
         worker = AgentRunWorker()
         project_path = Path("D:/tmp/project-a")
 
-        with mock.patch("ui.runtime.Path.cwd", return_value=project_path):
+        with mock.patch("ui.runtime_session.Path.cwd", return_value=project_path):
             self.assertEqual(worker._current_project_path(), str(project_path))
 
     async def test_try_change_workdir_uses_runtime_facade_os(self):
         worker = AgentRunWorker()
         project_path = Path("D:/tmp/project-b")
 
-        with mock.patch("ui.runtime.Path.cwd", return_value=Path("D:/tmp/other")), mock.patch(
-            "ui.runtime.os.chdir"
+        with mock.patch("ui.runtime_session.Path.cwd", return_value=Path("D:/tmp/other")), mock.patch(
+            "ui.runtime_session.os.chdir"
         ) as chdir_mock:
             changed, error = worker._try_change_workdir(str(project_path))
 
@@ -127,7 +127,7 @@ class RuntimeSessionCoordinationTests(unittest.IsolatedAsyncioTestCase):
             ],
         }
 
-        with mock.patch("ui.runtime.setup_runtime", return_value=bootstrapped) as setup_mock:
+        with mock.patch("ui.runtime_setup.setup_runtime", return_value=bootstrapped) as setup_mock:
             result = worker._build_config_for_active_profile(model_profiles)
 
         setup_mock.assert_called_once()

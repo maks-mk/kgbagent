@@ -708,6 +708,36 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertEqual(notice_events[0].payload["count"], 2)
         self.assertEqual(notice_events[0].payload["kind"], "auto_summary")
 
+    def test_stream_processor_reemits_status_after_summarization_notice(self):
+        events = []
+        processor = StreamProcessor(events.append)
+
+        processor._handle_custom({"type": "summary_started"})
+        processor._handle_custom({"type": "summary_finished"})
+        processor._handle_updates(
+            {
+                "summarize": {
+                    "summary": "compressed summary",
+                    "messages": [RemoveMessage(id="1")],
+                }
+            }
+        )
+        processor._handle_messages(
+            (AIMessageChunk(content="Готово"), {"langgraph_node": "agent"})
+        )
+
+        notice_index = next(
+            index for index, event in enumerate(events) if event.type == "summary_notice"
+        )
+        status_indexes = [
+            index for index, event in enumerate(events) if event.type == "status_changed"
+        ]
+        self.assertTrue(status_indexes)
+        self.assertGreater(status_indexes[-1], notice_index)
+        last_status = events[status_indexes[-1]].payload
+        self.assertEqual(last_status["node"], "agent")
+        self.assertEqual(last_status["label"], "Working...")
+
     def test_stream_processor_stats_use_numeric_input_fallback_when_usage_missing(self):
         events = []
         processor = StreamProcessor(events.append)

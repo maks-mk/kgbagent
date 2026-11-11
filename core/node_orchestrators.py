@@ -10,8 +10,9 @@ from langgraph.config import get_stream_writer
 from langgraph.errors import GraphBubbleUp
 
 from core.errors import ErrorType, format_error
-from core.message_utils import compact_text, recent_tool_calls
-from core.node_errors import EmptyLLMResponseError
+from core.message_utils import compact_text, recent_tool_calls, current_turn_id, last_ai_message
+from core.tool_issues import active_open_tool_issue
+from core.node_errors import EmptyLLMResponseError, ProviderContextError
 from core.self_correction_engine import normalize_tool_args
 from core.tool_args import (
     canonicalize_tool_args,
@@ -19,7 +20,7 @@ from core.tool_args import (
     tool_loop_budget,
 )
 from core.tool_results import parse_tool_execution_result
-from core.state import transcript_message_delta
+from core.state import AgentTurnResult, message_state_update, recover_agent_update, transcript_message_delta
 from core.turn_outcomes import (
     TURN_OUTCOME_CONTINUE_AGENT,
     TURN_OUTCOME_FINISH_TURN,
@@ -39,7 +40,7 @@ if TYPE_CHECKING:
     from core.tool_policy import ToolMetadata
 
 
-class NodeOrchestratorOwner(Protocol):
+class NodeLogOwner(Protocol):
     def _log_run_event(self, state: AgentState | None, event_type: str, **payload: Any) -> None: ...
 
     def _log_node_start(self, state: AgentState | None, node: str, **payload: Any) -> float: ...
@@ -52,11 +53,12 @@ class NodeOrchestratorOwner(Protocol):
         **payload: Any,
     ) -> None: ...
 
+class NodeOrchestratorOwner(NodeLogOwner, Protocol):
     def _current_turn_id(self, state: AgentState, messages: list[BaseMessage]) -> int: ...
 
 
 class AgentTurnOwner(NodeOrchestratorOwner, Protocol):
-    context_builder: ContextBuilder
+    def _mcp_tool_groups_for_names(self, active_tool_names: list[str]) -> tuple: ...
 
     def _log_node_error(
         self,
@@ -116,25 +118,6 @@ class AgentTurnOwner(NodeOrchestratorOwner, Protocol):
 
     def _summarize_history_tool_mismatch(self, history_issue: dict[str, Any]) -> str: ...
 
-    def _build_agent_context(
-        self,
-        messages: list[BaseMessage],
-        summary: str,
-        current_task: str,
-        tools_available: bool,
-        active_tool_names: list[str],
-        open_tool_issue: OpenToolIssue | None,
-        recovery_state: RecoveryState | None = None,
-        state: AgentState | None = None,
-        user_choice_locked: bool = False,
-    ) -> list[BaseMessage]: ...
-
-    def _assert_provider_safe_agent_context(
-        self,
-        context: list[BaseMessage],
-        state: AgentState | None = None,
-    ) -> None: ...
-
     async def _invoke_llm_with_retry(
         self,
         llm: BaseChatModel,
@@ -154,40 +137,16 @@ class AgentTurnOwner(NodeOrchestratorOwner, Protocol):
         recovery_state: RecoveryState | None = None,
         allowed_tool_names: list[str] | None = None,
         chat_only: bool = False,
-    ) -> dict[str, Any]: ...
+    ) -> AgentTurnResult: ...
 
-    def _normalize_system_prefix_for_provider(
-        self,
-        context: list[BaseMessage],
-    ) -> list[BaseMessage]: ...
-
-
-class RecoveryTurnOwner(NodeOrchestratorOwner, Protocol):
-    config: AgentConfig
-    recovery_manager: RecoveryManager
-
+class RecoveryTurnOwner(NodeLogOwner, Protocol):
     def _resolve_current_task(self, state: AgentState | None, messages: list[BaseMessage]) -> str: ...
-
-    def _get_active_open_tool_issue(
-        self,
-        state: AgentState,
-        messages: list[BaseMessage],
-        current_turn_id: int | None = None,
-    ) -> OpenToolIssue | None: ...
-
-    def _get_last_ai_message(self, messages: list[BaseMessage]) -> AIMessage | None: ...
-
-    def _get_recovery_state(self, state: AgentState, *, current_turn_id: int) -> RecoveryState: ...
-
     def _hard_loop_ceiling(self) -> int: ...
-
     def _successful_tool_stagnation_limit(self, tool_name: str) -> int: ...
 
 
 class ToolBatchOwner(NodeOrchestratorOwner, Protocol):
     config: AgentConfig
-    recovery_manager: RecoveryManager
-    tool_executor: ToolExecutor
     READ_ONLY_LOOP_TOLERANT_TOOL_NAMES: frozenset[str]
     _all_tool_names: tuple[str, ...]
 
@@ -247,6 +206,8 @@ class ToolBatchOwner(NodeOrchestratorOwner, Protocol):
         self,
         tool_name: str,
         tool_args: dict[str, Any] | None = None,
+        *,
+        metadata: ToolMetadata | None = None,
     ) -> bool: ...
 
     def _tool_call_is_approved(
@@ -271,8 +232,15 @@ class ToolBatchOwner(NodeOrchestratorOwner, Protocol):
 
 
 class AgentTurnOrchestrator:
-    def __init__(self, owner: AgentTurnOwner) -> None:
+    def __init__(self, owner: AgentTurnOwner, *, context_builder: ContextBuilder) -> None:
         self.owner = owner
+        self.context_builder = context_builder
+
+    def _assert_provider_safe_context(self, context, state) -> None:
+        try:
+            self.context_builder.assert_provider_safe_context(context, state=state)
+        except RuntimeError as exc:
+            raise ProviderContextError(str(exc)) from exc
 
     @staticmethod
     def _emit_rejected_tool_calls(
@@ -363,17 +331,8 @@ class AgentTurnOrchestrator:
                     validation_handoff_reason=validation_handoff_reason,
                     has_open_tool_issue=True,
                 )
-                return {
-                    "current_task": current_task,
-                    "turn_id": current_turn_id,
-                    "turn_outcome": TURN_OUTCOME_RECOVER_AGENT,
-                    "recovery_state": recovery_state,
-                    "pending_approval": None,
-                    "open_tool_issue": preflight_loop_issue,
-                    "last_tool_error": str(preflight_loop_issue.get("summary") or ""),
-                    "last_tool_result": "",
-                }
-            history_issue = owner.context_builder.detect_tool_history_mismatch(messages)
+                return recover_agent_update(current_task, current_turn_id, recovery_state, preflight_loop_issue)
+            history_issue = self.context_builder.detect_tool_history_mismatch(messages)
             if history_issue:
                 validation_handoff_reason = "history_tool_mismatch"
                 pending_tool_calls = history_issue.get("pending_tool_calls") or []
@@ -407,47 +366,27 @@ class AgentTurnOrchestrator:
                     validation_handoff_reason=validation_handoff_reason,
                     has_open_tool_issue=True,
                 )
-                return {
-                    "current_task": current_task,
-                    "turn_id": current_turn_id,
-                    "turn_outcome": TURN_OUTCOME_RECOVER_AGENT,
-                    "recovery_state": recovery_state,
-                    "pending_approval": None,
-                    "open_tool_issue": protocol_issue,
-                    "last_tool_error": str(protocol_issue.get("summary") or ""),
-                    "last_tool_result": "",
-                }
+                return recover_agent_update(current_task, current_turn_id, recovery_state, protocol_issue)
 
-            full_context = owner._build_agent_context(
-                messages,
-                summary,
-                current_task,
-                tools_available,
-                active_tool_names,
-                open_tool_issue,
-                recovery_state,
-                state=state,
+            full_context = self.context_builder.build(
+                messages, state, summary=summary, current_task=current_task,
+                tools_available=tools_available, active_tool_names=active_tool_names,
+                open_tool_issue=open_tool_issue, recovery_state=recovery_state,
+                mcp_tool_groups=owner._mcp_tool_groups_for_names(active_tool_names),
                 user_choice_locked=user_choice_locked,
             )
-            owner._assert_provider_safe_agent_context(full_context, state)
-            response = await owner._invoke_llm_with_retry(
-                llm_for_turn,
-                full_context,
-                state=state,
-                node_name="agent",
-            )
-            result = owner._build_agent_result(
-                response,
-                current_task,
-                tools_available,
-                current_turn_id,
-                messages,
-                open_tool_issue=open_tool_issue,
-                recovery_state=recovery_state,
-                allowed_tool_names=active_tool_names,
-                chat_only=bool(state.get("chat_only", False)),
-            )
-            if result.pop("_retry_user_input_turn", False):
+            async def invoke_and_build(context, node_name):
+                self._assert_provider_safe_context(context, state)
+                response = await owner._invoke_llm_with_retry(llm_for_turn, context, state=state, node_name=node_name)
+                evaluation = owner._build_agent_result(
+                    response, current_task, tools_available, current_turn_id, messages,
+                    open_tool_issue=open_tool_issue, recovery_state=recovery_state,
+                    allowed_tool_names=active_tool_names, chat_only=bool(state.get("chat_only", False)),
+                )
+                return response, evaluation
+
+            response, evaluation = await invoke_and_build(full_context, "agent")
+            if evaluation.retry_user_input_turn:
                 owner._log_run_event(
                     state,
                     "user_input_reask_suppressed",
@@ -455,7 +394,7 @@ class AgentTurnOrchestrator:
                     step=state.get("steps", 0),
                     current_task=current_task,
                 )
-                retry_context = owner._normalize_system_prefix_for_provider(
+                retry_context = self.context_builder.normalize_system_prefix(
                     [
                         *full_context,
                         SystemMessage(
@@ -467,26 +406,9 @@ class AgentTurnOrchestrator:
                         ),
                     ]
                 )
-                owner._assert_provider_safe_agent_context(retry_context, state)
-                response = await owner._invoke_llm_with_retry(
-                    llm_for_turn,
-                    retry_context,
-                    state=state,
-                    node_name="agent_retry_after_user_choice",
-                )
-                result = owner._build_agent_result(
-                    response,
-                    current_task,
-                    tools_available,
-                    current_turn_id,
-                    messages,
-                    open_tool_issue=open_tool_issue,
-                    recovery_state=recovery_state,
-                    allowed_tool_names=active_tool_names,
-                    chat_only=bool(state.get("chat_only", False)),
-                )
-                result.pop("_retry_user_input_turn", None)
-            rejected_tool_calls = result.pop("_rejected_tool_calls", None)
+                response, evaluation = await invoke_and_build(retry_context, "agent_retry_after_user_choice")
+            result = evaluation.state_update
+            rejected_tool_calls = evaluation.rejected_tool_calls
             if rejected_tool_calls:
                 self._emit_rejected_tool_calls(
                     rejected_tool_calls,
@@ -551,8 +473,7 @@ class AgentTurnOrchestrator:
                 )
             ]
             return {
-                "messages": empty_response_messages,
-                "transcript_messages": transcript_message_delta(empty_response_messages),
+                **message_state_update(empty_response_messages),
                 "current_task": current_task,
                 "turn_id": current_turn_id,
                 "turn_outcome": TURN_OUTCOME_FINISH_TURN,
@@ -574,8 +495,10 @@ class AgentTurnOrchestrator:
             raise
 
 class RecoveryTurnOrchestrator:
-    def __init__(self, owner: RecoveryTurnOwner) -> None:
+    def __init__(self, owner: RecoveryTurnOwner, *, config: AgentConfig, recovery_manager: RecoveryManager) -> None:
         self.owner = owner
+        self.config = config
+        self.recovery_manager = recovery_manager
 
     async def run(self, state):
         owner = self.owner
@@ -586,28 +509,28 @@ class RecoveryTurnOrchestrator:
             has_open_tool_issue=bool(state.get("open_tool_issue")),
         )
         messages = state.get("messages", [])
-        current_turn_id = owner._current_turn_id(state, messages)
+        turn_id = current_turn_id(state, messages)
         current_task = owner._resolve_current_task(state, messages).strip()
-        open_tool_issue = owner._get_active_open_tool_issue(state, messages, current_turn_id)
-        last_ai = owner._get_last_ai_message(messages)
+        open_tool_issue = active_open_tool_issue(state, turn_id)
+        last_ai = last_ai_message(messages)
         last_message = messages[-1] if messages else None
         step_count = int(state.get("steps", 0) or 0)
-        recovery_state = owner._get_recovery_state(state, current_turn_id=current_turn_id)
+        recovery_state = self.recovery_manager.get_recovery_state(state.get("recovery_state"), current_turn_id=turn_id, legacy_state=state)
         # _hard_loop_ceiling() already returns 0 when self-correction is disabled,
         # so a single value drives both the stagnation ceiling and the repair budget.
         self_correction_limit = owner._hard_loop_ceiling()
 
-        result = owner.recovery_manager.plan_recovery(
+        result = self.recovery_manager.plan_recovery(
             state=state,
             messages=messages,
             current_task=current_task,
-            current_turn_id=current_turn_id,
+            current_turn_id=turn_id,
             open_tool_issue=open_tool_issue,
             recovery_state=recovery_state,
             last_ai=last_ai,
             last_message=last_message,
             step_count=step_count,
-            max_loops=int(owner.config.max_loops or 0),
+            max_loops=int(self.config.max_loops or 0),
             hard_loop_ceiling=self_correction_limit,
             max_auto_repairs=self_correction_limit,
             successful_tool_stagnation_limit=owner._successful_tool_stagnation_limit(
@@ -635,9 +558,9 @@ class RecoveryTurnOrchestrator:
                     additional_kwargs={
                         "agent_internal": {
                             "kind": handoff_kind,
-                            "turn_id": current_turn_id,
+                            "turn_id": turn_id,
                             "visible_in_ui": False,
-                            "ui_notice": owner.recovery_manager.build_internal_ui_notice(
+                            "ui_notice": self.recovery_manager.build_internal_ui_notice(
                                 str(result["completion_reason"])
                             ),
                         }
@@ -654,7 +577,7 @@ class RecoveryTurnOrchestrator:
                 state,
                 "recovery_prepared",
                 run_id=state.get("run_id", ""),
-                turn_id=current_turn_id,
+                turn_id=turn_id,
                 strategy_id=str((active_strategy or {}).get("id") or ""),
                 strategy=str((active_strategy or {}).get("strategy") or ""),
                 suggested_tool=str((active_strategy or {}).get("suggested_tool_name") or ""),
@@ -679,7 +602,7 @@ class RecoveryTurnOrchestrator:
             node_timer,
             outcome=turn_outcome,
             reason=result["completion_reason"],
-            turn_id=current_turn_id,
+            turn_id=turn_id,
         )
         payload = {
             "turn_outcome": turn_outcome,
@@ -701,8 +624,10 @@ class RecoveryTurnOrchestrator:
 
 
 class ToolBatchCoordinator:
-    def __init__(self, owner: ToolBatchOwner) -> None:
+    def __init__(self, owner: ToolBatchOwner, *, tool_executor: ToolExecutor, recovery_manager: RecoveryManager) -> None:
         self.owner = owner
+        self.tool_executor = tool_executor
+        self.recovery_manager = recovery_manager
 
     async def run(self, state):
         owner = self.owner
@@ -882,8 +807,7 @@ class ToolBatchCoordinator:
                 has_open_tool_issue=bool(merged_issue),
             )
             payload = {
-                "messages": final_messages,
-                "transcript_messages": transcript_message_delta(final_messages),
+                **message_state_update(final_messages),
                 "turn_id": current_turn_id,
                 "turn_outcome": TURN_OUTCOME_RUN_TOOLS,
                 "pending_approval": None,
@@ -894,7 +818,7 @@ class ToolBatchCoordinator:
             if not merged_issue:
                 payload.update(
                     {
-                        "recovery_state": owner.recovery_manager.reset_after_success(
+                        "recovery_state": self.recovery_manager.reset_after_success(
                             state.get("recovery_state"),
                             current_turn_id=current_turn_id,
                             successful_evidence=last_result,
@@ -1024,7 +948,7 @@ class ToolBatchCoordinator:
             error_type=type(exception).__name__,
             error=compact_text(str(exception), 400),
         )
-        outcome = owner.tool_executor.handle_result(
+        outcome = self.tool_executor.handle_result(
             state=state,
             current_turn_id=current_turn_id,
             tool_name=tool_name,
@@ -1105,7 +1029,7 @@ class ToolBatchCoordinator:
         )
 
         if not owner._tool_is_allowed_for_turn(tool_name, allowed_tool_names):
-            outcome = owner.tool_executor.build_not_allowed_result(
+            outcome = self.tool_executor.build_not_allowed_result(
                 state=state,
                 current_turn_id=current_turn_id,
                 tool_name=tool_name,
@@ -1119,7 +1043,7 @@ class ToolBatchCoordinator:
         # validation error before checking approval instead of inventing a denial.
         missing_required = owner._missing_required_tool_fields(tool_name, tool_args)
         if missing_required:
-            outcome = owner.tool_executor.build_missing_required_result(
+            outcome = self.tool_executor.build_missing_required_result(
                 state=state,
                 current_turn_id=current_turn_id,
                 tool_name=tool_name,
@@ -1129,10 +1053,10 @@ class ToolBatchCoordinator:
             )
             return outcome.tool_message, outcome.had_error, outcome.issue
 
-        if owner._tool_requires_approval(tool_name, tool_args) and not owner._tool_call_is_approved(
+        if owner._tool_requires_approval(tool_name, tool_args, metadata=metadata) and not owner._tool_call_is_approved(
             tool_call_id, approval_state
         ):
-            outcome = owner.tool_executor.build_denied_result(
+            outcome = self.tool_executor.build_denied_result(
                 state=state,
                 current_turn_id=current_turn_id,
                 tool_name=tool_name,
@@ -1178,7 +1102,7 @@ class ToolBatchCoordinator:
             content = await owner._execute_tool(tool_name, tool_args, state=state, tool_call_id=tool_call_id)
             tool_duration_seconds = max(0.0, time.perf_counter() - started_at)
 
-        outcome = owner.tool_executor.handle_result(
+        outcome = self.tool_executor.handle_result(
             state=state,
             current_turn_id=current_turn_id,
             tool_name=tool_name,

@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePol
 from core.text_utils import read_file_request_paths
 from .foundation import _fa_icon
 from .tools import ToolCardWidget
-from ui.theme import ERROR_RED, SUCCESS_GREEN, TEXT_MUTED
+from ui.theme import TEXT_ERROR, TEXT_SUCCESS, TEXT_MUTED
 
 
 class ToolGroupWidget(QFrame):
@@ -66,7 +66,7 @@ class ToolGroupWidget(QFrame):
 
         self.error_icon_label = QLabel(self.header_row)
         self.error_icon_label.setObjectName("MetaText")
-        self.error_icon_label.setPixmap(_fa_icon("fa5s.times-circle", color=ERROR_RED, size=9).pixmap(9, 9))
+        self.error_icon_label.setPixmap(_fa_icon("fa5s.times-circle", color=TEXT_ERROR, size=9).pixmap(9, 9))
         self.error_icon_label.setVisible(False)
         header_layout.addWidget(self.error_icon_label, 0, Qt.AlignVCenter)
 
@@ -388,9 +388,9 @@ class ToolGroupWidget(QFrame):
             # success color so the icon still reads as "done" rather than
             # pending/running.
             if self._is_subgroup:
-                done_icon = _fa_icon("fa5s.layer-group", color=SUCCESS_GREEN, size=9)
+                done_icon = _fa_icon("fa5s.layer-group", color=TEXT_SUCCESS, size=9)
             else:
-                done_icon = _fa_icon("fa5s.check-circle", color=SUCCESS_GREEN, size=9)
+                done_icon = _fa_icon("fa5s.check-circle", color=TEXT_SUCCESS, size=9)
             if errors > 0:
                 self.header_btn.setIcon(done_icon)
                 error_title = self._error_header_text(errors)
